@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode — user-specific state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Build output and caches
+/build/
+/DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM
+*.profraw
+*.profdata
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Local packaging artifacts
+/release/
+*.dmg
+
+# LaTeX demo compilation intermediates (all versions)
+docs/versions/*/demo/**/*.aux
+docs/versions/*/demo/**/*.log
+docs/versions/*/demo/**/*.synctex.gz
+docs/versions/*/demo/**/*.fdb_latexmk
+docs/versions/*/demo/**/*.fls
+docs/versions/*/demo/**/*.xdv
+
+# Local agent working instructions
+/AGENTS.md

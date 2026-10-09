@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>SUFeedURL</key>
+    <string>https://github.com/YoungDrifter/QuillTeX/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>KvMTDbFnWn3JxgHKsI26dHWgjGvDzHWAkHdkwUEI8WU=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUShowReleaseNotes</key>
+    <false/>
+
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>LaTeX Source</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>AppIcon.icns</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.tug.tex</string>
+                <!-- Texifier registers existing .tex documents with this type. -->
+                <string>com.vallettaventures.texpadm.tex</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array><string>tex</string></array>
+        </dict>
+    </array>
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.tug.tex</string>
+            <key>UTTypeDescription</key>
+            <string>LaTeX Source</string>
+            <key>UTTypeIconFile</key>
+            <string>AppIcon.icns</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>tex</string></array>
+                <key>public.mime-type</key>
+                <string>application/x-tex</string>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

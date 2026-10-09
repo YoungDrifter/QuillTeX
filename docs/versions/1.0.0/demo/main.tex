@@ -1,0 +1,29 @@
+% !TeX program = xelatex
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=22mm]{geometry}
+\usepackage{fontspec,xcolor,titlesec,amsmath}
+\setmainfont{Helvetica Neue}
+\definecolor{ink}{HTML}{202B38}
+\definecolor{muted}{HTML}{728095}
+\definecolor{accent}{HTML}{3B67BA}
+\titleformat{\section}{\Large\bfseries\color{ink}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{ink}}{\thesubsection}{0.6em}{}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{8pt}
+\pagestyle{empty}
+\begin{document}
+{\small\bfseries\color{accent} QUILLTEX / PRODUCT GUIDE}
+\vspace{8mm}
+
+{\fontsize{36}{40}\selectfont\bfseries A quiet place\\to write.}
+\vspace{4mm}
+
+{\large\color{muted} From your first line to the finished PDF.}
+\vspace{4mm}
+
+\input{chapters/writing}
+\input{chapters/workflow}
+\input{chapters/projects}
+\vfill
+{\small\color{muted} Native macOS. Local documents. Focused writing.}
+\end{document}
