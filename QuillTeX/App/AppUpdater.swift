@@ -9,6 +9,19 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStand
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var startupError: String?
     @Published private(set) var latestVersion = UserDefaults.standard.string(forKey: "updates.latestVerifiedVersion")
+    @Published private(set) var latestBuild = UserDefaults.standard.string(forKey: "updates.latestVerifiedBuild")
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+    static var currentBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+    }
+    static var currentDisplayVersion: String { "\(currentVersion) (\(currentBuild))" }
+    var latestDisplayVersion: String? {
+        guard let latestVersion else { return nil }
+        guard let latestBuild else { return latestVersion }
+        return "\(latestVersion) (\(latestBuild))"
+    }
     private var observation: AnyCancellable?
     private var started = false
     private lazy var controller = SPUStandardUpdaterController(startingUpdater: false,
@@ -50,6 +63,13 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStand
         controller.checkForUpdates(nil)
     }
 
+    /// Refresh About from Sparkle's verified feed without opening an update dialog.
+    func refreshVersionInformation() {
+        start()
+        guard canCheckForUpdates else { return }
+        controller.updater.checkForUpdateInformation()
+    }
+
     var supportsGentleScheduledUpdateReminders: Bool { true }
 
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem,
@@ -72,6 +92,8 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStand
             $0.versionString.compare($1.versionString, options: .numeric) == .orderedAscending
         }) else { return }
         latestVersion = latest.displayVersionString
+        latestBuild = latest.versionString
+        UserDefaults.standard.set(latest.versionString, forKey: "updates.latestVerifiedBuild")
         UserDefaults.standard.set(latest.displayVersionString, forKey: "updates.latestVerifiedVersion")
     }
 }

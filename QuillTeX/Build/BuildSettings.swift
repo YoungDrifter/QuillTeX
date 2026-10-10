@@ -106,6 +106,9 @@ final class BuildSettings: ObservableObject {
     @Published var autoCompileDelay: Double {
         didSet { defaults.set(autoCompileDelay, forKey: Key.autoCompile) }
     }
+    @Published var compileOnSave: Bool {
+        didSet { defaults.set(compileOnSave, forKey: Key.compileOnSave) }
+    }
     @Published private(set) var toolchain = TeXToolchain()
 
     private let defaults: UserDefaults
@@ -185,6 +188,7 @@ final class BuildSettings: ObservableObject {
         static let projects = "build.projects"
         static let autoSave = "build.autoSaveDelay"
         static let autoCompile = "build.autoCompileDelay"
+        static let compileOnSave = "build.compileOnSave"
     }
 
     init(defaults: UserDefaults = .standard, detectImmediately: Bool = true) {
@@ -204,6 +208,7 @@ final class BuildSettings: ObservableObject {
         outputDirectory = defaults.string(forKey: Key.output) ?? "."
         autoSaveDelay = defaults.object(forKey: Key.autoSave) as? Double ?? 0.5
         autoCompileDelay = defaults.object(forKey: Key.autoCompile) as? Double ?? 0.5
+        compileOnSave = defaults.bool(forKey: Key.compileOnSave)
         if detectImmediately { rescan() }
     }
 

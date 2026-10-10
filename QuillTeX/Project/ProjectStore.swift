@@ -12,11 +12,20 @@ final class SourceDocument: ObservableObject, Identifiable {
     var selection = NSRange(location: 0, length: 0)
     var scrollOrigin = NSPoint.zero
     var hasMarkedText = false
+    let undoManager = UndoManager()
+    private var undoObservers: [NSObjectProtocol] = []
     var editorSurface: EditorSurface?
     var isDirty: Bool { text != savedText }
     init(url: URL, text: String) {
         self.url = url; self.text = text; self.savedText = text; self.diskText = text
+        for name in [Notification.Name.NSUndoManagerDidCloseUndoGroup, Notification.Name.NSUndoManagerDidUndoChange,
+                     Notification.Name.NSUndoManagerDidRedoChange] {
+            undoObservers.append(NotificationCenter.default.addObserver(forName: name, object: undoManager, queue: .main) { [weak self] _ in
+                self?.objectWillChange.send()
+            })
+        }
     }
+    deinit { undoObservers.forEach(NotificationCenter.default.removeObserver) }
 }
 
 enum SidebarMode: String, CaseIterable, Identifiable {
@@ -57,7 +66,8 @@ final class ProjectStore: ObservableObject {
     /// Set by the window hook: full screen hides the window controls, so the top bar moves over.
     @Published var isFullScreen = false
     @Published var selectedNodes: [SidebarMode: String] = [:]
-    @Published var collapsedNodes: Set<String> = []
+    /// Only explicitly opened branches expand; newly indexed branches start collapsed.
+    @Published var expandedNodes: Set<String> = []
     @Published var selectedFolder: URL?
     @Published var isIndexing = false
     /// macOS blocks reads in protected folders (Desktop, Documents, Downloads) unless
@@ -357,7 +367,7 @@ final class ProjectStore: ObservableObject {
             history.append(EditorLocation(url: main, offset: document.selection.location))
             historyPosition = history.count - 1
         }
-        index = ProjectIndex(); collapsedNodes = []; selectedNodes = [:]; selectedFolder = nil
+        index = ProjectIndex(); expandedNodes = []; selectedNodes = [:]; selectedFolder = nil
         window?.title = "QuillTeX — \(main.deletingPathExtension().lastPathComponent)"
         window?.representedURL = main
         window?.isDocumentEdited = documents.contains { $0.isDirty }
@@ -533,7 +543,18 @@ final class ProjectStore: ObservableObject {
         refreshIndex(immediate: true)
     }
 
-    func saveActive() { if let doc = activeDocument { save(doc) } }
+    func saveActive() {
+        guard let doc = activeDocument, save(doc) else { return }
+        compileAfterExplicitSave()
+    }
+    func saveAllFromCommand() {
+        guard saveAll() else { return }
+        compileAfterExplicitSave()
+    }
+    private func compileAfterExplicitSave() {
+        guard BuildSettings.shared.mode == .manual, BuildSettings.shared.compileOnSave else { return }
+        buildNow()
+    }
     /// Returns false as soon as one document cannot be written, so a compile never
     /// runs against half-saved sources.
     @discardableResult

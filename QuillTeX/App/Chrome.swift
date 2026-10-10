@@ -23,6 +23,8 @@ enum Palette {
 enum ChromeMetrics {
     static let topBarHeight: CGFloat = 54
     static let controlHeight: CGFloat = 38
+    static let sidebarRowHeight: CGFloat = 30
+    static let sidebarDisclosureWidth: CGFloat = 28
     static let groupInset: CGFloat = 3
     static let groupedButtonSize = controlHeight - 2 * groupInset
     /// Both pane headers (breadcrumb and PDF title) share this height so their titles

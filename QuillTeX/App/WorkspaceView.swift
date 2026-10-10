@@ -62,7 +62,8 @@ private struct EditorPane: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 EditorBreadcrumb(store: store)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                if let document = store.activeDocument { EditorHistoryButtons(document: document) }
             }.padding(.horizontal, 12).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.topBar)
             Divider()
             if let document = store.activeDocument {
@@ -82,6 +83,48 @@ private struct EditorPane: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white)
             }
         }
+    }
+}
+
+private struct EditorHistoryButtons: View {
+    @ObservedObject var document: SourceDocument
+    var body: some View {
+        HStack(spacing: 2) {
+            historyButton("arrow.uturn.backward", title: "Undo", shortcut: "⌘Z", enabled: document.undoManager.canUndo) {
+                document.undoManager.undo()
+            }
+            historyButton("arrow.uturn.forward", title: "Redo", shortcut: "⇧⌘Z", enabled: document.undoManager.canRedo) {
+                document.undoManager.redo()
+            }
+        }.padding(2).quillCapsule()
+    }
+    private func historyButton(_ icon: String, title: String, shortcut: String, enabled: Bool,
+                               action: @escaping () -> Void) -> some View {
+        Button {
+            guard let editor = document.editorSurface?.textView else { return }
+            editor.window?.makeFirstResponder(editor)
+            editor.breakUndoCoalescing()
+            action()
+        } label: {
+            Image(systemName: icon).font(.system(size: 13))
+                .frame(width: 26, height: 26).contentShape(Rectangle())
+        }
+        .buttonStyle(EditorHistoryStyle()).disabled(!enabled)
+        .help("\(title) (\(shortcut))").accessibilityLabel(title)
+    }
+}
+private struct EditorHistoryStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        EditorHistoryLabel(label: configuration.label, pressed: configuration.isPressed)
+    }
+}
+private struct EditorHistoryLabel<Label: View>: View {
+    let label: Label
+    let pressed: Bool
+    @State private var hovered = false
+    var body: some View {
+        label.background(Capsule().fill(Color.black.opacity(pressed ? 0.10 : (hovered ? 0.05 : 0))))
+            .onHover { hovered = $0 }
     }
 }
 
@@ -251,6 +294,7 @@ private struct WindowConnection: NSViewRepresentable {
 private final class WindowHook: NSView, NSWindowDelegate {
     let store: ProjectStore
     private var cancellables = Set<AnyCancellable>()
+    private let auxiliaryUndoManager = UndoManager()
     /// Distance from the window's top edge to the window controls, as AppKit lays them out.
     private var nativeControlCentre: CGFloat?
     private var appliedProjectState: Bool?
@@ -319,6 +363,11 @@ private final class WindowHook: NSView, NSWindowDelegate {
                 self.applyWindowSize(ChromeMetrics.welcomeWindowSize, to: window)
             }
         }
+    }
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        if let textView = window.firstResponder as? SourceTextView { return textView.undoManager }
+        if window.firstResponder is NSTextView { return auxiliaryUndoManager }
+        return store.activeDocument?.undoManager ?? auxiliaryUndoManager
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { store.confirmClose(store.documents) }
     func windowWillClose(_ notification: Notification) {

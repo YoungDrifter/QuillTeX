@@ -6,9 +6,9 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.0.0** · macOS 14+ · Apple Silicon
+**Version 1.0.1** · macOS 14+ · Apple Silicon
 
-[下载 1.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0)
+[下载 1.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1)
 
 ![QuillTeX 01 · 启动页](docs/versions/1.0.0/images/welcome.png)
 
@@ -33,7 +33,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0) 下载 `QuillTeX-1.0.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1) 下载 `QuillTeX-1.0.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -46,6 +46,12 @@
 首次发布，支持文稿管理、多文件工程、独立标签栏、LaTeX 编辑与补全、主文件管理、本地编译、PDF 预览和双向定位。
 
 [版本介绍与演示](docs/versions/1.0.0/README.md) · [下载 1.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0)
+
+### 1.0.1 · 侧栏交互调整
+
+所有侧栏层级默认折叠，优化展开交互；补全框支持限高滚动与鼠标选择，编辑区提供撤销／重做按钮与快捷键；Manual 模式可选择保存后编译，About 显示版本与构建号。
+
+[更新说明](docs/versions/1.0.1/README.md) · [下载 1.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1)
 
 ## 本地构建
 

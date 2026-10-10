@@ -20,6 +20,17 @@ struct EditorBehaviorTests {
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
+        let visibleFrame = NSRect(x: 100, y: 50, width: 900, height: 600)
+        for caret in [NSRect(x: 990, y: 620, width: 2, height: 20),
+                      NSRect(x: 100, y: 60, width: 2, height: 20),
+                      NSRect(x: 600, y: 350, width: 2, height: 20)] {
+            let popup = CompletionPanel.popupFrame(width: 440, count: 60, caret: caret, visibleFrame: visibleFrame)
+            check(visibleFrame.insetBy(dx: 8, dy: 8).contains(popup), "long completion list stays inside the usable screen")
+            check(popup.height <= 300 && popup.width <= 440, "completion popup has a bounded area")
+        }
+        let smallPopup = CompletionPanel.popupFrame(width: 196, count: 2,
+            caret: NSRect(x: 200, y: 400, width: 2, height: 20), visibleFrame: visibleFrame)
+        check(smallPopup.height == 61, "short lists size to their contents")
         let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates")))
         let visibility = ProjectStore(library: store.library)
         visibility.documents = [SourceDocument(url: root, text: "")]
@@ -114,6 +125,7 @@ struct EditorBehaviorTests {
         surface.textView.insertText("中文 😀", replacementRange: originalRange)
         check(doc.text.contains("中文 😀"), "native insertion updates model")
         check(doc.isDirty, "native edit marks document dirty")
+        check(surface.textView.undoManager === doc.undoManager, "editor and document share the menu undo manager")
         let edited = doc.text
         BuildSettings.shared.requireMainFile = true
         store.navigate(NavigationNode(id: "child", title: child.lastPathComponent, kind: .source, url: child))
@@ -322,6 +334,41 @@ struct EditorBehaviorTests {
         check(store.root == moved && doc.url == moved, "folder change updates save location")
         check(store.save(doc), "renamed buffer saves to its new location")
         check(try! String(contentsOf: moved, encoding: .utf8) == unsavedBeforeRename, "new path contains current edits")
+        // Explicit saves compile only when the Manual-mode preference is enabled.
+        let settings = BuildSettings.shared
+        let previousMode = settings.mode
+        let previousCompileOnSave = settings.compileOnSave
+        let previousTeXBin = settings.texBinDirectory
+        defer {
+            settings.mode = previousMode
+            settings.compileOnSave = previousCompileOnSave
+            settings.texBinDirectory = previousTeXBin
+            settings.rescan()
+        }
+        let fakeTools = directory.appendingPathComponent("fake-tex")
+        try FileManager.default.createDirectory(at: fakeTools, withIntermediateDirectories: true)
+        for name in ["latexmk", "xelatex", "pdflatex", "lualatex"] {
+            let executable = fakeTools.appendingPathComponent(name)
+            try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        }
+        settings.texBinDirectory = fakeTools.path
+        settings.rescan()
+        settings.mode = .manual
+        settings.compileOnSave = false
+        store.build.resetProject()
+        store.saveActive()
+        check(!store.build.status.isRunning, "manual Save remains save-only when the option is off")
+        settings.compileOnSave = true
+        store.saveActive()
+        check(store.build.status.isRunning, "successful manual Save triggers compilation when enabled")
+        store.build.cancel()
+        store.saveAllFromCommand()
+        check(store.build.status.isRunning, "Save All triggers compilation after saving the project")
+        store.build.cancel()
+        settings.mode = .auto
+        store.saveActive()
+        check(!store.build.status.isRunning, "AUTO Save does not duplicate its scheduled compile")
         print("PASS: \(checks) editor and document assertions")
     }
 }

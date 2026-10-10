@@ -29,11 +29,22 @@ struct ProjectCommands: Commands {
     @ObservedObject private var updater = AppUpdater.shared
     @FocusedObject private var store: ProjectStore?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.undoManager) private var undoManager
+    private var editUndoManager: UndoManager? {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView { return textView.undoManager }
+        return store?.activeDocument?.undoManager ?? undoManager
+    }
     private func openProjectPanel() {
         if let store { store.openPanel() }
         else { AppDelegate.pendingOpenPanel = false; openWindow(id: "workspace") }
     }
     var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") { editUndoManager?.undo() }
+                .keyboardShortcut("z").disabled(editUndoManager?.canUndo != true)
+            Button("Redo") { editUndoManager?.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(editUndoManager?.canRedo != true)
+        }
         CommandGroup(after: .appSettings) {
             Button("Check for Updates…") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
@@ -53,7 +64,7 @@ struct ProjectCommands: Commands {
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") { store?.saveActive() }.keyboardShortcut("s").disabled(store?.activeDocument == nil)
-            Button("Save All") { store?.saveAll() }.keyboardShortcut("s", modifiers: [.command, .option]).disabled(store?.root == nil)
+            Button("Save All") { store?.saveAllFromCommand() }.keyboardShortcut("s", modifiers: [.command, .option]).disabled(store?.root == nil)
             Button("Close Current Subfile") {
                 if let document = store?.activeDocument { store?.close(document) }
             }.keyboardShortcut("w", modifiers: [.command, .shift]).disabled(store?.activeDocument == nil || store?.activeDocument?.url == store?.root)

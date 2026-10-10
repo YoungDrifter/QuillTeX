@@ -23,7 +23,7 @@ struct SettingsView: View {
     @State private var draftBibliography = 0
     @State private var hoveringAddStrategy = false
     private enum Field { case texBin, output }
-    private var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0" }
+    private var version: String { AppUpdater.currentDisplayVersion }
     private var icon: NSImage { NSImage(named: "AppIcon") ?? NSApp.applicationIconImage }
 
     init(settings: BuildSettings = .shared, initialSection: Section = .compilation) {
@@ -118,7 +118,13 @@ struct SettingsView: View {
     }
 
     private var automation: some View {
-        SettingsPage(title: "Automation", subtitle: "Set save and compile delays.") {
+        SettingsPage(title: "Automation", subtitle: "Configure saving and compilation.") {
+            SettingsCard(title: "Manual mode") {
+                SettingsRow(title: "Compile after saving", subtitle: "Compile the main file after Save or Save All.") {
+                    Toggle("Compile after saving", isOn: $settings.compileOnSave)
+                        .labelsHidden().toggleStyle(.switch)
+                }
+            }
             SettingsCard(title: "After typing") {
                 SettingsRow(title: "Save after") {
                     Stepper(value: $settings.autoSaveDelay, in: 0.2...3, step: 0.1) {

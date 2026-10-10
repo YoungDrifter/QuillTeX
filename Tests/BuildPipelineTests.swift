@@ -34,6 +34,11 @@ struct BuildPipelineTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = BuildSettings(defaults: defaults, detectImmediately: false)
         check(settings.mode == .manual, "manual is the default mode")
+        check(!settings.compileOnSave, "manual save compilation is opt-in")
+        settings.compileOnSave = true
+        check(BuildSettings(defaults: defaults, detectImmediately: false).compileOnSave, "compile after saving survives restart")
+        settings.compileOnSave = false
+        check(!BuildSettings(defaults: defaults, detectImmediately: false).compileOnSave, "compile after saving can be disabled persistently")
         check(settings.strategy == .automatic, "automatic is the default strategy")
         settings.mode = .auto
         let custom = BuildStrategy.custom(name: "Engine ×4", engineRuns: 4, bibliography: nil)

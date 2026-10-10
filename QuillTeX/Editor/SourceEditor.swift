@@ -66,6 +66,8 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 16, height: 18)
         textView.isRichText = false; textView.importsGraphics = false
+        textView.documentUndoManager = document.undoManager
+        textView.completionAccepted = { [weak self] in _ = self?.textView.acceptPanelSelection() }
         textView.allowsUndo = true; textView.usesFindBar = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -175,7 +177,10 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
 }
 
 final class SourceTextView: NSTextView {
-    private let documentUndoManager = UndoManager()
+    var documentUndoManager = UndoManager()
+    var completionAccepted: (() -> Void)? {
+        didSet { completionPanel.onAccept = completionAccepted }
+    }
     override var undoManager: UndoManager? { documentUndoManager }
     var compositionEnded: (() -> Void)?
     /// Called with the 1-based line under a ⌘-click, for source → PDF sync.
@@ -324,7 +329,7 @@ final class SourceTextView: NSTextView {
     }
 
     @discardableResult
-    private func acceptPanelSelection() -> Bool {
+    func acceptPanelSelection() -> Bool {
         guard let suggestion = panelSuggestion, let item = completionPanel.selectedItem else { return false }
         completionPanel.hide()
         panelSuggestion = nil

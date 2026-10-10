@@ -87,7 +87,10 @@ private struct OutlineRow: View {
     let mode: SidebarMode
     @ObservedObject var store: ProjectStore
     private var key: String { mode.rawValue + ":" + node.id }
-    private var expanded: Bool { !store.collapsedNodes.contains(key) }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hover = false
+    private var expanded: Bool { store.expandedNodes.contains(key) }
+    private var togglesOnRowClick: Bool { node.kind == .folder || node.kind == .group }
     private var icon: String {
         switch node.kind {
         case .group: node.id == "labels" ? "tag" : "list.bullet.rectangle"
@@ -106,51 +109,39 @@ private struct OutlineRow: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                if !node.children.isEmpty {
-                    Button { toggle() } label: {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .medium)).frame(width: 12, height: 24)
-                    }.buttonStyle(.plain).accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(node.title)")
-                } else { Color.clear.frame(width: 12, height: 24) }
-                Button {
-                    if node.kind == .folder {
-                        store.selectedFolder = node.url
-                        store.selectedNodes[mode] = node.id
+            HStack(spacing: 0) {
+                if togglesOnRowClick {
+                    Button {
+                        if node.kind == .folder {
+                            store.selectedFolder = node.url
+                            store.selectedNodes[mode] = node.id
+                        }
                         toggle()
-                    } else if node.kind == .group { toggle() }
-                    else { store.navigate(node) }
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: node.isMissing ? "exclamationmark.triangle" : icon)
-                            .font(.system(size: 12)).frame(width: 15).foregroundStyle(Color.black)
-                        // Long section titles wrap instead of being cut off; the row grows
-                        // to fit and the disclosure chevron stays centred beside it.
-                        Text(node.title)
-                            .font(.system(size: 12, weight: node.kind == .group ? .medium : .regular))
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        // Groups always show their count, including a zero.
-                        if let count = node.count {
-                            Text("\(count)").font(.system(size: 10)).foregroundStyle(.secondary)
-                                .padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
+                    } label: {
+                        HStack(spacing: 0) {
+                            disclosure
+                            rowLabel
                         }
-                        if node.kind == .source, node.url == store.root {
-                            Text("Main").font(.system(size: 9, weight: .medium)).foregroundStyle(Color.black)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Color.white, in: Capsule())
-                                .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.7))
-                                .accessibilityLabel("Main File")
-                        }
+                        .contentShape(Rectangle())
                     }
-                    .padding(.vertical, 3)
-                    .frame(minHeight: 30, alignment: .leading)
-                    .contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                    .buttonStyle(.plain)
+                    .accessibilityValue(node.children.isEmpty ? "" : (expanded ? "Expanded" : "Collapsed"))
+                } else {
+                    if !node.children.isEmpty {
+                        Button { toggle() } label: { disclosure }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(node.title)")
+                            .help("\(expanded ? "Collapse" : "Expand") \(node.title)")
+                    } else { disclosure }
+                    Button { store.navigate(node) } label: { rowLabel }
+                        .buttonStyle(.plain)
+                }
             }
             .padding(.leading, CGFloat(min(depth, 12)) * 12 + 3).padding(.trailing, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(store.selectedNodes[mode] == node.id ? Palette.selectionSoft : .clear))
+            .background(RoundedRectangle(cornerRadius: 8).fill(
+                store.selectedNodes[mode] == node.id ? Palette.selectionSoft :
+                    (hover ? Palette.selectionSoft : .clear)))
+            .onHover { hover = $0 }
             .help([node.url.map { store.relativePath($0) }, node.detail].compactMap { $0 }.joined(separator: "\n"))
             .contextMenu {
                 if let url = node.url {
@@ -162,14 +153,85 @@ private struct OutlineRow: View {
                     if node.kind == .resource { Button("Open with Default App") { NSWorkspace.shared.open(url) } }
                 }
             }
-            if expanded {
-                ForEach(node.children) { child in OutlineRow(node: child, depth: depth + 1, mode: mode, store: store) }
+            if expanded && !node.children.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(node.children) { child in OutlineRow(node: child, depth: depth + 1, mode: mode, store: store) }
+                }
+                .transition(reduceMotion ? .identity : .modifier(
+                    active: SidebarBranchReveal(progress: 0), identity: SidebarBranchReveal(progress: 1)))
             }
         }
     }
-    private func toggle() {
-        if expanded { store.collapsedNodes.insert(key) } else { store.collapsedNodes.remove(key) }
+    private var disclosure: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 9, weight: .medium))
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+            .opacity(node.children.isEmpty ? 0 : 1)
+            .frame(width: ChromeMetrics.sidebarDisclosureWidth, height: ChromeMetrics.sidebarRowHeight)
+            .contentShape(Rectangle())
+            .accessibilityHidden(true)
     }
+    private var rowLabel: some View {
+        HStack(spacing: 7) {
+            Image(systemName: node.isMissing ? "exclamationmark.triangle" : icon)
+                .font(.system(size: 12)).frame(width: 15).foregroundStyle(Color.black)
+            Text(node.title)
+                .font(.system(size: 12, weight: node.kind == .group ? .medium : .regular))
+                .multilineTextAlignment(.leading)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if let count = node.count {
+                Text("\(count)").font(.system(size: 10)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
+            }
+            if node.kind == .source, node.url == store.root {
+                Text("Main").font(.system(size: 9, weight: .medium)).foregroundStyle(Color.black)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.white, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.7))
+                    .accessibilityLabel("Main File")
+            }
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, minHeight: ChromeMetrics.sidebarRowHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    private func toggle() {
+        guard !node.children.isEmpty else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            if expanded { store.expandedNodes.remove(key) } else { store.expandedNodes.insert(key) }
+        }
+    }
+}
+
+/// Reveal a branch at its natural width while smoothly changing its occupied height.
+/// Children keep their layout during the transition, rather than stretching or bouncing.
+private struct SidebarBranchReveal: ViewModifier, Animatable {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func body(content: Content) -> some View {
+        SidebarBranchLayout(progress: progress) { content }
+            .clipped()
+            .opacity(progress)
+    }
+}
+
+private struct SidebarBranchLayout: Layout {
+    var progress: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: size.width, height: size.height * progress)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        let size = child.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        child.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(size))
+    }
+
 }
 
 private struct SidebarModeButton: View {

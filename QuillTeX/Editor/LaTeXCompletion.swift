@@ -105,7 +105,6 @@ enum LaTeXCompletion {
 
     static func items(for suggestion: Suggestion, labels: [String], citations: [String]) -> [Item] {
         candidates(for: suggestion, labels: labels, citations: citations)
-            .prefix(60)
             .map { Item(title: $0) }
     }
 
