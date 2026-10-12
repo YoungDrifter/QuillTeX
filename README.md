@@ -6,9 +6,9 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.0.1** · macOS 14+ · Apple Silicon
+**Version 1.0.2** · macOS 14+ · Apple Silicon
 
-[下载 1.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1)
+[下载 1.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2)
 
 ![QuillTeX 01 · 启动页](docs/versions/1.0.0/images/welcome.png)
 
@@ -33,7 +33,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1) 下载 `QuillTeX-1.0.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2) 下载 `QuillTeX-1.0.2.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -52,6 +52,12 @@
 所有侧栏层级默认折叠，优化展开交互；补全框支持限高滚动与鼠标选择，编辑区提供撤销／重做按钮与快捷键；Manual 模式可选择保存后编译，About 显示版本与构建号。
 
 [更新说明](docs/versions/1.0.1/README.md) · [下载 1.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.1)
+
+### 1.0.2 · 界面统一与最近项目
+
+统一顶栏、标签栏、侧栏与所有弹层的配色、圆角与描边，图标按钮改为一致的圆形点击区；顶栏新增历史记录入口，可直接切换到最近项目；打开文稿改用居中的加号图标，分栏图标改为右侧填充；修复连续点击顶栏按钮边缘误触发窗口放大的问题。
+
+[更新说明](docs/versions/1.0.2/README.md) · [下载 1.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2)
 
 ## 本地构建
 

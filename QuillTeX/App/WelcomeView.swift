@@ -140,29 +140,36 @@ private struct RecentRow: View {
     @ObservedObject var library: DocumentLibrary
     @State private var hover = false
     var body: some View {
-        Button {
-            store.openProject(item.url, explicitRoot: true)
-            if store.root == item.url.standardizedFileURL { store.showLibrary = false }
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "doc.text").font(.system(size: 18, weight: .regular)).foregroundStyle(.black)
-                    .frame(width: 38, height: 44).background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(1)
-                    Text(item.url.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
-                Spacer(minLength: 10)
-                Text(item.openedAt, style: .date).font(.system(size: 10)).foregroundStyle(.tertiary)
-            }.padding(12).contentShape(Rectangle())
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(hover ? 0.035 : 0)))
-        }.buttonStyle(.plain).onHover { hover = $0 }.help(item.path)
-            .contextMenu {
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-                Button("Remove from Recents") {
-                    do { try library.remove(item) } catch { store.showError("Could Not Update Recents", error.localizedDescription) }
-                }
-            }
+        HStack(spacing: 0) {
+            Button {
+                store.openProject(item.url, explicitRoot: true)
+                if store.root == item.url.standardizedFileURL { store.showLibrary = false }
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "doc.text").font(.system(size: 18, weight: .regular)).foregroundStyle(.black)
+                        .frame(width: 38, height: 44).background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(1)
+                        Text(item.url.deletingLastPathComponent().path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer(minLength: 10)
+                    Text(item.openedAt, style: .date).font(.system(size: 10)).foregroundStyle(.tertiary)
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            // Deleting is the row's only action besides opening it: no context
+            // menu, and the control only appears while the pointer is on the row.
+            QuillPopupDeleteButton(title: item.title, visible: hover) { remove() }
+                .padding(.trailing, 12)
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(hover ? 0.035 : 0)))
+        .onHover { hover = $0 }
+        .help(item.path)
+    }
+
+    private func remove() {
+        do { try library.remove(item) }
+        catch { store.showError("Could Not Update Recents", error.localizedDescription) }
     }
 }
 

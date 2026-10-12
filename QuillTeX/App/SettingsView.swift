@@ -106,7 +106,7 @@ struct SettingsView: View {
                     .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 12).frame(height: 28)
-                    .background(Color.black.opacity(hoveringAddStrategy ? 0.06 : 0.025), in: Capsule())
+                    .background(Palette.primaryInk.opacity(hoveringAddStrategy ? Palette.chromeHoverOpacity : 0.025), in: Capsule())
                     .overlay(Capsule().strokeBorder(SettingsStyle.border, lineWidth: 1))
                     .contentShape(Capsule())
                     .onHover { hoveringAddStrategy = $0 }
@@ -177,7 +177,7 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(24).frame(width: 380)
+        .quillSheetContent().frame(width: 380)
         .onAppear {
             focused = nil
             DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }

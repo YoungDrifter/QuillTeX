@@ -80,7 +80,7 @@ private struct EditorPane: View {
                     }.buttonStyle(.plain).padding(.top, 4)
                     Text("⌘O").font(.caption).foregroundStyle(.tertiary)
                     Spacer()
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.white)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.controlSurface)
             }
         }
     }
@@ -123,7 +123,7 @@ private struct EditorHistoryLabel<Label: View>: View {
     let pressed: Bool
     @State private var hovered = false
     var body: some View {
-        label.background(Capsule().fill(Color.black.opacity(pressed ? 0.10 : (hovered ? 0.05 : 0))))
+        label.background(Capsule().fill(Palette.primaryInk.opacity(pressed ? Palette.pressedOpacity : (hovered ? Palette.chromeHoverOpacity : 0))))
             .onHover { hovered = $0 }
     }
 }
@@ -217,7 +217,7 @@ private struct EditorBreadcrumb: View {
                 Text(url.deletingPathExtension().lastPathComponent)
                     .font(.system(size: 12, weight: current ? .medium : .regular)).lineLimit(1)
             }
-            .foregroundStyle(current ? Color.primary : Color.secondary)
+            .foregroundStyle(current ? Palette.primaryInk : Color.secondary)
             .padding(.horizontal, 7).frame(height: 25)
             .contentShape(RoundedRectangle(cornerRadius: 6))
         }

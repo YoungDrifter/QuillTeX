@@ -111,10 +111,7 @@ private struct CompletionList: View {
             .onAppear { proxy.scrollTo(selection) }
         }
         .frame(width: width, height: height)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
-        .clipShape(RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.primary.opacity(0.10)))
-        .preferredColorScheme(.light)
+        .quillPanelSurface()
     }
 }
 
@@ -131,11 +128,10 @@ private struct CompletionRow: View {
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(Color.primary)
+            .foregroundStyle(Palette.primaryInk)
             .padding(.horizontal, 9)
             .frame(height: 24)
-            .background(RoundedRectangle(cornerRadius: 6)
-                .fill(Color.primary.opacity(selected ? 0.10 : (hovered ? 0.06 : 0))))
+            .quillPopupRow(active: selected || hovered)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

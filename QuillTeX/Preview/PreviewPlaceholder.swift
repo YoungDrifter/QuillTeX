@@ -17,7 +17,7 @@ struct PreviewPlaceholder: View {
                     HStack { Spacer(); Text("PDF").font(.system(size: 26, weight: .regular, design: .serif)).foregroundStyle(Color.black.opacity(0.09)); Spacer() }
                     Spacer()
                 }.padding(25).frame(width: 190, height: 258)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 2))
+                    .background(Palette.previewCanvas, in: RoundedRectangle(cornerRadius: 2))
                     .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Color.black.opacity(0.035)))
                     .shadow(color: .black.opacity(0.045), radius: 14, y: 4)
                     .accessibilityHidden(true)

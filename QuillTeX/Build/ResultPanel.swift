@@ -64,9 +64,9 @@ struct ResultPanel: View {
         return VStack(spacing: 0) {
             if showsLog {
                 ZStack {
-                    Color.primary.opacity(resizeHovered || dragStartHeight != nil ? 0.07 : 0.025)
+                    Palette.primaryInk.opacity(resizeHovered || dragStartHeight != nil ? 0.07 : 0.025)
                     Capsule()
-                        .fill(Color.primary.opacity(resizeHovered || dragStartHeight != nil ? 0.45 : 0.18))
+                        .fill(Palette.primaryInk.opacity(resizeHovered || dragStartHeight != nil ? 0.45 : 0.18))
                         .frame(width: resizeHovered || dragStartHeight != nil ? 44 : 28, height: 3)
                 }
                     .frame(height: 10)
@@ -147,7 +147,7 @@ private struct DiagnosticRow: View {
         } label: {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: icon).font(.system(size: 12)).frame(width: 15)
-                    .foregroundStyle(diagnostic.severity == .error ? Color.primary : Color.secondary)
+                    .foregroundStyle(diagnostic.severity == .error ? Palette.primaryInk : Color.secondary)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(diagnostic.summary)
                         .font(.system(size: 11))
@@ -162,7 +162,7 @@ private struct DiagnosticRow: View {
             .padding(.horizontal, 6).padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(hover ? 0.05 : 0)))
+            .background(RoundedRectangle(cornerRadius: 7).fill(Palette.primaryInk.opacity(hover ? Palette.chromeHoverOpacity : 0)))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }

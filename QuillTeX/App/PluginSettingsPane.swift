@@ -13,7 +13,7 @@ struct PluginSettingsPane: View {
 
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 48).padding(.horizontal, 24)
-                .background(SettingsStyle.secondarySurface, in: RoundedRectangle(cornerRadius: 12))
+                .background(SettingsStyle.secondarySurface, in: RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius))
             } else {
                 SettingsCard(title: "Available plugins") {
                     ForEach(Array(manager.plugins.enumerated()), id: \.element.id) { index, plugin in

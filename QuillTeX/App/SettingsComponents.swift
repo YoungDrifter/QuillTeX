@@ -9,9 +9,9 @@ enum SettingsStyle {
     static let padding: CGFloat = 28
     static let rowHeight: CGFloat = 40
     static let surface = Color.white
-    static let secondarySurface = Color.black.opacity(0.018)
-    static let selection = Color.black.opacity(0.065)
-    static let border = Color.black.opacity(0.09)
+    static let secondarySurface = Palette.subtleSurface
+    static let selection = Color.black.opacity(Palette.selectedOpacity)
+    static let border = Palette.hairline
 }
 
 struct SettingsCategory<ID: Hashable>: Identifiable {
@@ -58,7 +58,7 @@ struct SettingsLayout<ID: Hashable, Content: View>: View {
             content().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(SettingsStyle.surface)
-        .foregroundStyle(Color.black)
+        .foregroundStyle(Palette.primaryInk)
         .tint(.black)
         .frame(minWidth: SettingsStyle.minimumSize.width, idealWidth: SettingsStyle.windowSize.width,
                minHeight: SettingsStyle.minimumSize.height, idealHeight: SettingsStyle.windowSize.height)
@@ -126,8 +126,9 @@ struct SettingsCard<Content: View>: View {
             VStack(alignment: .leading, spacing: 0, content: content)
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(SettingsStyle.surface, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SettingsStyle.border, lineWidth: 1))
+                .background(SettingsStyle.surface, in: RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius))
+                .overlay(RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius).strokeBorder(SettingsStyle.border, lineWidth: 0.7))
+                .shadow(color: .black.opacity(0.025), radius: 4, y: 2)
         }
     }
 }
@@ -192,6 +193,7 @@ private struct SettingsWindowConfiguration: NSViewRepresentable {
         func configure() {
             guard let window else { return }
             window.title = "\(appName) Settings"
+            window.titleVisibility = .visible
             window.appearance = NSAppearance(named: .aqua)
             window.contentMinSize = SettingsStyle.minimumSize
             if let button = window.standardWindowButton(.closeButton) {

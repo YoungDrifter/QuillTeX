@@ -401,9 +401,9 @@ private struct PreviewZoomButton: View {
         Button(action: action) {
             Image(systemName: icon)
             .font(.system(size: 16))
-            .foregroundStyle(.black)
+            .foregroundStyle(Palette.primaryInk)
             .frame(width: 28, height: 28)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(selected ? 0.09 : (hovered ? 0.06 : 0))))
+            .background(RoundedRectangle(cornerRadius: 5).fill(Palette.primaryInk.opacity(selected ? Palette.selectedOpacity : (hovered ? Palette.chromeHoverOpacity : 0))))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

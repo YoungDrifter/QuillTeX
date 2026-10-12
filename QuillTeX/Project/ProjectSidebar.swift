@@ -50,8 +50,8 @@ struct ProjectSidebar: View {
             }.buttonStyle(.plain)
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.55)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.black.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius).fill(Palette.controlSurface))
+        .overlay(RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius).strokeBorder(Palette.hairline))
         .padding(.horizontal, 12).padding(.bottom, 10)
     }
     private var sidebarModes: some View {
@@ -139,8 +139,8 @@ private struct OutlineRow: View {
             }
             .padding(.leading, CGFloat(min(depth, 12)) * 12 + 3).padding(.trailing, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(
-                store.selectedNodes[mode] == node.id ? Palette.selectionSoft :
-                    (hover ? Palette.selectionSoft : .clear)))
+                store.selectedNodes[mode] == node.id ? Palette.primaryInk.opacity(Palette.selectedOpacity) :
+                    Palette.primaryInk.opacity(hover ? Palette.chromeHoverOpacity : 0)))
             .onHover { hover = $0 }
             .help([node.url.map { store.relativePath($0) }, node.detail].compactMap { $0 }.joined(separator: "\n"))
             .contextMenu {
@@ -174,7 +174,7 @@ private struct OutlineRow: View {
     private var rowLabel: some View {
         HStack(spacing: 7) {
             Image(systemName: node.isMissing ? "exclamationmark.triangle" : icon)
-                .font(.system(size: 12)).frame(width: 15).foregroundStyle(Color.black)
+                .font(.system(size: 12)).frame(width: 15).foregroundStyle(Palette.primaryInk)
             Text(node.title)
                 .font(.system(size: 12, weight: node.kind == .group ? .medium : .regular))
                 .multilineTextAlignment(.leading)
@@ -186,10 +186,10 @@ private struct OutlineRow: View {
                     .padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
             }
             if node.kind == .source, node.url == store.root {
-                Text("Main").font(.system(size: 9, weight: .medium)).foregroundStyle(Color.black)
+                Text("Main").font(.system(size: 9, weight: .medium)).foregroundStyle(Palette.primaryInk)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Color.white, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 0.7))
+                    .background(Palette.controlSurface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.7))
                     .accessibilityLabel("Main File")
             }
         }
@@ -238,24 +238,16 @@ private struct SidebarModeButton: View {
     let mode: SidebarMode
     let selected: Bool
     let action: () -> Void
-    @State private var hover = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: action) {
-            Image(systemName: mode.icon).font(.system(size: 17, weight: selected ? .medium : .regular))
-                .foregroundStyle(Color.black)
-                .frame(width: 34, height: 34).contentShape(Capsule())
-                .background {
-                    Capsule().fill(selected ? Color.white : .clear)
-                        .overlay(Capsule().strokeBorder(selected ? Color.black.opacity(0.16) : .clear, lineWidth: 0.8))
-                        .shadow(color: .black.opacity(selected ? 0.13 : 0), radius: 2.5, y: 1.5)
-                }
-        }.buttonStyle(.plain)
-            .scaleEffect(hover && !reduceMotion ? 1.04 : 1)
-            .onHover { hover = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hover)
-            .help(mode.rawValue).accessibilityLabel(mode.rawValue)
-            .accessibilityAddTraits(selected ? .isSelected : [])
+            Image(systemName: mode.icon)
+                .font(.system(size: ChromeMetrics.chromeIconSize, weight: .regular))
+                .frame(width: 34, height: 34).contentShape(Circle())
+        }
+        .buttonStyle(ChromeButtonStyle(selected: selected))
+        .modifier(ChromeHoverFeedback())
+        .help(mode.rawValue).accessibilityLabel(mode.rawValue)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -264,32 +256,16 @@ private struct SidebarActionButton: View {
     let title: String
     let help: String
     let action: () -> Void
-    @State private var hover = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(Palette.primaryInk)
                 .frame(width: 28, height: 28).contentShape(Circle())
-                .background {
-                    Circle().fill(Color.white.opacity(hover ? 0.65 : 0.3))
-                        .overlay(Circle().strokeBorder(Color.white.opacity(hover ? 0.8 : 0.4), lineWidth: 0.5))
-                        .shadow(color: .black.opacity(hover ? 0.06 : 0.02), radius: 2, y: 1)
-                }
         }
-        .buttonStyle(SidebarActionPressStyle())
-        .scaleEffect(hover ? 1.06 : 1)
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: hover)
-        .onHover { hover = $0 }
+        .buttonStyle(ChromeButtonStyle())
+        .modifier(ChromeHoverFeedback())
         .help(title + "\n" + help).accessibilityLabel(title)
-    }
-}
-
-private struct SidebarActionPressStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
