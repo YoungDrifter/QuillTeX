@@ -131,6 +131,19 @@ struct WorkspaceLayoutTests {
         check((controller.splitView as! WorkspaceDividerView).effectiveDividerRects.isEmpty,
               "collapsed sidebar leaves no stale resize region")
         verifyCursorRegion(controller.content.splitView as! WorkspaceDividerView)
+        window.setContentSize(NSSize(width: 1280, height: 800))
+        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 4)
+        settle()
+        controller.restoreLayout(sidebarWidth: 315, editorFraction: 0.64)
+        settle()
+        check(abs(sidebarWidth() - 315) < 1, "restored sidebar width is applied independently")
+        check(abs(controller.content.editorFraction - 0.64) < 0.01, "restored editor fraction is applied to mounted panes")
+        var reported: (Double, Double)?
+        controller.onLayoutChange = { reported = ($0, $1) }
+        controller.content.splitView.setPosition(400, ofDividerAt: 0)
+        settle()
+        check(reported != nil && abs(reported!.0 - 315) < 1, "divider changes report layout without changing sidebar width")
+        check(abs(reported!.1 - controller.content.editorFraction) < 0.01, "divider changes report the actual content fraction")
         print("PASS: \(checks) workspace-layout assertions")
     }
 }

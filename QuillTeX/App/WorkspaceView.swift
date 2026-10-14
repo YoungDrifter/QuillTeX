@@ -13,6 +13,15 @@ struct WorkspaceView: View {
                 WelcomeView(store: store, library: store.library)
             } else {
                 TopBar(store: store)
+                if let message = store.recoveryMessage {
+                    HStack(spacing: 8) {
+                        Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                            .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
+                    }.padding(.horizontal, 14).padding(.vertical, 7).background(Palette.subtleSurface)
+                    Divider()
+                }
                 WorkspaceSplit(store: store)
             }
         }
@@ -25,6 +34,11 @@ struct WorkspaceView: View {
          .sheet(isPresented: $store.showLibrary) { WelcomeView(store: store, library: store.library, isSheet: true).frame(width: 880, height: 560) }
         .sheet(isPresented: Binding(get: { store.showTemplateChooser && store.root != nil && !store.showLibrary }, set: { store.showTemplateChooser = $0 })) { TemplateChooser(store: store, library: store.library) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.checkExternalChanges(); store.library.reloadTemplates() }
+        .onChange(of: store.sidebarVisible) { _, _ in store.scheduleSessionSave() }
+        .onChange(of: store.sidebarMode) { _, _ in store.scheduleSessionSave() }
+        .onChange(of: store.paneMode) { _, _ in store.scheduleSessionSave() }
+        .onChange(of: store.isTabBarVisible) { _, _ in store.scheduleSessionSave() }
+        .onChange(of: store.expandedNodes) { _, _ in store.scheduleSessionSave() }
         .onOpenURL { url in
             guard url.isFileURL else { return }
             // SwiftUI owns the application delegate and can deliver Finder opens
@@ -33,6 +47,7 @@ struct WorkspaceView: View {
             else { AppDelegate.openDocuments([url]) }
         }
         .onAppear {
+            let restoredURL = AppDelegate.consumeRestoredDocument()
             AppDelegate.openWorkspace = { url in openWindow(id: "workspace", value: url) }
             if store.root == nil, let openURL { store.openProject(openURL) }
 
@@ -52,6 +67,7 @@ struct WorkspaceView: View {
             // The command-line document belongs to the launch window only. Reading it
             // here on every appearance made each new window reopen the same project.
             if store.root == nil, let url = AppDelegate.consumeLaunchDocument() { store.openProject(url) }
+            if store.root == nil, let url = restoredURL { store.openProject(url, explicitRoot: true) }
         }
     }
 }
@@ -273,13 +289,29 @@ private struct FolderContentsMenu: View {
 
 private struct WorkspaceSplit: NSViewControllerRepresentable {
     @ObservedObject var store: ProjectStore
+    final class Coordinator { var root: URL? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSViewController(context: Context) -> WorkspaceSplitController {
-        WorkspaceSplitController(sidebar: NSHostingController(rootView: ProjectSidebar(store: store)),
+        let controller = WorkspaceSplitController(sidebar: NSHostingController(rootView: ProjectSidebar(store: store)),
                                  editor: NSHostingController(rootView: EditorPane(store: store)),
                                  preview: NSHostingController(rootView: PreviewPane(store: store)),
                                  tabBar: NSHostingController(rootView: FileTabBar(store: store)))
+        controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
+        context.coordinator.root = store.root
+        controller.onLayoutChange = { [weak store] width, fraction in
+            guard let store else { return }
+            if abs(store.sidebarWidth - width) > 0.5 || abs(store.editorFraction - fraction) > 0.001 {
+                store.sidebarWidth = width; store.editorFraction = fraction
+                store.scheduleSessionSave()
+            }
+        }
+        return controller
     }
     func updateNSViewController(_ controller: WorkspaceSplitController, context: Context) {
+        if context.coordinator.root != store.root {
+            context.coordinator.root = store.root
+            controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
+        }
         controller.update(sidebarVisible: store.sidebarVisible, paneMode: store.paneMode,
                           splitLayoutVersion: store.splitLayoutVersion, showTabs: store.isTabBarVisible)
     }
@@ -369,7 +401,11 @@ private final class WindowHook: NSView, NSWindowDelegate {
         if window.firstResponder is NSTextView { return auxiliaryUndoManager }
         return store.activeDocument?.undoManager ?? auxiliaryUndoManager
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { store.confirmClose(store.documents) }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard store.confirmClose(store.documents) else { return false }
+        store.finishClosing()
+        return true
+    }
     func windowWillClose(_ notification: Notification) {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()

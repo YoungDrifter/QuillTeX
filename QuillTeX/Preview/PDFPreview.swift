@@ -18,12 +18,14 @@ final class PDFPreviewControls: ObservableObject {
         guard let view, view.document != nil else { return }
         manualZoom()
         view.scaleFactor = min(view.maxScaleFactor, view.scaleFactor + 0.25)
+        view.scheduleReadingStateReport()
     }
 
     func zoomOut() {
         guard let view, view.document != nil else { return }
         manualZoom()
         view.scaleFactor = max(view.minScaleFactor, view.scaleFactor - 0.25)
+        view.scheduleReadingStateReport()
     }
 
     func fitPage() {
@@ -47,6 +49,8 @@ struct PDFPreview: NSViewRepresentable {
     let version: Int
     let controls: PDFPreviewControls
     var highlight: PDFHighlight?
+    var readingState: PDFReadingState? = nil
+    var onReadingStateChanged: ((PDFReadingState) -> Void)? = nil
     var onCommandClick: (Int, CGPoint) -> Void
 
     func makeNSView(context: Context) -> SyncPDFView {
@@ -61,15 +65,17 @@ struct PDFPreview: NSViewRepresentable {
         view.maxScaleFactor = 4
         view.backgroundColor = NSColor.white
         view.onCommandClick = onCommandClick
+        view.onReadingStateChanged = onReadingStateChanged
         controls.attach(view)
-        if let pdfURL { context.coordinator.load(pdfURL, into: view, version: version) }
+        if let pdfURL { context.coordinator.load(pdfURL, into: view, version: version, readingState: readingState) }
         return view
     }
 
     func updateNSView(_ view: SyncPDFView, context: Context) {
         controls.attach(view)
         view.onCommandClick = onCommandClick
-        if let pdfURL { context.coordinator.load(pdfURL, into: view, version: version) }
+        view.onReadingStateChanged = onReadingStateChanged
+        if let pdfURL { context.coordinator.load(pdfURL, into: view, version: version, readingState: readingState) }
         else { context.coordinator.clear(view) }
         if let highlight { context.coordinator.apply(highlight, to: view) }
     }
@@ -80,19 +86,23 @@ struct PDFPreview: NSViewRepresentable {
         private var loadedVersion = -1
         private var appliedHighlight = -1
         private var loadedData: Data?
+        private var loadedURL: URL?
 
         func clear(_ view: SyncPDFView) {
             loadedVersion = -1
             appliedHighlight = -1
             loadedData = nil
+            loadedURL = nil
             view.clearPreview()
         }
 
         /// Reload only when a build produced a new file, restoring the reader's place.
-        func load(_ url: URL, into view: SyncPDFView, version: Int) {
-            guard version != loadedVersion else { return }
+        func load(_ url: URL, into view: SyncPDFView, version: Int, readingState: PDFReadingState? = nil) {
+            let url = url.standardizedFileURL
+            let isNewDocument = loadedURL != url
+            guard version != loadedVersion || isNewDocument else { return }
             guard let data = try? Data(contentsOf: url) else { return }
-            if data == loadedData {
+            if data == loadedData, !isNewDocument {
                 loadedVersion = version
                 return
             }
@@ -103,13 +113,16 @@ struct PDFPreview: NSViewRepresentable {
             guard document.pageCount > 0 else { return }
             loadedVersion = version
             loadedData = data
-            view.replacePreview(with: document)
+            loadedURL = url
+            if isNewDocument { appliedHighlight = -1 }
+            view.replacePreview(with: document, readingState: isNewDocument ? readingState : nil,
+                                preservesReadingPosition: !isNewDocument)
         }
 
         func apply(_ highlight: PDFHighlight, to view: SyncPDFView) {
             guard highlight.generation != appliedHighlight else { return }
             appliedHighlight = highlight.generation
-            view.reveal(page: highlight.page, point: highlight.point)
+            view.reveal(highlight)
         }
     }
 }
@@ -117,24 +130,36 @@ struct PDFPreview: NSViewRepresentable {
 /// `PDFView` that reports ⌘-clicks so a click in the page can open the source line.
 final class SyncPDFView: PDFView {
     var onCommandClick: ((Int, CGPoint) -> Void)?
-    enum ZoomMode { case wholePage, width, manual }
+    var onReadingStateChanged: ((PDFReadingState) -> Void)?
+    typealias ZoomMode = PDFZoomMode
     var zoomMode = ZoomMode.wholePage
     private weak var observedClip: NSClipView?
     private var boundsObserver: NSObjectProtocol?
     private var adjustingHorizontalPosition = false
     private var refreshCover: NSImageView?
     private var refreshGeneration = 0
+    private var readingStateReport: DispatchWorkItem?
+    private var lastReportedState: PDFReadingState?
+    private weak var highlightPage: PDFPage?
+    private var highlightAnnotation: PDFAnnotation?
+    private var highlightRemoval: DispatchWorkItem?
 
     func clearPreview() {
         refreshGeneration += 1
         refreshCover?.removeFromSuperview()
         refreshCover = nil
+        readingStateReport?.cancel()
+        lastReportedState = nil
+        removeTargetHighlight()
+        zoomMode = .wholePage
         document = nil
     }
 
     /// Keep the last rendered viewport over PDFKit's temporary blank layout.
-    func replacePreview(with document: PDFDocument) {
-        let previous = readerPosition()
+    func replacePreview(with document: PDFDocument, readingState: PDFReadingState? = nil,
+                        preservesReadingPosition: Bool = true) {
+        let previous = readingState ?? (preservesReadingPosition ? readerPosition() : nil)
+        removeTargetHighlight()
         refreshGeneration += 1
         let generation = refreshGeneration
         if refreshCover == nil, self.document != nil, window != nil,
@@ -169,10 +194,13 @@ final class SyncPDFView: PDFView {
             self.displayIfNeeded()
             self.refreshCover?.removeFromSuperview()
             self.refreshCover = nil
+            self.scheduleReadingStateReport()
         }
     }
 
     deinit {
+        readingStateReport?.cancel()
+        highlightRemoval?.cancel()
         if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
     }
 
@@ -209,6 +237,7 @@ final class SyncPDFView: PDFView {
             }
         }
         centerHorizontally()
+        scheduleReadingStateReport()
     }
 
     override func layout() {
@@ -229,6 +258,7 @@ final class SyncPDFView: PDFView {
         scaleFactor = min(maxScaleFactor, max(minScaleFactor, availableWidth / size.width))
         layoutDocumentView()
         centerHorizontally()
+        scheduleReadingStateReport()
     }
 
     func centerHorizontally() {
@@ -258,7 +288,9 @@ final class SyncPDFView: PDFView {
         observedClip = clip
         clip.postsBoundsChangedNotifications = true
         boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
-            guard let self, !self.adjustingHorizontalPosition, self.zoomMode != .manual,
+            guard let self else { return }
+            self.scheduleReadingStateReport()
+            guard !self.adjustingHorizontalPosition, self.zoomMode != .manual,
                   let clip = self.observedClip, let documentView = clip.documentView else { return }
             let centerX: CGFloat
             if let page = self.currentPage ?? self.document?.page(at: 0) {
@@ -291,45 +323,97 @@ final class SyncPDFView: PDFView {
             scroll.contentView.scroll(to: NSPoint(x: origin.x + moved.x - point.x, y: origin.y + point.y - moved.y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        scheduleReadingStateReport()
     }
 
     /// Where the reader is: page number and the point (top-left origin) at the top of
     /// the viewport, plus the zoom, so a rebuild can put them back.
-    struct ReaderPosition {
-        var pageIndex: Int
-        var topPoint: CGPoint
-        var scale: CGFloat
-    }
+    typealias ReaderPosition = PDFReadingState
 
     func readerPosition() -> ReaderPosition? {
         guard let document, let page = currentPage else { return nil }
-        let index = document.index(for: page)
-        let topLeft = convert(NSPoint(x: bounds.minX, y: bounds.maxY), to: page)
-        let media = page.bounds(for: .mediaBox)
+        let topLeftInView = NSPoint(x: bounds.minX, y: bounds.maxY)
+        let topPage = self.page(for: topLeftInView, nearest: true) ?? page
+        let index = document.index(for: topPage)
+        let topLeft = convert(topLeftInView, to: topPage)
+        let media = topPage.bounds(for: .mediaBox)
         return ReaderPosition(pageIndex: index,
-                              topPoint: CGPoint(x: topLeft.x, y: media.height - topLeft.y),
-                              scale: scaleFactor)
+                              topPoint: CGPoint(x: topLeft.x - media.minX, y: media.maxY - topLeft.y),
+                              scale: scaleFactor, zoomMode: zoomMode)
     }
 
     func restore(_ position: ReaderPosition?) {
         guard let position, let document, document.pageCount > 0 else { return }
         let index = min(max(position.pageIndex, 0), document.pageCount - 1)
         guard let page = document.page(at: index) else { return }
+        guard position.topPoint.x.isFinite, position.topPoint.y.isFinite,
+              position.scale.isFinite, position.scale > 0 else { fitPage(); return }
         let media = page.bounds(for: .mediaBox)
-        let point = CGPoint(x: position.topPoint.x, y: media.height - position.topPoint.y)
-        if position.scale > 0 { scaleFactor = position.scale; autoScales = false }
+        let point = CGPoint(x: media.minX + position.topPoint.x, y: media.maxY - position.topPoint.y)
+        zoomMode = position.zoomMode
+        pageBreakMargins = zoomMode == .wholePage ? NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+            : NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        autoScales = false
+        scaleFactor = min(maxScaleFactor, max(minScaleFactor, position.scale))
+        configureHorizontalScrolling()
         layoutDocumentView()
         go(to: PDFDestination(page: page, at: point))
+        scheduleReadingStateReport()
     }
 
     /// Brings a SyncTeX point (top-left origin) into view.
     func reveal(page pageNumber: Int, point: CGPoint) {
+        reveal(PDFHighlight(page: pageNumber, point: point))
+    }
+
+    func reveal(_ highlight: PDFHighlight) {
         guard let document, document.pageCount > 0 else { return }
-        let index = min(max(pageNumber - 1, 0), document.pageCount - 1)
+        guard highlight.page > 0, highlight.page <= document.pageCount,
+              highlight.point.x.isFinite, highlight.point.y.isFinite else { return }
+        let index = highlight.page - 1
         guard let page = document.page(at: index) else { return }
         let media = page.bounds(for: .mediaBox)
-        let target = CGPoint(x: point.x, y: media.height - point.y)
+        let rect = highlight.bounds(in: media)
+        guard !rect.isNull, !rect.isEmpty else { return }
+        let target = CGPoint(x: media.minX + highlight.point.x, y: min(media.maxY, rect.maxY + 24))
         go(to: PDFDestination(page: page, at: target))
+        removeTargetHighlight()
+        if !rect.isNull, !rect.isEmpty {
+            let annotation = PDFAnnotation(bounds: rect, forType: .square, withProperties: nil)
+            annotation.color = .clear
+            annotation.interiorColor = NSColor.black.withAlphaComponent(0.10)
+            let border = PDFBorder()
+            border.lineWidth = 0
+            annotation.border = border
+            annotation.shouldPrint = false
+            page.addAnnotation(annotation)
+            highlightPage = page
+            highlightAnnotation = annotation
+            let removal = DispatchWorkItem { [weak self] in self?.removeTargetHighlight() }
+            highlightRemoval = removal
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: removal)
+        }
+        scheduleReadingStateReport()
+    }
+
+    private func removeTargetHighlight() {
+        highlightRemoval?.cancel()
+        highlightRemoval = nil
+        if let annotation = highlightAnnotation { highlightPage?.removeAnnotation(annotation) }
+        highlightAnnotation = nil
+        highlightPage = nil
+    }
+
+    /// Coalesce scroll notifications before persisting a stable reading position.
+    func scheduleReadingStateReport() {
+        readingStateReport?.cancel()
+        let report = DispatchWorkItem { [weak self] in
+            guard let self, let state = self.readerPosition(), state != self.lastReportedState else { return }
+            self.lastReportedState = state
+            self.onReadingStateChanged?(state)
+        }
+        readingStateReport = report
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: report)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -342,7 +426,7 @@ final class SyncPDFView: PDFView {
         }
         let inPage = convert(convert(event.locationInWindow, from: nil), to: page)
         let media = page.bounds(for: .mediaBox)
-        onCommandClick?(document.index(for: page) + 1, CGPoint(x: inPage.x, y: media.height - inPage.y))
+        onCommandClick?(document.index(for: page) + 1, CGPoint(x: inPage.x - media.minX, y: media.maxY - inPage.y))
     }
 }
 
@@ -375,8 +459,20 @@ struct PreviewPane: View {
             }
             .padding(.horizontal, 18).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.previewHeader)
             Divider()
+            if let message = store.syncStatusMessage ?? store.previewStatusText {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle")
+                    Text(message).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.horizontal, 18).padding(.vertical, 7)
+                .background(Palette.subtleSurface)
+                .help(message)
+                Divider()
+            }
             ZStack {
-                PDFPreview(pdfURL: build.pdfURL, version: build.pdfVersion, controls: controls, highlight: build.highlight) { page, point in
+                PDFPreview(pdfURL: build.pdfURL, version: build.pdfVersion, controls: controls, highlight: build.highlight,
+                           readingState: store.pdfReadingState, onReadingStateChanged: store.updatePDFReadingState) { page, point in
                     store.syncPDFToSource(page: page, point: point)
                 }
                 // The empty state sits on top while there is nothing to show, so the

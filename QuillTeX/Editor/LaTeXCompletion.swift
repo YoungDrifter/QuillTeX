@@ -7,16 +7,17 @@ import AppKit
 /// citation keys come from the project index. The rules are pure so they can be
 /// tested without a window or a text view.
 enum LaTeXCompletion {
-    enum Context: Equatable {
+    enum Context: Equatable, Sendable {
         case command        // \sec…
-        case environment    // \begin{it… and \end{it…
+        case environment    // \begin{it…
+        case endEnvironment // \end{it… only completes the name
         case package        // \usepackage{am…
         case label          // \ref{… \eqref{… \cref{…
         case citation       // \cite{… \cite[p. 3]{…
     }
 
     /// Where the popup applies and what has been typed so far.
-    struct Suggestion: Equatable {
+    struct Suggestion: Equatable, Sendable {
         var context: Context
         /// Characters the chosen candidate replaces.
         var range: NSRange
@@ -34,39 +35,65 @@ enum LaTeXCompletion {
         while start > 0, let scalar = UnicodeScalar(ns.character(at: start - 1)), word.contains(scalar) {
             start -= 1
         }
-        let typed = ns.substring(with: NSRange(location: start, length: limit - start))
-        guard start > 0 else { return nil }
-
-        // A backslash right before the word is the command itself.
-        if ns.character(at: start - 1) == backslash {
-            let range = NSRange(location: start - 1, length: limit - start + 1)
-            return Suggestion(context: .command, range: range, prefix: ns.substring(with: range))
+        let result: Suggestion
+        if start > 0, ns.character(at: start - 1) == backslash, !escaped(start - 1, in: ns) {
+            var end = limit
+            while end < ns.length, let scalar = UnicodeScalar(ns.character(at: end)), word.contains(scalar) { end += 1 }
+            result = Suggestion(context: .command,
+                                range: NSRange(location: start - 1, length: end - start + 1),
+                                prefix: ns.substring(with: NSRange(location: start - 1, length: limit - start + 1)))
+        } else {
+            // Keys are not command words: punctuation and Unicode belong to the key.
+            // Only the current comma-delimited argument is replaced.
+            var brace = limit
+            while brace > 0 {
+                brace -= 1
+                let unit = ns.character(at: brace)
+                if unit == openBrace, !escaped(brace, in: ns) { break }
+                if unit == 0x7D || unit == backslash { return nil }
+            }
+            guard brace < limit, ns.character(at: brace) == openBrace,
+                  let name = command(before: brace, in: ns) else { return nil }
+            let context: Context
+            switch name {
+            case "begin": context = .environment
+            case "end": context = .endEnvironment
+            case "usepackage", "documentclass": context = .package
+            case "ref", "eqref", "pageref", "autoref", "cref", "Cref", "label": context = .label
+            case "cite", "citep", "citet", "citealp", "parencite", "textcite", "autocite", "footcite", "nocite": context = .citation
+            default: return nil
+            }
+            start = brace + 1
+            for position in start..<limit where ns.character(at: position) == 0x2C { start = position + 1 }
+            while start < limit, isWhitespace(ns.character(at: start)) { start += 1 }
+            let prefix = ns.substring(with: NSRange(location: start, length: limit - start))
+            guard !prefix.unicodeScalars.contains(where: CharacterSet.whitespacesAndNewlines.contains) else { return nil }
+            var end = limit
+            while end < ns.length {
+                let unit = ns.character(at: end)
+                if unit == 0x2C || unit == 0x7D || unit == openBrace || unit == backslash || isWhitespace(unit) { break }
+                end += 1
+            }
+            result = Suggestion(context: context, range: NSRange(location: start, length: end - start), prefix: prefix)
         }
-        guard ns.character(at: start - 1) == openBrace,
-              let name = command(before: start - 1, in: ns) else { return nil }
-        let range = NSRange(location: start, length: limit - start)
-        if name == "begin" || name == "end" {
-            return Suggestion(context: .environment, range: range, prefix: typed)
-        }
-        if name == "usepackage" || name == "documentclass" {
-            return Suggestion(context: .package, range: range, prefix: typed)
-        }
-        if ["ref", "eqref", "pageref", "autoref", "cref", "Cref", "label"].contains(name) {
-            return Suggestion(context: .label, range: range, prefix: typed)
-        }
-        if ["cite", "citep", "citet", "citealp", "parencite", "textcite", "autocite", "footcite", "nocite"].contains(name) {
-            return Suggestion(context: .citation, range: range, prefix: typed)
-        }
-        return nil
+        // The same lexer used by highlighting excludes comments and literal regions.
+        // UI callers evaluate this pure function on a background task.
+        let prefix = ns.substring(to: limit)
+        let excluded = LaTeXHighlighter.spans(in: prefix).filter { $0.token == .comment || $0.token == .verbatim }
+        let checkedStart = result.prefix.isEmpty ? max(0, result.range.location - 1) : result.range.location
+        let checkedRange = NSRange(location: checkedStart, length: max(1, limit - checkedStart))
+        guard !excluded.contains(where: { NSIntersectionRange($0.range, checkedRange).length > 0 }) else { return nil }
+        return result
     }
 
     // MARK: - Candidates
 
-    static func candidates(for suggestion: Suggestion, labels: [String], citations: [String]) -> [String] {
+    static func candidates(for suggestion: Suggestion, labels: [String], citations: [String],
+                           projectCommands: [String] = [], projectEnvironments: [String] = []) -> [String] {
         let pool: [String]
         switch suggestion.context {
-        case .command: pool = commands
-        case .environment: pool = environments
+        case .command: pool = commands + projectCommands
+        case .environment, .endEnvironment: pool = environments + projectEnvironments
         case .package: pool = packages
         case .label: pool = labels
         case .citation: pool = citations
@@ -76,7 +103,7 @@ enum LaTeXCompletion {
             (value.hasPrefix("\\") ? String(value.dropFirst()) : value).lowercased()
         }
         let needle = key(suggestion.prefix)
-        return pool
+        return Array(Set(pool))
             .filter { needle.isEmpty || key($0).contains(needle) }
             .sorted { first, second in
                 let a = key(first), b = key(second)
@@ -86,25 +113,59 @@ enum LaTeXCompletion {
             }
     }
 
-    /// Text written instead of the candidate when the popup closes, plus how far the
-    /// caret should sit from the end. Only environments get more than the bare name:
-    /// `\begin{itemize}` also writes the matching `\end` and opens a blank line.
-    static func expansion(for candidate: String, context: Context) -> (text: String, caretBack: Int)? {
-        guard context == .environment else { return nil }
-        let closing = "\\end{\(candidate)}"
-        return ("\(candidate)}\n\n\(closing)", ("\n" + closing).utf16.count)
+    /// UTF-16 ranges identify editable arguments; no placeholder text enters the file.
+    struct Insertion: Equatable, Sendable {
+        var range: NSRange
+        var text: String
+        var placeholders: [NSRange] = []
+        var finalOffset: Int
+    }
+
+    static func insertion(for candidate: String, suggestion: Suggestion, in source: String) -> Insertion {
+        let ns = source as NSString
+        var range = suggestion.range
+        var text = candidate
+        var placeholders: [NSRange] = []
+        let next = NSMaxRange(range)
+        let hasBrace = next < ns.length && ns.character(at: next) == 0x7D
+        if suggestion.context == .environment || suggestion.context == .endEnvironment {
+            if hasBrace { range.length += 1 }
+            text += "}"
+            if suggestion.context == .environment {
+                let closing = "\\end{\(candidate)}"
+                let tail = ns.substring(from: NSMaxRange(range))
+                // Complete an existing environment without creating a second closing pair.
+                if !tail.contains(closing) {
+                    let newline = source.contains("\r\n") ? "\r\n" : "\n"
+                    text += newline
+                    placeholders = [NSRange(location: text.utf16.count, length: 0)]
+                    text += newline + closing
+                }
+            }
+        } else if suggestion.context == .command,
+                  !(next < ns.length && (ns.character(at: next) == openBrace || ns.character(at: next) == 0x5B)),
+                  let arguments = commandArguments[candidate] {
+            for _ in 0..<arguments {
+                text += "{"
+                placeholders.append(NSRange(location: text.utf16.count, length: 0))
+                text += "}"
+            }
+        }
+        return Insertion(range: range, text: text, placeholders: placeholders, finalOffset: text.utf16.count)
     }
 
     // MARK: - Popup items
 
     /// One row of the completion popup.
-    struct Item: Equatable, Identifiable {
+    struct Item: Equatable, Identifiable, Sendable {
         var id: String { title }
         var title: String
     }
 
-    static func items(for suggestion: Suggestion, labels: [String], citations: [String]) -> [Item] {
-        candidates(for: suggestion, labels: labels, citations: citations)
+    static func items(for suggestion: Suggestion, labels: [String], citations: [String],
+                      projectCommands: [String] = [], projectEnvironments: [String] = []) -> [Item] {
+        candidates(for: suggestion, labels: labels, citations: citations,
+                   projectCommands: projectCommands, projectEnvironments: projectEnvironments)
             .map { Item(title: $0) }
     }
 
@@ -120,7 +181,7 @@ enum LaTeXCompletion {
     // MARK: - Inline hint
 
     /// The faint text drawn after the caret, and what Tab writes.
-    struct Inline: Equatable {
+    struct Inline: Equatable, Sendable {
         /// The whole candidate, for example `\section`.
         var full: String
         /// Only the part still missing, for example `tion`.
@@ -133,11 +194,19 @@ enum LaTeXCompletion {
     /// A hint is only offered when what has been typed is a genuine prefix of a
     /// candidate, so the ghost text never guesses. Very short command prefixes are
     /// skipped: after a lone `\` every command matches and a hint would be noise.
-    static func inline(in text: String, at offset: Int, labels: [String], citations: [String]) -> Inline? {
+    static func inline(in text: String, at offset: Int, labels: [String], citations: [String],
+                       projectCommands: [String] = [], projectEnvironments: [String] = []) -> Inline? {
         guard let suggestion = suggestion(in: text, at: offset) else { return nil }
+        return inline(for: suggestion, labels: labels, citations: citations,
+                      projectCommands: projectCommands, projectEnvironments: projectEnvironments)
+    }
+
+    static func inline(for suggestion: Suggestion, labels: [String], citations: [String],
+                       projectCommands: [String] = [], projectEnvironments: [String] = []) -> Inline? {
         let typed = suggestion.prefix.hasPrefix("\\") ? String(suggestion.prefix.dropFirst()) : suggestion.prefix
         if suggestion.context == .command, typed.count < 2 { return nil }
-        guard let best = candidates(for: suggestion, labels: labels, citations: citations).first else { return nil }
+        guard let best = candidates(for: suggestion, labels: labels, citations: citations,
+                                    projectCommands: projectCommands, projectEnvironments: projectEnvironments).first else { return nil }
         let candidate = best.hasPrefix("\\") ? String(best.dropFirst()) : best
         guard candidate.lowercased().hasPrefix(typed.lowercased()), candidate.count > typed.count else { return nil }
         return Inline(full: best,
@@ -150,6 +219,25 @@ enum LaTeXCompletion {
 
     private static let backslash = UInt16(0x5C)   // \
     private static let openBrace = UInt16(0x7B)   // {
+
+    private static func isWhitespace(_ value: UInt16) -> Bool {
+        UnicodeScalar(value).map(CharacterSet.whitespacesAndNewlines.contains) ?? false
+    }
+
+    private static func escaped(_ index: Int, in ns: NSString) -> Bool {
+        var cursor = index, count = 0
+        while cursor > 0, ns.character(at: cursor - 1) == backslash { count += 1; cursor -= 1 }
+        return count % 2 == 1
+    }
+
+    private static let commandArguments: [String: Int] = [
+        "\\frac": 2, "\\dfrac": 2, "\\tfrac": 2, "\\sqrt": 1,
+        "\\mathbb": 1, "\\mathcal": 1, "\\mathbf": 1, "\\mathrm": 1, "\\mathit": 1,
+        "\\mathsf": 1, "\\mathfrak": 1, "\\boldsymbol": 1, "\\text": 1,
+        "\\operatorname": 1, "\\overline": 1, "\\underline": 1, "\\hat": 1,
+        "\\bar": 1, "\\vec": 1, "\\dot": 1, "\\ddot": 1, "\\tilde": 1,
+        "\\widehat": 1, "\\widetilde": 1
+    ]
 
     /// Command name ending just before `index`, skipping spaces and a bracket
     /// argument: `\cite[p. 3]{` gives "cite".
@@ -167,7 +255,7 @@ enum LaTeXCompletion {
 
         skipSpaces()
         // An optional argument may sit between the command and the brace: \cite[p. 3]{
-        if matches("]") {
+        while matches("]") {
             var depth = 0
             while cursor > 0 {
                 if matches("]") { depth += 1 }
@@ -180,11 +268,13 @@ enum LaTeXCompletion {
             skipSpaces()
         }
         // The command name, then the backslash that starts it.
+        if matches("*") { cursor -= 1 }
         var nameEnd = cursor
         while nameEnd > 0, let scalar = UnicodeScalar(ns.character(at: nameEnd - 1)),
               CharacterSet.letters.contains(scalar) { nameEnd -= 1 }
         guard nameEnd < cursor, nameEnd > 0,
               ns.character(at: nameEnd - 1) == UInt16(0x5C) else { return nil }
+        guard !escaped(nameEnd - 1, in: ns) else { return nil }
         let name = ns.substring(with: NSRange(location: nameEnd, length: cursor - nameEnd))
         return name.hasSuffix("*") ? String(name.dropLast()) : name
     }

@@ -22,6 +22,7 @@ struct ProjectSidebar: View {
                     }
                 }
             }.padding(.horizontal, 17).padding(.bottom, 8)
+            if store.sidebarMode == .result { Divider() }
             if store.needsFolderAccess { accessNotice }
             ZStack {
                 tree(store.index.structure, mode: .structure)

@@ -56,8 +56,8 @@ struct SettingsView: View {
         SettingsPage(title: "Compilation", subtitle: "Configure TeX and output.") {
             SettingsCard(title: "TeX installation") {
                 HStack(spacing: 8) {
-                    Image(systemName: settings.toolchain.isReady ? "checkmark.circle" : "exclamationmark.triangle")
-                    Text(settings.toolchain.isReady ? "latexmk is available" : "latexmk was not found")
+                    Image(systemName: settings.toolchain.latexmk != nil ? "checkmark.circle" : "exclamationmark.triangle")
+                    Text(settings.toolchain.latexmk != nil ? "latexmk is available" : "latexmk was not found")
                         .font(.system(size: 12, weight: .medium))
                     Spacer()
                 }.padding(.vertical, 10)

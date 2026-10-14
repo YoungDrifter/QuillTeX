@@ -81,6 +81,13 @@ struct ProjectCommands: Commands {
             Button("Back") { store?.moveHistory(-1) }.keyboardShortcut("[", modifiers: [.command]).disabled(store?.canGoBack != true)
             Button("Forward") { store?.moveHistory(1) }.keyboardShortcut("]", modifiers: [.command]).disabled(store?.canGoForward != true)
             Button("Open File in Project…") { store?.showFilePicker = true }.keyboardShortcut("p").disabled(store?.root == nil)
+            Divider()
+            Button("Previous Problem") { store?.navigateDiagnostic(-1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .control])
+                .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
+            Button("Next Problem") { store?.navigateDiagnostic(1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .control])
+                .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
         }
         CommandGroup(after: .sidebar) {
             Button("Show or Hide Sidebar") { store?.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
@@ -111,6 +118,13 @@ struct ProjectCommands: Commands {
               CommandLine.arguments.indices.contains(index + 1) else { return nil }
         return CommandLine.arguments[index + 1]
     }()
+    private static var didRestoreDocument = false
+    static func consumeRestoredDocument() -> URL? {
+        guard !didRestoreDocument else { return nil }
+        didRestoreDocument = true
+        guard ProcessInfo.processInfo.environment["QUILLTEX_DISABLE_SESSION_RESTORE"] != "1" else { return nil }
+        return WorkspaceSessionStore(directory: DocumentLibrary.shared.directory.appendingPathComponent("WorkspaceSessions")).lastWorkspace()
+    }
     static func consumeLaunchDocument() -> URL? {
         guard let path = launchDocument else { return nil }
         launchDocument = nil
@@ -127,6 +141,7 @@ struct ProjectCommands: Commands {
         for item in Self.stores.values {
             if let store = item.value, !store.confirmClose(store.documents) { return .terminateCancel }
         }
+        for item in Self.stores.values { item.value?.finishClosing() }
         return .terminateNow
     }
     func application(_ sender: NSApplication, open urls: [URL]) {

@@ -6,9 +6,9 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.0.2** · macOS 14+ · Apple Silicon
+**Version 1.0.3** · macOS 14+ · Apple Silicon
 
-[下载 1.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2)
+[下载 1.0.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3)
 
 ![QuillTeX 01 · 启动页](docs/versions/1.0.0/images/welcome.png)
 
@@ -22,18 +22,20 @@
 
 - 本地文稿库、最近打开与模板，支持多标签编辑和多文件工程。
 - 章节、标签和图表导航，帮助定位长篇文稿与子文件。
-- LaTeX 语法高亮及命令、环境、标签和引用键补全。
+- LaTeX 语法高亮及命令、环境、标签和引用键补全，支持项目自定义命令与数学参数跳转。
 - 使用 XeLaTeX、pdfLaTeX 或 LuaLaTeX 本地编译，点击诊断跳转到对应源码。
+- 编译问题筛选、实时日志与排版校对，帮助检查错误、溢出行和未解析引用。
 - 源码与 PDF 并排显示，支持缩放、页面适配及 ⌘-点击双向定位。
 - 独立标签栏可按需显示或隐藏；点击顶栏文件名可重命名并设置 Finder 标签。
 - 切换主文件时同步工程、编译目标与预览；自动编译期间继续显示已有 PDF。
 - 从 Finder 打开 `.tex` 文件，识别 `% !TeX root = ...`；支持在工程中切换主文件。
+- 恢复工程标签、编辑位置与 PDF 阅读状态，保留异常退出前的未保存编辑。
 - 统一的分类设置界面，包含编译配置、自动构建、插件入口与应用信息。
 - 每天自动检查 GitHub 正式版；有更新时在应用内提示、下载并安装，也可从应用菜单或 About 手动检查。
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2) 下载 `QuillTeX-1.0.2.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3) 下载 `QuillTeX-1.0.3.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -58,6 +60,12 @@
 统一顶栏、标签栏、侧栏与所有弹层的配色、圆角与描边，图标按钮改为一致的圆形点击区；顶栏新增历史记录入口，可直接切换到最近项目；打开文稿改用居中的加号图标，分栏图标改为右侧填充；修复连续点击顶栏按钮边缘误触发窗口放大的问题。
 
 [更新说明](docs/versions/1.0.2/README.md) · [下载 1.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.2)
+
+### 1.0.3 · 写作与校对优化
+
+优化补全与数学参数输入、长文稿分析、编译诊断和实时日志；恢复工程编辑与阅读状态，完善 PDF 定位反馈与排版校对。所有改进直接作为基础功能提供。
+
+[更新说明](docs/versions/1.0.3/README.md) · [下载 1.0.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3)
 
 ## 本地构建
 

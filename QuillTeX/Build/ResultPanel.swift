@@ -10,6 +10,10 @@ struct ResultPanel: View {
     @State private var logHeight: CGFloat = 220
     @State private var dragStartHeight: CGFloat?
     @State private var resizeHovered = false
+    @State private var filter = BuildDiagnosticFilter()
+
+    private var filteredDiagnostics: [BuildDiagnostic] { build.diagnostics.filter { $0.severity != .info && filter.includes($0) } }
+    private var locatedDiagnostics: [BuildDiagnostic] { filteredDiagnostics.compactMap(store.resolvedDiagnostic) }
 
     init(store: ProjectStore) {
         self.store = store
@@ -19,27 +23,31 @@ struct ResultPanel: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        if case .succeeded = build.status,
-                           !build.diagnostics.contains(where: { $0.severity == .error }) {
-                            Label("Compiled without errors", systemImage: "checkmark.circle")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6).padding(.vertical, 8)
-                        } else if build.status.isRunning {
-                            Text("Compiling…").font(.system(size: 12))
+                controls
+                ScrollViewReader { reader in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                        if build.status.isRunning {
+                            Text(build.lastSummary).font(.system(size: 12))
                                 .foregroundStyle(.secondary).padding(8)
+                        } else if case .succeeded = build.status {
+                            EmptyView()
                         } else if build.diagnostics.isEmpty {
                             Text(emptyMessage).font(.system(size: 12))
                                 .foregroundStyle(.secondary).padding(8)
                         }
-                        ForEach(build.diagnostics) { diagnostic in
-                            DiagnosticRow(diagnostic: diagnostic, store: store)
+                        if !build.diagnostics.isEmpty && filteredDiagnostics.isEmpty {
+                            Text("No matching problems").font(.system(size: 12)).foregroundStyle(.secondary).padding(8)
                         }
+                        severityGroup("Errors", empty: "No errors", items: filteredDiagnostics.filter { $0.severity == .error })
+                        severityGroup("Warnings", empty: "No warnings", items: filteredDiagnostics.filter { $0.severity == .warning })
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onChange(of: build.selectedDiagnosticID) { _, id in
+                        if let id { reader.scrollTo(id, anchor: .center) }
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if !build.log.isEmpty {
@@ -51,9 +59,80 @@ struct ResultPanel: View {
         }
     }
 
+    private var controls: some View {
+            HStack(spacing: 4) {
+                Text("\(filteredDiagnostics.count) problem\(filteredDiagnostics.count == 1 ? "" : "s")")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize()
+                Menu {
+                    Button { filter.category = nil } label: {
+                        if filter.category == nil { Label("All categories", systemImage: "checkmark") }
+                        else { Text("All categories") }
+                    }
+                    ForEach(BuildDiagnostic.Category.allCases) { category in
+                        Button { filter.category = category } label: {
+                            if filter.category == category { Label(category.title, systemImage: "checkmark") }
+                            else { Text(category.title) }
+                        }
+                    }
+                } label: {
+                    Text(compactCategoryTitle)
+                }
+                .menuStyle(.button).controlSize(.small)
+                .help("Filter problems by category").accessibilityLabel("Problem category")
+                .accessibilityValue(filter.category?.title ?? "All categories")
+                .frame(maxWidth: .infinity)
+                Button { navigateProblem(-1) } label: {
+                    Image(systemName: "chevron.up").frame(width: 20, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(locatedDiagnostics.isEmpty)
+                .help("Previous problem").accessibilityLabel("Previous problem")
+                Button { navigateProblem(1) } label: {
+                    Image(systemName: "chevron.down").frame(width: 20, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(locatedDiagnostics.isEmpty)
+                .help("Next problem").accessibilityLabel("Next problem")
+            }
+        .font(.system(size: 11)).padding(.horizontal, 8).padding(.vertical, 8)
+    }
+
+    private var compactCategoryTitle: String {
+        switch filter.category {
+        case .compilation: "TeX"
+        case .layout: "Layout"
+        case .references: "Refs"
+        case .bibliography: "Bib"
+        case nil: "All"
+        }
+    }
+    @ViewBuilder private func severityGroup(_ title: String, empty: String, items: [BuildDiagnostic]) -> some View {
+        if items.isEmpty {
+            Label(empty, systemImage: "checkmark.circle")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .padding(.horizontal, 6).padding(.vertical, 8)
+        } else {
+            Text("\(title) · \(items.count)")
+                .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                .padding(.horizontal, 6).padding(.top, 9).padding(.bottom, 3)
+            ForEach(items) { diagnostic in
+                DiagnosticRow(diagnostic: diagnostic, store: store, selected: build.selectedDiagnosticID == diagnostic.id) {
+                    build.selectDiagnostic(diagnostic)
+                }
+                .id(diagnostic.id)
+            }
+        }
+    }
+
+    private func navigateProblem(_ offset: Int) {
+        guard let diagnostic = build.neighboringDiagnostic(offset: offset, in: locatedDiagnostics) else { return }
+        store.openDiagnostic(diagnostic)
+    }
+
     private var emptyMessage: String {
         switch build.status {
         case .failed: "Compilation failed. See the raw log for details."
+        case .unavailable(let reason): reason
+        case .idle: build.lastSummary == "Build cancelled" ? "Build cancelled" : "Nothing compiled yet"
         default: "Nothing compiled yet"
         }
     }
@@ -115,7 +194,7 @@ struct ResultPanel: View {
             .accessibilityLabel(showsLog ? "Collapse raw log" : "Expand raw log")
             if showsLog {
                 ScrollView {
-                    Text(build.log.suffix(20_000))
+                    Text(build.log)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
@@ -131,6 +210,8 @@ struct ResultPanel: View {
 private struct DiagnosticRow: View {
     let diagnostic: BuildDiagnostic
     @ObservedObject var store: ProjectStore
+    var selected = false
+    var onSelect: () -> Void = {}
     @State private var hover = false
 
     private var icon: String {
@@ -143,7 +224,8 @@ private struct DiagnosticRow: View {
 
     var body: some View {
         Button {
-            if let file = diagnostic.file { store.openSource(file, line: diagnostic.line ?? 1) }
+            onSelect()
+            store.openDiagnostic(diagnostic)
         } label: {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: icon).font(.system(size: 12)).frame(width: 15)
@@ -156,17 +238,21 @@ private struct DiagnosticRow: View {
                     if !diagnostic.location.isEmpty {
                         Text(diagnostic.location).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
+                    if let guidance = diagnostic.guidance {
+                        Text(guidance).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 6).padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(RoundedRectangle(cornerRadius: 7).fill(Palette.primaryInk.opacity(hover ? Palette.chromeHoverOpacity : 0)))
+            .background(RoundedRectangle(cornerRadius: 7).fill(Palette.primaryInk.opacity(selected ? Palette.selectedOpacity : (hover ? Palette.chromeHoverOpacity : 0))))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .disabled(diagnostic.file == nil)
+        .disabled(store.resolvedDiagnostic(diagnostic) == nil)
         .help(diagnostic.detail.isEmpty ? diagnostic.summary : diagnostic.detail)
     }
 }

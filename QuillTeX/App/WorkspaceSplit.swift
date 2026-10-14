@@ -122,6 +122,8 @@ class WorkspacePaneSplitController: NSSplitViewController {
 final class WorkspaceContentSplitController: WorkspacePaneSplitController {
     private var mode = PaneMode.split
     private var balancePending = true
+    var restoredFraction: Double?
+    var onLayoutChange: (() -> Void)?
 
     init(editor: NSViewController, preview: NSViewController) {
         super.init()
@@ -131,6 +133,7 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
             item.canCollapse = true
             addSplitViewItem(item)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(splitResized), name: NSSplitView.didResizeSubviewsNotification, object: splitView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -142,8 +145,21 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
     private func balanceIfNeeded() {
         if balancePending, mode == .split, splitView.bounds.width > 520 {
             balancePending = false
-            splitView.setPosition((splitView.bounds.width - splitView.dividerThickness) / 2, ofDividerAt: 0)
+            let fraction = restoredFraction ?? 0.5
+            restoredFraction = nil
+            splitView.setPosition((splitView.bounds.width - splitView.dividerThickness) * fraction, ofDividerAt: 0)
         }
+    }
+    var editorFraction: Double {
+        let width = splitView.bounds.width - splitView.dividerThickness
+        guard mode == .split, width > 0 else { return 0.5 }
+        return splitViewItems[0].viewController.view.frame.width / width
+    }
+    @objc private func splitResized() { if !balancePending, mode == .split { onLayoutChange?() } }
+    func restoreFraction(_ fraction: Double) {
+        restoredFraction = fraction
+        balancePending = true
+        balanceIfNeeded()
     }
 
     func update(mode newMode: PaneMode, equalize: Bool) {
@@ -155,6 +171,7 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
         mode = newMode
         splitView.adjustSubviews()
         if newMode == .split {
+            if equalize { restoredFraction = nil }
             balancePending = true
             view.layoutSubtreeIfNeeded()
             balanceIfNeeded()
@@ -170,6 +187,10 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
     private var previousSidebar = true
     private var previousSplitLayoutVersion = 0
     private var sidebarWidth: CGFloat = 240
+    private var savedEditorFraction: Double = 0.5
+    var onLayoutChange: ((Double, Double) -> Void)?
+    private var reportingLayout = false
+    private var layoutReportPending = false
 
     init(sidebar: NSViewController, editor: NSViewController, preview: NSViewController, tabBar: NSViewController? = nil) {
         content = WorkspaceContentSplitController(editor: editor, preview: preview)
@@ -207,8 +228,30 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         contentItem.minimumThickness = 520
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
+        content.onLayoutChange = { [weak self] in self?.reportLayout() }
+        NotificationCenter.default.addObserver(self, selector: #selector(splitResized), name: NSSplitView.didResizeSubviewsNotification, object: splitView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func restoreLayout(sidebarWidth width: Double, editorFraction fraction: Double) {
+        sidebarWidth = width.isFinite ? min(400, max(180, width)) : 240
+        savedEditorFraction = fraction.isFinite ? min(0.85, max(0.15, fraction)) : 0.5
+        reportingLayout = true
+        if initialized, previousSidebar { splitView.setPosition(sidebarWidth, ofDividerAt: 0) }
+        content.restoreFraction(savedEditorFraction)
+        reportingLayout = false
+    }
+    @objc private func splitResized() { reportLayout() }
+    private func reportLayout() {
+        guard initialized, !reportingLayout, !layoutReportPending else { return }
+        layoutReportPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layoutReportPending = false
+            if self.previousSidebar { self.sidebarWidth = self.splitViewItems[0].viewController.view.frame.width }
+            if !self.content.splitViewItems.contains(where: \.isCollapsed) { self.savedEditorFraction = self.content.editorFraction }
+            self.onLayoutChange?(self.sidebarWidth, self.savedEditorFraction)
+        }
+    }
 
     override func viewDidLayout() {
         super.viewDidLayout()
