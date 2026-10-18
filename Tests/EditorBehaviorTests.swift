@@ -234,6 +234,20 @@ struct EditorBehaviorTests {
         check(suggestion("\\ref{fi")?.context == .label, "\\ref{ completes labels")
         check(suggestion("\\cite[p. 3]{kn")?.context == .citation, "\\cite with an optional argument completes keys")
         check(suggestion("plain words") == nil, "ordinary prose is left alone")
+        check(suggestion("\\ref{eq:wave_function-1")?.prefix == "eq:wave_function-1", "label punctuation stays inside the argument")
+        check(suggestion("\\cite{first, second:key_2")?.prefix == "second:key_2", "multi-key completion replaces only the current key")
+        check(suggestion("\\cite[see][p. 3]{kn")?.context == .citation, "citation completion skips both optional notes")
+        check(suggestion("\\cref*{eq:wa")?.context == .label, "starred reference commands complete keys")
+        check(suggestion("\\end{al")?.context == .endEnvironment, "closing environments are distinct from opening environments")
+        check(suggestion("% \\frac") == nil, "comments do not offer completion")
+        check(suggestion("% \\cite{") == nil, "empty arguments inside comments do not offer completion")
+        check(suggestion("\\begin{verbatim}\n\\frac") == nil, "unfinished verbatim environments suppress completion")
+        check(suggestion("\\begin{verbatim}\n\\ref{") == nil, "empty arguments in a literal environment do not offer completion")
+        check(suggestion("\\begin{verbatim*}\n\\frac") == nil, "starred literal environments suppress completion")
+        check(suggestion("\\verb|\\frac") == nil, "inline literal text suppresses completion")
+        check(suggestion("\\\\sec") == nil, "a line break does not start a command completion")
+        check(suggestion("\\verb|%| \\sec")?.context == .command, "completion resumes after a closed inline literal")
+        check(suggestion("\\% \\sec")?.context == .command, "escaped percent leaves subsequent commands active")
         let commandSuggestion = suggestion("\\fra")!
         check(LaTeXCompletion.candidates(for: commandSuggestion, labels: [], citations: []).first == "\\frac",
               "prefix matches come first")
@@ -241,9 +255,77 @@ struct EditorBehaviorTests {
         check(LaTeXCompletion.candidates(for: labelSuggestion, labels: ["wave_function", "gronwall"], citations: []).first == "wave_function",
               "labels come from the project")
         let environmentSuggestion = suggestion("\\begin{ite")!
-        let expansion = LaTeXCompletion.expansion(for: "itemize", context: environmentSuggestion.context)
-        check(expansion?.text == "itemize}\n\n\\end{itemize}", "an environment closes itself")
-        check(LaTeXCompletion.expansion(for: "frac", context: .command) == nil, "commands are inserted as they are")
+        let expansion = LaTeXCompletion.insertion(for: "itemize", suggestion: environmentSuggestion, in: "\\begin{ite")
+        check(expansion.text == "itemize}\n\n\\end{itemize}", "an environment closes itself")
+        check(LaTeXCompletion.candidates(for: suggestion("\\my")!, labels: [], citations: [],
+              projectCommands: ["\\myNorm", "\\myNorm"]).filter { $0 == "\\myNorm" }.count == 1,
+              "project macros join completion without duplicate rows")
+        check(LaTeXCompletion.candidates(for: suggestion("\\begin{my")!, labels: [], citations: [],
+              projectEnvironments: ["mytheorem"]).contains("mytheorem"), "project environments join completion")
+        let closedEnvironmentSource = "\\begin{ite}"
+        let closedEnvironmentSuggestion = LaTeXCompletion.suggestion(in: closedEnvironmentSource, at: 10)!
+        let closedEnvironmentInsertion = LaTeXCompletion.insertion(for: "itemize", suggestion: closedEnvironmentSuggestion, in: closedEnvironmentSource)
+        let environmentResult = NSMutableString(string: closedEnvironmentSource)
+        environmentResult.replaceCharacters(in: closedEnvironmentInsertion.range, with: closedEnvironmentInsertion.text)
+        check(environmentResult as String == "\\begin{itemize}\n\n\\end{itemize}", "an existing closing brace is consumed exactly once")
+        let endSource = "\\end{ali}"
+        let endInsertion = LaTeXCompletion.insertion(for: "align", suggestion: LaTeXCompletion.suggestion(in: endSource, at: 8)!, in: endSource)
+        check(endInsertion.text == "align}" && endInsertion.placeholders.isEmpty, "end completion never inserts an extra end block")
+        let existingPair = "\\begin{ite}\nbody\n\\end{itemize}"
+        let pairedInsertion = LaTeXCompletion.insertion(for: "itemize", suggestion: LaTeXCompletion.suggestion(in: existingPair, at: 10)!, in: existingPair)
+        check(pairedInsertion.text == "itemize}", "completing an existing environment preserves its closing pair")
+        let midKey = "\\ref{eq:wave_function}"
+        let midSuggestion = LaTeXCompletion.suggestion(in: midKey, at: 10)!
+        check((midKey as NSString).substring(with: midSuggestion.range) == "eq:wave_function", "mid-key completion replaces the remaining key instead of duplicating it")
+        let fraction = LaTeXCompletion.insertion(for: "\\frac", suggestion: suggestion("\\fra")!, in: "\\fra")
+        check(fraction.text == "\\frac{}{}" && fraction.placeholders == [NSRange(location: 6, length: 0), NSRange(location: 8, length: 0)], "fraction snippets have two empty argument ranges")
+        let existingArguments = "\\fra{a}{b}"
+        check(LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: existingArguments, at: 4)!, in: existingArguments).text == "\\frac",
+              "command completion preserves existing arguments")
+
+        let snippetView = SourceTextView()
+        snippetView.isRichText = false; snippetView.allowsUndo = true; snippetView.string = "\\fra"
+        // This command-line test has no normal AppKit event boundaries. Explicit groups
+        // avoid a deferred event-group close running during the later layout test.
+        snippetView.documentUndoManager.groupsByEvent = false
+        func insertSnippetArgument(_ text: String) {
+            snippetView.breakUndoCoalescing()
+            snippetView.documentUndoManager.beginUndoGrouping()
+            snippetView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            snippetView.documentUndoManager.endUndoGrouping()
+            snippetView.breakUndoCoalescing()
+        }
+        check(snippetView.insert(candidate: "\\frac", in: NSRange(location: 0, length: 4), context: .command), "native completion inserts a fraction snippet")
+        check(snippetView.string == "\\frac{}{}" && snippetView.selectedRange().location == 6, "the first snippet argument receives the caret")
+        insertSnippetArgument("中文😀")
+        check(snippetView.advanceSnippet() && snippetView.selectedRange().location == 12, "Tab tracks UTF-16 edits when moving to the second argument")
+        insertSnippetArgument("b")
+        check(snippetView.advanceSnippet(backwards: true) && snippetView.selectedRange() == NSRange(location: 6, length: 4), "Shift-Tab selects the previous filled argument")
+        check(snippetView.advanceSnippet() && snippetView.selectedRange() == NSRange(location: 12, length: 1), "Tab selects the next filled argument")
+        check(snippetView.advanceSnippet() && snippetView.activeSnippetRange == nil && snippetView.selectedRange().location == snippetView.string.utf16.count,
+              "Tab after the last argument leaves the snippet at its end")
+        let originalSnippet = "\\sqr"
+        snippetView.string = originalSnippet
+        snippetView.documentUndoManager.removeAllActions()
+        check(snippetView.insert(candidate: "\\sqrt", in: NSRange(location: 0, length: 4), context: .command), "single argument command inserts a snippet")
+        snippetView.documentUndoManager.undo()
+        check(snippetView.string == originalSnippet, "a completion can be undone through the document undo manager")
+        snippetView.endSnippet()
+        snippetView.string = "\\fra"
+        _ = snippetView.insert(candidate: "\\frac", in: NSRange(location: 0, length: 4), context: .command)
+        snippetView.setSelectedRange(NSRange(location: 0, length: 0)); snippetView.validateSnippetSelection()
+        check(!snippetView.advanceSnippet(), "leaving a snippet restores normal Tab behavior")
+        let gutterWidth = surface.verticalRulerView!.ruleThickness
+        surface.updateDiagnostics([
+            .init(severity: .warning, message: "Warning", file: doc.url, line: 2),
+            .init(severity: .error, message: "Error", file: doc.url, line: 2),
+            .init(severity: .error, message: "Other file", file: child, line: 3)
+        ])
+        check((surface.verticalRulerView as? LineNumberRuler)?.diagnosticLines[2] == .error, "error markers take precedence over warnings on the same line")
+        check((surface.verticalRulerView as? LineNumberRuler)?.diagnosticLines[3] == nil, "the gutter only marks diagnostics from its own document")
+        check(surface.verticalRulerView!.ruleThickness == gutterWidth, "diagnostic markers preserve the gutter width")
+        surface.updateDiagnostics([])
+        check((surface.verticalRulerView as? LineNumberRuler)?.diagnosticLines.isEmpty == true, "new diagnostic results clear old markers")
 
         // Inline hint: the missing tail of an unambiguous candidate.
         let inline = LaTeXCompletion.inline(in: "\\sect", at: 5, labels: [], citations: [])
@@ -275,6 +357,46 @@ struct EditorBehaviorTests {
         check(LineNumberRuler.thickness(forLineCount: 999) == LineNumberRuler.thickness(forLineCount: 100), "three digit files share a gutter")
         check(LineNumberRuler.thickness(forLineCount: 1200) > LineNumberRuler.thickness(forLineCount: 90), "a four digit file needs a wider gutter")
         check(LineNumberRuler.thickness(forLineCount: 13) < 40, "a short document keeps a narrow gutter")
+        let restoredDocument = SourceDocument(url: root, text: String(repeating: "A restored reading line\n", count: 160))
+        restoredDocument.selection = NSRange(location: 4, length: 8)
+        restoredDocument.scrollOrigin = CGPoint(x: 0, y: 350)
+        restoredDocument.restoresEditorPosition = true
+        let restoredSurface = EditorSurface(document: restoredDocument, store: store)
+        let restoredWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        restoredWindow.contentView = restoredSurface
+        restoredSurface.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        check(restoredSurface.textView.selectedRange() == NSRange(location: 4, length: 8), "a real editor restores the complete saved selection")
+        check(abs(restoredSurface.contentView.bounds.origin.y - 350) < 1, "a real editor preserves the reading position when its selection is offscreen")
+        restoredSurface.navigate(to: NSRange(location: 0, length: 0))
+        check(restoredSurface.contentView.bounds.origin.y < 30, "explicit navigation can leave the restored reading position")
+        let beforeFeedback = restoredSurface.textView.string
+        let selectedBeforeFeedback = restoredSurface.textView.selectedRange()
+        let undoBeforeFeedback = restoredDocument.undoManager.canUndo
+        restoredSurface.textView.highlightSourceLine(3)
+        let lineThree = (beforeFeedback as NSString).lineRange(for: NSRange(location: ProjectStore.offset(ofLine: 3, in: beforeFeedback), length: 0))
+        check(restoredSurface.textView.sourceLineHighlightRange == lineThree, "inverse feedback covers the complete source line")
+        let feedbackRect = restoredSurface.textView.sourceLineHighlightRect!
+        check(abs(feedbackRect.width - restoredSurface.textView.bounds.width) < 1, "source feedback spans the full editor width")
+        check(restoredSurface.textView.string == beforeFeedback && restoredSurface.textView.selectedRange() == selectedBeforeFeedback, "line feedback does not replace text or turn it into a selection")
+        check(restoredDocument.undoManager.canUndo == undoBeforeFeedback && !restoredDocument.isDirty, "line feedback does not modify dirty state or undo history")
+        let feedbackSample = NSRect(x: feedbackRect.maxX - 24, y: feedbackRect.midY - 3, width: 12, height: 6)
+        func brightness() -> CGFloat {
+            let bitmap = restoredSurface.textView.bitmapImageRepForCachingDisplay(in: feedbackSample)!
+            restoredSurface.textView.cacheDisplay(in: feedbackSample, to: bitmap)
+            let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)!.usingColorSpace(.deviceRGB)!
+            return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+        }
+        let highlightedBrightness = brightness()
+        restoredSurface.textView.clearSourceLineHighlight()
+        check(brightness() > highlightedBrightness + 0.025, "the full-width gray background is actually drawn behind source text")
+        restoredSurface.textView.highlightSourceLine(2)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.7))
+        check(restoredSurface.textView.sourceLineHighlightRange == nil, "source feedback expires without leaving a permanent decoration")
+        restoredSurface.textView.highlightSourceLine(2)
+        restoredSurface.reloadFromDisk()
+        check(restoredSurface.textView.sourceLineHighlightRange == nil, "disk reload clears obsolete source feedback")
+        restoredWindow.close()
         check(store.save(doc), "atomic save succeeds")
         let disk = try String(contentsOf: root, encoding: .utf8)
         check(disk == doc.text, "disk roundtrip")

@@ -54,6 +54,21 @@ struct ProjectIndexTests {
         defer { try? FileManager.default.removeItem(at: outside) }
         try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("escape.tex"), withDestinationURL: outside)
         let index = ProjectIndexer(root: root, overrides: [:]).build()
+        let cache = ProjectIndexCache()
+        _ = ProjectIndexer(root: root, overrides: [:], cache: cache).build()
+        let initialScans = cache.scanCount
+        _ = ProjectIndexer(root: root, overrides: [:], cache: cache).build()
+        check(cache.scanCount == initialScans, "unchanged source analysis is reused")
+        let updatedChild = childText + "\n\\newcommand{\\wave}{w}\n\\newtheorem{claim}{Claim}\n"
+        let changed = ProjectIndexer(root: root, overrides: [child: updatedChild], cache: cache).build()
+        check(cache.scanCount == initialScans + 1, "only the edited subfile is scanned again")
+        check(changed.commands.contains("\\wave") && changed.environments.contains("claim"), "project declarations come from current unsaved subfiles")
+        let hiddenDeclarations = ProjectDeclarationScanner.declarations(in: "% \\newcommand{\\fake}{x}\n\\begin{verbatim}\n\\newtheorem{wrong}{Wrong}\n\\end{verbatim}")
+        check(hiddenDeclarations.commands.isEmpty && hiddenDeclarations.environments.isEmpty, "comments and verbatim do not create completions")
+        let newlyCreated = try write("new-chapter.tex", "New")
+        cache.invalidateInventory()
+        let refreshed = ProjectIndexer(root: root, overrides: [:], cache: cache).build()
+        check(refreshed.texFiles.contains(newlyCreated), "file operations invalidate the cached tree")
         let headings = flat(index.structure).filter { $0.kind == .section }
         check(headings.map(\.title) == ["基础", "中文与 emoji 😀", "Conclusion"], "source order across includes, comments and verbatim")
         check(headings.first?.children.first?.title == "中文与 emoji 😀", "section hierarchy")

@@ -1,5 +1,100 @@
 import Foundation
 
+/// Only files whose contents changed are scanned again.
+final class ProjectIndexCache: @unchecked Sendable {
+    struct Analysis {
+        let text: String
+        let clean: String
+        let floats: (figures: [NavigationNode], tables: [NavigationNode])
+        let tokens: [NSTextCheckingResult]
+        let commands: [String]
+        let environments: [String]
+        init(text: String, file: URL) {
+            self.text = text
+            clean = ProjectIndexer.masked(text)
+            floats = ProjectIndexer.floats(in: text, file: file)
+            let declarations = ProjectDeclarationScanner.declarations(in: clean)
+            commands = declarations.commands
+            environments = declarations.environments
+            tokens = ProjectIndexer.matches(#"\\(part|chapter|section|subsection|subsubsection|label|input|include|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)"#, in: clean)
+        }
+    }
+    struct Inventory {
+        var directory: URL
+        var folders: [NavigationNode]
+        var texFiles: [URL]
+        var expires: Date
+    }
+    private struct DiskText {
+        var modified: Date?
+        var size: Int?
+        var text: String
+    }
+    private let lock = NSLock()
+    private var disk: [URL: DiskText] = [:]
+    private var analyses: [URL: Analysis] = [:]
+    private var citations: [URL: (text: String, keys: [String])] = [:]
+    private var cachedInventory: Inventory?
+    private var analysisScans = 0
+    var scanCount: Int { lock.lock(); defer { lock.unlock() }; return analysisScans }
+    func text(at url: URL) throws -> String {
+        let url = url.standardizedFileURL
+        let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        lock.lock()
+        let previous = disk[url]
+        lock.unlock()
+        if let previous, previous.modified == values.contentModificationDate, previous.size == values.fileSize { return previous.text }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        lock.lock(); disk[url] = DiskText(modified: values.contentModificationDate, size: values.fileSize, text: text); lock.unlock()
+        return text
+    }
+    func analysis(text: String, file: URL) -> Analysis {
+        lock.lock(); let previous = analyses[file]; lock.unlock()
+        if let previous, previous.text == text { return previous }
+        let result = Analysis(text: text, file: file)
+        lock.lock(); analyses[file] = result; analysisScans += 1; lock.unlock()
+        return result
+    }
+    func citationKeys(text: String, file: URL) -> [String] {
+        lock.lock(); let previous = citations[file]; lock.unlock()
+        if let previous, previous.text == text { return previous.keys }
+        let keys = ProjectIndexer.citationKeys(in: text)
+        lock.lock(); citations[file] = (text, keys); lock.unlock()
+        return keys
+    }
+    func inventory(for directory: URL) -> Inventory? {
+        lock.lock(); defer { lock.unlock() }
+        guard let inventory = cachedInventory, inventory.directory == directory, inventory.expires > Date() else { return nil }
+        return inventory
+    }
+    func storeInventory(directory: URL, folders: [NavigationNode], texFiles: [URL]) {
+        lock.lock(); defer { lock.unlock() }
+        cachedInventory = Inventory(directory: directory, folders: folders, texFiles: texFiles, expires: Date().addingTimeInterval(3))
+    }
+    func invalidateInventory() {
+        lock.lock(); cachedInventory = nil; disk = [:]; lock.unlock()
+    }
+}
+
+enum ProjectDeclarationScanner {
+    static func declarations(in text: String) -> (commands: [String], environments: [String]) {
+        let clean = ProjectIndexer.masked(text) as NSString
+        var commands: [String] = []
+        var environments: [String] = []
+        let commandPattern = #"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand|DeclareMathOperator)\*?\s*(?:\{\s*)?(\\[A-Za-z@]+)|\\(?:gdef|edef|xdef|def)\s*(\\[A-Za-z@]+)"#
+        for match in ProjectIndexer.matches(commandPattern, in: clean as String) {
+            for group in 1..<match.numberOfRanges where match.range(at: group).location != NSNotFound {
+                commands.append(clean.substring(with: match.range(at: group)))
+            }
+        }
+        let environmentPattern = #"\\(?:newenvironment|renewenvironment|newtheorem)\*?\s*\{([^{}]+)\}"#
+        for match in ProjectIndexer.matches(environmentPattern, in: clean as String) {
+            environments.append(clean.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (Array(Set(commands)).sorted(), Array(Set(environments)).sorted())
+    }
+}
+
 struct NavigationNode: Identifiable, Sendable {
     enum Kind: String, Sendable { case group, section, label, source, resource, folder, boundary, issue, figure, table }
     let id: String
@@ -24,12 +119,15 @@ struct ProjectIndex: Sendable {
     /// Label names (`\label{...}`) and BibTeX keys, offered by the editor's completion.
     var labels: [String] = []
     var citations: [String] = []
+    var commands: [String] = []
+    var environments: [String] = []
     var issues: [String] = []
 }
 
 struct ProjectIndexer {
     let root: URL
     let overrides: [URL: String]
+    var cache: ProjectIndexCache? = nil
     private var directory: URL { root.deletingLastPathComponent() }
 
     static func isWithin(_ url: URL, directory: URL) -> Bool {
@@ -143,7 +241,7 @@ struct ProjectIndexer {
 
         func read(_ url: URL) -> SourceRead {
             if let override = overrides[url.standardizedFileURL] { return .text(override) }
-            do { return .text(try String(contentsOf: url, encoding: .utf8)) }
+            do { return .text(try cache?.text(at: url) ?? String(contentsOf: url, encoding: .utf8)) }
             catch {
                 if Self.isPermissionError(error) { return .denied }
                 return FileManager.default.fileExists(atPath: url.path) ? .unreadable : .missing
@@ -163,6 +261,7 @@ struct ProjectIndexer {
             let file = input.standardizedFileURL
             let identity = file.resolvingSymlinksInPath()
             var node = NavigationNode(id: "source:\(file.path)", title: file.lastPathComponent, kind: .source, url: file, detail: file == root ? "ROOT" : nil)
+            if Task.isCancelled { return node }
             if ancestry.contains(identity) {
                 node.detail = "Circular reference"
                 result.issues.append("Circular reference: \(file.lastPathComponent)")
@@ -185,10 +284,13 @@ struct ProjectIndexer {
                 result.issues.append("Cannot read: \(file.path)"); return node
             }
             visited.insert(identity)
-            let floats = Self.floats(in: source, file: file)
+            let analysis = cache?.analysis(text: source, file: file) ?? ProjectIndexCache.Analysis(text: source, file: file)
+            let floats = analysis.floats
             figures.append(contentsOf: floats.figures)
             tables.append(contentsOf: floats.tables)
-            let clean = Self.masked(source)
+            let clean = analysis.clean
+            result.commands.append(contentsOf: analysis.commands)
+            result.environments.append(contentsOf: analysis.environments)
             let ns = clean as NSString
             for paths in Self.matches(#"\\graphicspath\s*\{((?:\s*\{[^}]*\}\s*)+)\}"#, in: clean) {
                 for path in Self.matches(#"\{([^}]*)\}"#, in: ns.substring(with: paths.range(at: 1))) {
@@ -196,8 +298,8 @@ struct ProjectIndexer {
                     graphicPaths.append(file.deletingLastPathComponent().appendingPathComponent(inner.substring(with: path.range(at: 1))))
                 }
             }
-            let pattern = #"\\(part|chapter|section|subsection|subsubsection|label|input|include|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)"#
-            for match in Self.matches(pattern, in: clean) {
+            for match in analysis.tokens {
+                if Task.isCancelled { return node }
                 let command = match.range(at: 1).location == NSNotFound ? (match.range(at: 3).location == NSNotFound ? "input" : "table") : ns.substring(with: match.range(at: 1))
                 let argRange = match.range(at: 2).location != NSNotFound ? match.range(at: 2) : (match.range(at: 3).location != NSNotFound ? match.range(at: 3) : match.range(at: 4))
                 let value = ns.substring(with: argRange).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -270,6 +372,7 @@ struct ProjectIndexer {
             guard seenDirectories.insert(resolved).inserted else { return node }
             let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
             for child in contents.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+                if Task.isCancelled { break }
                 guard child.lastPathComponent != "build", Self.isWithin(child, directory: directory) else { continue }
                 let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
                 if isDirectory { node.children.append(folder(child)) }
@@ -281,7 +384,13 @@ struct ProjectIndexer {
             }
             return node
         }
-        result.folders = [folder(directory)]
+        if let inventory = cache?.inventory(for: directory) {
+            result.folders = inventory.folders
+            result.texFiles = inventory.texFiles
+        } else {
+            result.folders = [folder(directory)]
+            cache?.storeInventory(directory: directory, folders: result.folders, texFiles: result.texFiles)
+        }
         result.labels = labels.map(\.title).sorted()
         // Citation keys, so \cite{...} can complete. Bounded to the project folder and
         // skipped when the folder is somewhere huge like the home directory.
@@ -292,13 +401,16 @@ struct ProjectIndexer {
             var found: [String] = []
             var seenFiles = 0
             for case let url as URL in walker where url.pathExtension.lowercased() == "bib" {
+                if Task.isCancelled { break }
                 seenFiles += 1
                 if seenFiles > 200 { break }
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                for key in Self.citationKeys(in: text) where !found.contains(key) { found.append(key) }
+                guard let text = try? cache?.text(at: url) ?? String(contentsOf: url, encoding: .utf8) else { continue }
+                for key in cache?.citationKeys(text: text, file: url) ?? Self.citationKeys(in: text) where !found.contains(key) { found.append(key) }
             }
             result.citations = found.sorted()
         }
+        result.commands = Array(Set(result.commands)).sorted()
+        result.environments = Array(Set(result.environments)).sorted()
         return result
     }
 }

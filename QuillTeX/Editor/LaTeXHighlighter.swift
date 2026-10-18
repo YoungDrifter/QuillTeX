@@ -8,7 +8,7 @@ import AppKit
 /// itself does, so a `%` inside `\verb|%|`, an escaped `\{`, a `$` inside a comment and
 /// a `}` with nothing open are each classified for what they are.
 enum LaTeXHighlighter {
-    enum Token: Equatable {
+    enum Token: Equatable, Sendable {
         case command          // \section
         case controlSymbol    // \\ \% \, \#1
         case environment      // the name inside \begin{…} / \end{…}
@@ -21,7 +21,7 @@ enum LaTeXHighlighter {
         case verbatim         // verbatim, lstlisting, minted, comment, \verb|…|
     }
 
-    struct Span: Equatable {
+    struct Span: Equatable, Sendable {
         var range: NSRange
         var token: Token
         var inMath: Bool = false
@@ -41,7 +41,7 @@ enum LaTeXHighlighter {
         "gather", "gather*", "multline", "multline*", "flalign", "flalign*", "eqnarray", "eqnarray*", "split"
     ]
     private static let verbatimEnvironments: Set<String> = [
-        "verbatim", "Verbatim", "lstlisting", "minted", "comment", "filecontents"
+        "verbatim", "verbatim*", "Verbatim", "lstlisting", "minted", "comment", "filecontents", "filecontents*"
     ]
 
     // MARK: - Characters
@@ -90,6 +90,7 @@ enum LaTeXHighlighter {
         func groupEnd(_ start: Int) -> Int {
             var cursor = start, level = 0
             while cursor < count {
+                if cursor % 1024 == 0, Task.isCancelled { return count }
                 if units[cursor] == backslash { cursor += 2; continue }
                 if units[cursor] == openBrace { level += 1 }
                 if units[cursor] == closeBrace {
@@ -112,6 +113,7 @@ enum LaTeXHighlighter {
         }
 
         while index < count {
+            if index % 1024 == 0, Task.isCancelled { return [] }
             // Inside a verbatim environment nothing else counts.
             if let active = verbatim {
                 let marker = "\\end{\(active.name)}"
@@ -252,6 +254,7 @@ enum LaTeXHighlighter {
         guard !pattern.isEmpty, units.count >= pattern.count else { return nil }
         var index = max(0, start)
         while index <= units.count - pattern.count {
+            if index % 1024 == 0, Task.isCancelled { return nil }
             if units[index] == pattern[0] {
                 var matches = true
                 for offset in 1..<pattern.count where units[index + offset] != pattern[offset] { matches = false; break }

@@ -22,8 +22,6 @@ struct BuildControls: View {
     var body: some View {
         HStack(spacing: 7) {
             Button { store.buildNow() } label: {
-                // Two gears, each turning about its own centre: the big one clockwise,
-                // the small one counter-clockwise, neither one changing position.
                 ZStack {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 17, weight: .regular))
@@ -42,7 +40,7 @@ struct BuildControls: View {
             .buttonStyle(ChromeButtonStyle())
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
-            .disabled(store.root == nil || !settings.toolchain.isReady)
+            .disabled(store.root == nil)
             .help(store.root == nil ? "Open a project to compile" : "Compile the main file (⌘T)")
             .accessibilityLabel("Compile the main file")
 
@@ -92,7 +90,7 @@ struct BuildControls: View {
     /// A check, a warning, or the running spinner. Clicking it shows the problems.
     private var statusIndicator: some View {
         Button {
-            if !build.diagnostics.isEmpty { store.sidebarVisible = true; store.sidebarMode = .result }
+            store.sidebarVisible = true; store.sidebarMode = .result
         } label: {
             Group {
                 switch build.status {
@@ -129,6 +127,9 @@ struct BuildControls: View {
                         HStack(spacing: 10) {
                             Text(engine.title).font(.system(size: 13))
                             Spacer(minLength: 12)
+                            if !settings.toolchain.engines.contains(engine) {
+                                Text("Not installed").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
                             Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
                                 .opacity(store.engine == engine ? 1 : 0)
                         }
@@ -137,19 +138,23 @@ struct BuildControls: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(!settings.toolchain.engines.contains(engine))
                     .quillPopupRow(active: hoveredEngine == engine)
                     .onHover { hoveredEngine = $0 ? engine : (hoveredEngine == engine ? nil : hoveredEngine) }
                 }
             }
         }
-        .frame(width: 200).quillPopoverContent()
+        .frame(width: 240).quillPopoverContent()
     }
 
     private var quickSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Compile Settings").font(.headline)
             Picker("Engine", selection: Binding(get: { store.engine }, set: { store.engine = $0 })) {
-                ForEach(BuildEngine.allCases) { Text($0.title).tag($0) }
+                ForEach(BuildEngine.allCases) { engine in
+                    Text(settings.toolchain.engines.contains(engine) ? engine.title : "\(engine.title) (not installed)")
+                        .tag(engine).disabled(!settings.toolchain.engines.contains(engine))
+                }
             }
             Picker("Mode", selection: $settings.mode) {
                 ForEach(BuildMode.allCases) { Text($0.title).tag($0) }

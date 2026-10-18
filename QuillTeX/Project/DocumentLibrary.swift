@@ -56,7 +56,8 @@ final class DocumentLibrary: ObservableObject {
     private var historyReadable = true
 
     init(directory: URL? = nil, bundledTemplatesDirectory: URL? = nil) {
-        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuillTeX", isDirectory: true)
+        let isolatedDirectory = ProcessInfo.processInfo.environment["QUILLTEX_DATA_DIRECTORY"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        self.directory = directory ?? isolatedDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuillTeX", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: templatesDirectory, withIntermediateDirectories: true)
             guard let bundled = bundledTemplatesDirectory ?? Bundle.main.url(forResource: "BundledTemplates", withExtension: nil) else { throw CocoaError(.fileNoSuchFile) }

@@ -48,6 +48,32 @@ struct TeXToolchain: Equatable {
     }
 }
 
+/// Checks the tools used by this particular strategy instead of requiring latexmk
+/// for an engine-only build. SyncTeX is optional and never blocks typesetting.
+struct BuildPreflight: Equatable {
+    var missingTools: [String]
+    var hasSteps: Bool
+
+    var isReady: Bool { hasSteps && missingTools.isEmpty }
+    var message: String {
+        if !hasSteps { return "Choose a compile strategy with at least one step." }
+        return "Missing TeX tools: \(missingTools.joined(separator: ", ")). Check the TeX path in Settings or choose an available engine and strategy."
+    }
+
+    static func inspect(engine: BuildEngine, steps: [BuildStep], paths: [String: String]) -> BuildPreflight {
+        var required: [String] = []
+        if steps.contains(.latexmk) { required.append("latexmk") }
+        if steps.contains(.latexmk) || steps.contains(.engine) { required.append(engine.executableName) }
+        if steps.contains(.bibtex) { required.append("bibtex") }
+        if steps.contains(.biber) { required.append("biber") }
+        let missing = required.filter { name in
+            guard let path = paths[name] else { return true }
+            return !FileManager.default.isExecutableFile(atPath: path)
+        }
+        return BuildPreflight(missingTools: missing, hasSteps: !steps.isEmpty)
+    }
+}
+
 /// Compile preferences. Global rather than per project: they describe the machine.
 @MainActor
 final class BuildSettings: ObservableObject {
@@ -249,4 +275,8 @@ final class BuildSettings: ObservableObject {
 
     var latexmkPath: String? { toolchain.latexmk }
     var synctexPath: String? { toolchain.synctex }
+
+    func preflight(engine: BuildEngine, strategy: BuildStrategy) -> BuildPreflight {
+        BuildPreflight.inspect(engine: engine, steps: strategy.steps, paths: toolchain.paths)
+    }
 }

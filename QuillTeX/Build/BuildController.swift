@@ -33,6 +33,7 @@ final class BuildController: ObservableObject {
         var steps: [BuildStep]
         var toolPaths: [String: String]
         var environment: [String: String]
+        var sourceRevision: Int? = nil
     }
 
     @Published private(set) var status: Status = .idle
@@ -42,15 +43,23 @@ final class BuildController: ObservableObject {
     @Published private(set) var pdfVersion = 0
     @Published private(set) var lastSummary = "Not built yet"
     @Published private(set) var currentStep: String?
+    @Published private(set) var selectedDiagnosticID: UUID?
+    private(set) var activeSourceRevision: Int?
     /// Set by a source → PDF sync; the preview scrolls to it.
     @Published private(set) var highlight: PDFHighlight?
 
     private var process: Process?
     private var logHandle: FileHandle?
     private var logFile: URL?
+    private var logReader: FileHandle?
+    private var logPollingTask: Task<Void, Never>?
+    private var stepOutput = Data()
     private var active: Active?
     private var pendingRequest: Request?
     private var generation = 0
+    /// Retain a useful tail while bounding both the live output and SwiftUI text.
+    static let maximumLogCharacters = 200_000
+    private static let maximumStepBytes = 800_000
 
     private struct Active {
         var request: Request
@@ -60,6 +69,7 @@ final class BuildController: ObservableObject {
         var failed = false
         var started = Date()
         var generation = 0
+        var stepDiagnostics: [BuildDiagnostic] = []
     }
 
     // MARK: - Public API
@@ -68,42 +78,80 @@ final class BuildController: ObservableObject {
     /// single follow-up build instead of queueing up.
     func compile(_ request: Request) {
         guard !status.isRunning else { pendingRequest = request; return }
+        let preflight = BuildPreflight.inspect(engine: request.engine, steps: request.steps, paths: request.toolPaths)
+        guard preflight.isReady else {
+            status = .unavailable(preflight.message)
+            lastSummary = preflight.message
+            log = preflight.message
+            diagnostics = [BuildDiagnostic(severity: .error, message: preflight.message, file: nil, line: nil)]
+            selectedDiagnosticID = nil
+            return
+        }
         // latexmk creates -outdir itself, a bare engine does not.
-        try? FileManager.default.createDirectory(at: request.outputDirectory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: request.outputDirectory, withIntermediateDirectories: true)
+        } catch {
+            let message = "Could not create the output folder: \(error.localizedDescription)"
+            status = .unavailable(message); lastSummary = message; log = message
+            diagnostics = [BuildDiagnostic(severity: .error, message: message, file: nil, line: nil)]
+            selectedDiagnosticID = nil
+            return
+        }
         var active = Active(request: request, steps: request.steps, started: Date())
         generation += 1
         active.generation = generation
         self.active = active
+        activeSourceRevision = request.sourceRevision
         status = .running(Date())
         lastSummary = "Compiling…"
         diagnostics = []
+        selectedDiagnosticID = nil
+        log = ""
         startNextStep()
     }
 
     /// Stops the run in flight and makes sure its result is discarded.
     func cancel() {
+        readStepOutput()
         generation += 1
         pendingRequest = nil
         active = nil
         if let process, process.isRunning { process.terminate() }
-        try? logHandle?.close()
-        logHandle = nil
-        if let logFile { try? FileManager.default.removeItem(at: logFile) }
-        self.logFile = nil
+        closeStepCapture()
         process = nil
         currentStep = nil
-        if status.isRunning { status = .idle; lastSummary = "Build cancelled" }
+        if status.isRunning {
+            status = .idle; lastSummary = "Build cancelled"
+            log = bounded(log + "\n[QuillTeX] Build cancelled.\n")
+        }
     }
 
     /// A new main file must not inherit the previous project's PDF or diagnostics.
     func resetProject() {
         cancel()
-        status = .idle; diagnostics = []; log = ""; highlight = nil
+        status = .idle; diagnostics = []; log = ""; highlight = nil; selectedDiagnosticID = nil
         pdfURL = nil; pdfVersion += 1; lastSummary = "Not built yet"
     }
 
-    func highlight(page: Int, point: CGPoint) {
-        highlight = PDFHighlight(page: page, point: point, generation: (highlight?.generation ?? 0) + 1)
+    func highlight(page: Int, point: CGPoint, width: CGFloat = 0, height: CGFloat = 0) {
+        highlight = PDFHighlight(page: page, point: point, width: width, height: height, generation: (highlight?.generation ?? 0) + 1)
+    }
+
+    func selectDiagnostic(_ diagnostic: BuildDiagnostic) { selectedDiagnosticID = diagnostic.id }
+
+    /// Wrap through the visible source locations; result filters supply candidates.
+    func neighboringDiagnostic(offset: Int, in candidates: [BuildDiagnostic]? = nil) -> BuildDiagnostic? {
+        let locations = (candidates ?? diagnostics).filter { $0.file != nil && $0.line != nil }
+        guard !locations.isEmpty else { return nil }
+        let index: Int
+        if let selectedDiagnosticID, let current = locations.firstIndex(where: { $0.id == selectedDiagnosticID }) {
+            index = (current + offset % locations.count + locations.count) % locations.count
+        } else {
+            index = offset < 0 ? locations.count - 1 : 0
+        }
+        let diagnostic = locations[index]
+        selectDiagnostic(diagnostic)
+        return diagnostic
     }
 
     /// Points the preview at an existing PDF without building.
@@ -123,21 +171,23 @@ final class BuildController: ObservableObject {
         guard active.index < active.steps.count else { finish(active); return }
         let step = active.steps[active.index]
         guard let launch = launchDescription(step: step, request: active.request) else {
-            var updated = active
-            updated.failed = true
-            updated.transcript += "\n[QuillTeX] \(step.title) is not available.\n"
-            updated.index += 1
-            self.active = updated
-            startNextStep()
+            failCurrentStep(step, message: "\(step.title) is not available.")
             return
         }
 
         let capture = FileManager.default.temporaryDirectory
             .appendingPathComponent("quilltex-build-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: capture.path, contents: nil)
-        let handle = (try? FileHandle(forWritingTo: capture)) ?? FileHandle.nullDevice
+        guard let handle = try? FileHandle(forWritingTo: capture),
+              let reader = try? FileHandle(forReadingFrom: capture) else {
+            try? FileManager.default.removeItem(at: capture)
+            failCurrentStep(step, message: "Could not capture the compile log.")
+            return
+        }
         logHandle = handle
         logFile = capture
+        logReader = reader
+        stepOutput = Data()
 
         let process = Process()
         self.process = process
@@ -147,8 +197,8 @@ final class BuildController: ObservableObject {
         process.environment = launch.environment
         process.standardOutput = handle
         process.standardError = handle
-        currentStep = step.title
-        lastSummary = "Compiling… \(step.title) \(active.index + 1)/\(active.steps.count)"
+        currentStep = step == .engine ? active.request.engine.title : step.title
+        lastSummary = "Compiling… \(currentStep ?? step.title) \(active.index + 1)/\(active.steps.count)"
 
         var updated = active
         updated.index += 1
@@ -166,17 +216,58 @@ final class BuildController: ObservableObject {
 
         do {
             try process.run()
+            logPollingTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled, let self, token == self.generation, self.active != nil else { return }
+                    self.readStepOutput()
+                }
+            }
         } catch {
-            try? handle.close()
             self.process = nil
-            logHandle = nil
-            logFile = nil
-            var failed = self.active ?? active
-            failed.failed = true
-            failed.transcript += "\n[QuillTeX] Could not start \(launch.executable): \(error.localizedDescription)\n"
-            self.active = failed
-            startNextStep()
+            closeStepCapture()
+            failCurrentStep(step, message: "Could not start \(launch.executable): \(error.localizedDescription)", alreadyAdvanced: true)
         }
+    }
+
+    private func failCurrentStep(_ step: BuildStep, message: String, alreadyAdvanced: Bool = false) {
+        guard var active else { return }
+        active.failed = true
+        active.transcript = bounded(active.transcript + "\n[QuillTeX] \(message)\n")
+        active.stepDiagnostics.append(BuildDiagnostic(severity: .error, message: message, file: nil, line: nil,
+                                                       category: step == .bibtex || step == .biber ? .bibliography : .compilation))
+        if !alreadyAdvanced { active.index += 1 }
+        self.active = active
+        log = active.transcript
+        startNextStep()
+    }
+
+    private func bounded(_ text: String) -> String { String(text.suffix(Self.maximumLogCharacters)) }
+
+    private func readStepOutput(drain: Bool = false) {
+        guard let logReader, let active else { return }
+        var chunks = 0
+        while drain || chunks < 8 {
+            guard let data = try? logReader.read(upToCount: 32_768), !data.isEmpty else { break }
+            stepOutput.append(data)
+            if stepOutput.count > Self.maximumStepBytes {
+                stepOutput.removeFirst(stepOutput.count - Self.maximumStepBytes)
+                // Do not start the decoded tail halfway through a UTF-8 scalar.
+                while let byte = stepOutput.first, byte & 0xC0 == 0x80 { stepOutput.removeFirst() }
+            }
+            chunks += 1
+        }
+        let output = String(decoding: stepOutput, as: UTF8.self)
+        log = bounded(active.transcript + "\n===== \(currentStep ?? "Compile") · running =====\n" + output)
+    }
+
+    private func closeStepCapture() {
+        logPollingTask?.cancel(); logPollingTask = nil
+        try? logHandle?.close(); logHandle = nil
+        try? logReader?.close(); logReader = nil
+        if let logFile { try? FileManager.default.removeItem(at: logFile) }
+        logFile = nil
+        stepOutput = Data()
     }
 
     private struct Launch {
@@ -231,16 +322,25 @@ final class BuildController: ObservableObject {
     private func collectStepOutput(step: BuildStep, exitCode: Int32) {
         try? logHandle?.close()
         logHandle = nil
+        readStepOutput(drain: true)
         process = nil
-        let text = logFile.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-        if let logFile { try? FileManager.default.removeItem(at: logFile) }
-        self.logFile = nil
+        let text = String(decoding: stepOutput, as: UTF8.self)
+        closeStepCapture()
         var updated = active
-        updated?.transcript += "\n===== \(step.title) (exit \(exitCode)) =====\n" + text
-        // BibTeX and Biber return non-zero for "no citations found", which is not a
-        // build failure; only the typesetting steps decide the verdict.
-        if exitCode != 0, step == .latexmk || step == .engine { updated?.failed = true }
+        let previousTranscript = updated?.transcript ?? ""
+        updated?.transcript = bounded(previousTranscript + "\n===== \(step.title) (exit \(exitCode)) =====\n" + text)
+        if BuildLogParser.stepFailed(step, exitCode: exitCode, output: text) {
+            updated?.failed = true
+            if step == .bibtex || step == .biber {
+                let message = text.split(separator: "\n").first { line in
+                    line.localizedCaseInsensitiveContains("ERROR") || line.contains("I couldn't") || line.contains("I was expecting")
+                }.map(String.init) ?? "\(step.title) failed (exit \(exitCode))."
+                updated?.stepDiagnostics.append(BuildDiagnostic(severity: .error, message: message, file: nil, line: nil,
+                                                                 detail: text, category: .bibliography))
+            }
+        }
         active = updated
+        log = updated?.transcript ?? log
     }
 
     private func finish(_ active: Active) {
@@ -253,9 +353,13 @@ final class BuildController: ObservableObject {
             .appendingPathComponent(request.mainFile.deletingPathExtension().lastPathComponent + ".log")
         let transcript = (try? String(contentsOf: transcriptFile, encoding: .utf8)) ?? ""
         let combined = active.transcript + "\n" + transcript
-        log = active.transcript.isEmpty ? transcript : active.transcript
+        log = bounded(active.transcript.isEmpty ? transcript : active.transcript)
 
-        let found = BuildLogParser.diagnostics(in: combined, workingDirectory: directory)
+        let found = BuildLogParser.diagnostics(in: combined, workingDirectory: directory).map { diagnostic in
+            var diagnostic = diagnostic
+            if diagnostic.file == nil && diagnostic.line != nil { diagnostic.file = request.mainFile }
+            return diagnostic
+        } + active.stepDiagnostics
         diagnostics = found
         let succeeded = !active.failed
         status = succeeded ? .succeeded(Date(), duration) : .failed(Date(), duration)

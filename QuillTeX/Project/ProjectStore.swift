@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 @MainActor
 final class SourceDocument: ObservableObject, Identifiable {
@@ -11,6 +12,8 @@ final class SourceDocument: ObservableObject, Identifiable {
     var diskText: String
     var selection = NSRange(location: 0, length: 0)
     var scrollOrigin = NSPoint.zero
+    var restoresEditorPosition = false
+    var pendingHighlightedLine: Int?
     var hasMarkedText = false
     let undoManager = UndoManager()
     private var undoObservers: [NSObjectProtocol] = []
@@ -43,7 +46,42 @@ final class ProjectStore: ObservableObject {
     let library: DocumentLibrary
     /// Typesetting for this project. One controller per store, so one compiler per window.
     let build = BuildController()
-    init(library: DocumentLibrary? = nil) { self.library = library ?? .shared }
+    let sessionStore: WorkspaceSessionStore
+    private var sessionTask: Task<Void, Never>?
+    private var restoringSession = false
+    private var sessionClosed = false
+    private var retiredSessionRoots: Set<URL> = []
+    private var buildObservers: [AnyCancellable] = []
+    private let indexCache = ProjectIndexCache()
+    private var indexWorker: Task<ProjectIndex, Never>?
+    private var syncTask: Task<Void, Never>?
+    private var editRevision = 0
+    private var buildRevision = 0
+    private var previewIsOutdated = false
+    @Published var sidebarWidth: Double = 240
+    @Published var editorFraction: Double = 0.5
+    @Published var pdfReadingState: PDFReadingState?
+    @Published var syncStatusMessage: String?
+    @Published var recoveryMessage: String?
+    init(library: DocumentLibrary? = nil) {
+        let library = library ?? .shared
+        self.library = library
+        sessionStore = WorkspaceSessionStore(directory: library.directory.appendingPathComponent("WorkspaceSessions"))
+        build.$status.dropFirst().sink { [weak self] status in
+            guard let self else { return }
+            if status.isRunning { self.buildRevision = self.build.activeSourceRevision ?? self.editRevision }
+            if case .succeeded = status { self.previewIsOutdated = self.buildRevision != self.editRevision }
+            self.objectWillChange.send()
+        }.store(in: &buildObservers)
+        build.$diagnostics.sink { [weak self] diagnostics in
+            guard let self else { return }
+            for document in self.documents { document.editorSurface?.updateDiagnostics(diagnostics) }
+        }.store(in: &buildObservers)
+        build.$pdfVersion.dropFirst().sink { [weak self] _ in
+            self?.syncTask?.cancel()
+            self?.syncStatusMessage = nil
+        }.store(in: &buildObservers)
+    }
     @Published var showLibrary = false
     @Published var showTemplateChooser = false
     @Published var root: URL?
@@ -87,6 +125,96 @@ final class ProjectStore: ObservableObject {
     private var generation = 0
     private var checkingExternal = false
     weak var window: NSWindow?
+
+    var previewStatusText: String? {
+        guard build.pdfURL != nil else { return nil }
+        if build.status.isRunning { return "Compiling · showing the previous PDF" }
+        if case .failed = build.status { return "Build failed · showing the last available PDF" }
+        if previewIsOutdated { return "PDF is awaiting compilation" }
+        return nil
+    }
+
+    func updatePDFReadingState(_ state: PDFReadingState) {
+        pdfReadingState = state
+        scheduleSessionSave()
+    }
+    func scheduleSessionSave() {
+        guard !restoringSession, !sessionClosed, root != nil else { return }
+        sessionTask?.cancel()
+        sessionTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.persistSession()
+        }
+    }
+    func persistSession(includeDrafts: Bool = true, force: Bool = false) {
+        guard !restoringSession, let root else { return }
+        sessionTask?.cancel()
+        guard !includeDrafts || force || !documents.contains(where: { $0.hasMarkedText }) else { return }
+        let previous = force && includeDrafts ? (sessionStore.load(root: root) ?? retiredSessionRoots.first.flatMap { sessionStore.load(root: $0) }) : nil
+        let state = WorkspaceSession(rootPath: root.path, documents: documents.map { document in
+            if includeDrafts, document.hasMarkedText, let saved = previous?.documents.first(where: { $0.path == document.url.path }) { return saved }
+            let hasDraft = includeDrafts && document.isDirty && !document.hasMarkedText
+            return WorkspaceSession.Document(path: document.url.path,
+                selectionLocation: document.selection.location, selectionLength: document.selection.length,
+                scrollX: document.scrollOrigin.x, scrollY: document.scrollOrigin.y,
+                draft: hasDraft ? document.text : nil, savedText: hasDraft ? document.savedText : nil,
+                diskText: hasDraft ? document.diskText : nil)
+        }, activePath: activeDocument?.url.path, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
+            paneMode: paneMode.rawValue, tabBarVisible: tabBarVisibilityOverride, expandedNodes: Array(expandedNodes),
+            sidebarWidth: sidebarWidth, editorFraction: editorFraction, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated)
+        let retiring = Array(retiredSessionRoots.filter { $0 != root })
+        sessionStore.save(state, retiringRoots: retiring) { [weak self] error in
+            Task { @MainActor in
+                if let error { self?.recoveryMessage = "Could not save recovery data: \(error)" }
+                else { self?.retiredSessionRoots.subtract(retiring) }
+            }
+        }
+    }
+    func finishClosing() {
+        persistSession(includeDrafts: false)
+        sessionClosed = true
+        sessionTask?.cancel()
+        sessionStore.flush()
+        indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
+        build.cancel()
+    }
+    private func restoreSession(_ state: WorkspaceSession?) {
+        guard let state, state.rootPath == root?.path else { return }
+        var restored: [SourceDocument] = []
+        for saved in state.documents {
+            let url = URL(fileURLWithPath: saved.path).standardizedFileURL
+            guard url.pathExtension.lowercased() == "tex", !restored.contains(where: { $0.url == url }) else { continue }
+            let disk = try? String(contentsOf: url, encoding: .utf8)
+            guard let text = saved.draft ?? disk else { continue }
+            let document = documents.first(where: { $0.url == url }) ?? SourceDocument(url: url, text: text)
+            document.text = text
+            document.savedText = saved.draft == nil ? text : (saved.savedText ?? disk ?? "")
+            document.diskText = saved.draft == nil ? (disk ?? text) : (saved.diskText ?? disk ?? "")
+            let length = (text as NSString).length
+            let location = min(max(0, saved.selectionLocation), length)
+            document.selection = NSRange(location: location, length: min(max(0, saved.selectionLength), length - location))
+            document.scrollOrigin = NSPoint(x: max(0, saved.scrollX), y: max(0, saved.scrollY))
+            document.restoresEditorPosition = true
+            restored.append(document)
+        }
+        if let main = documents.first(where: { $0.url == root }), !restored.contains(where: { $0.url == root }) { restored.insert(main, at: 0) }
+        restored.sort { $0.url == root && $1.url != root }
+        documents = restored
+        activeID = restored.first(where: { $0.url.path == state.activePath })?.id ?? restored.first?.id
+        sidebarVisible = state.sidebarVisible
+        sidebarMode = SidebarMode(rawValue: state.sidebarMode) ?? .structure
+        paneMode = PaneMode(rawValue: state.paneMode) ?? .split
+        tabBarVisibilityOverride = state.tabBarVisible
+        expandedNodes = Set(state.expandedNodes)
+        sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 240
+        editorFraction = state.editorFraction.isFinite ? min(0.85, max(0.15, state.editorFraction)) : 0.5
+        pdfReadingState = state.pdf
+        previewIsOutdated = state.pdfIsOutdated == true || restored.contains { $0.isDirty } || sourcesAreNewerThanPDF(restored.map(\.url))
+        if restored.contains(where: { $0.isDirty }) { recoveryMessage = "Recovered unsaved edits. Save when you are ready." }
+        window?.isDocumentEdited = restored.contains { $0.isDirty }
+        refreshIndex(immediate: true)
+    }
 
     func importTemplates() {
         let panel = NSOpenPanel()
@@ -151,6 +279,7 @@ final class ProjectStore: ObservableObject {
             throw ProjectError.message("A file or folder with this name already exists.")
         }
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        indexCache.invalidateInventory()
         return target
     }
 
@@ -188,6 +317,7 @@ final class ProjectStore: ObservableObject {
         let rootPath = Self.relativeFilePath(to: root, from: url.deletingLastPathComponent())
         let source = "% !TeX root = \(rootPath)" + newline + newline
         try Data(source.utf8).write(to: url, options: .withoutOverwriting)
+        indexCache.invalidateInventory()
         let offset = ProjectIndexer.matches(#"\\end\s*\{document\}"#, in: ProjectIndexer.masked(main.text)).last?.range.location
             ?? (main.text as NSString).length
         let ns = main.text as NSString
@@ -355,12 +485,19 @@ final class ProjectStore: ObservableObject {
         if let existing = documents.first(where: { $0.url == main }) { document = existing }
         else { document = SourceDocument(url: main, text: try String(contentsOf: main, encoding: .utf8)) }
         if root == main { activate(document); return }
+        if !restoringSession {
+            persistSession()
+            if let root { retiredSessionRoots.insert(root) }
+        }
         rememberCurrentLocation()
-        indexTask?.cancel(); generation += 1; isIndexing = false
+        indexTask?.cancel(); indexWorker?.cancel(); generation += 1; isIndexing = false
+        syncTask?.cancel(); syncStatusMessage = nil; pdfReadingState = nil
+        previewIsOutdated = false; editRevision = 0; buildRevision = 0
         autoCompileTask?.cancel()
         build.resetProject()
         root = main
         documents = [document] + documents.filter { $0.id != document.id }
+        previewIsOutdated = documents.contains { $0.isDirty }
         activeID = document.id
         if historyPosition >= 0 {
             history = Array(history.prefix(historyPosition + 1))
@@ -376,22 +513,38 @@ final class ProjectStore: ObservableObject {
         adoptExistingPDF()
         showLibrary = false
         do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
+        if !restoringSession { persistSession(force: true); sessionStore.flush() }
+        scheduleSessionSave()
     }
 
     func openProject(_ incoming: URL, explicitRoot: Bool = false) {
         let incoming = incoming.standardizedFileURL
         do {
-            let resolution = explicitRoot ? MainFileResolution(url: incoming, warning: nil) : try Self.resolveMainFile(incoming)
+            let recoverableMain = !FileManager.default.fileExists(atPath: incoming.path)
+                && sessionStore.load(root: incoming)?.documents.contains(where: { $0.path == incoming.path && $0.draft != nil }) == true
+            let resolution = explicitRoot || recoverableMain ? MainFileResolution(url: incoming, warning: nil) : try Self.resolveMainFile(incoming)
             let main = resolution.url
             if root == main {
                 openSource(incoming)
             } else {
-                let mainText = try String(contentsOf: main, encoding: .utf8)
+                let savedSession = sessionStore.load(root: main)
+                let mainText: String
+                do { mainText = try String(contentsOf: main, encoding: .utf8) }
+                catch {
+                    guard let draft = savedSession?.documents.first(where: { $0.path == main.path })?.draft else { throw error }
+                    mainText = draft
+                }
                 guard confirmClose(documents) else { return }
+                persistSession(includeDrafts: false)
+                restoringSession = true
+                defer { restoringSession = false; scheduleSessionSave() }
+                sessionClosed = false
+                recoveryMessage = nil
                 documents = []; history = []; historyPosition = -1
                 documents = [SourceDocument(url: main, text: mainText)]
                 try selectMainFile(main)
                 history = [EditorLocation(url: main, offset: 0)]; historyPosition = 0
+                restoreSession(savedSession)
                 if incoming != main { openSource(incoming) }
             }
             if let warning = resolution.warning { showError("Main File Directive", warning) }
@@ -402,13 +555,20 @@ final class ProjectStore: ObservableObject {
         let url = url.standardizedFileURL
         do {
             if recordHistory { rememberCurrentLocation() }
+            if activeDocument?.url != url {
+                activeDocument?.pendingHighlightedLine = nil
+                activeDocument?.editorSurface?.textView.clearSourceLineHighlight()
+                syncTask?.cancel(); syncStatusMessage = nil
+            }
             activeDocument?.editorSurface?.textView.breakUndoCoalescing()
             let doc: SourceDocument
             if let existing = documents.first(where: { $0.url == url }) { doc = existing }
             else { doc = SourceDocument(url: url, text: try String(contentsOf: url, encoding: .utf8)); documents.append(doc) }
             activeID = doc.id
+            scheduleSessionSave()
             if paneMode == .preview { paneMode = .split }
             if let offset {
+                doc.restoresEditorPosition = false
                 doc.selection = NSRange(location: min(max(0, offset), (doc.text as NSString).length), length: 0)
                 doc.editorSurface?.navigate(to: doc.selection)
             }
@@ -463,23 +623,88 @@ final class ProjectStore: ObservableObject {
     }
 
     var canSync: Bool { BuildSettings.shared.synctexPath != nil && build.pdfURL != nil }
+    private func labelNode(for diagnostic: BuildDiagnostic) -> NavigationNode? {
+        guard diagnostic.category == .references, let key = diagnostic.relatedKey else { return nil }
+        func find(_ nodes: [NavigationNode]) -> NavigationNode? {
+            for node in nodes {
+                if node.kind == .label && node.title == key { return node }
+                if let found = find(node.children) { return found }
+            }
+            return nil
+        }
+        return find(index.structure)
+    }
+    func resolvedDiagnostic(_ diagnostic: BuildDiagnostic) -> BuildDiagnostic? {
+        if let file = diagnostic.file, ["tex", "sty", "cls", "bib"].contains(file.pathExtension.lowercased()) {
+            var located = diagnostic; located.line = diagnostic.line ?? 1
+            return located
+        }
+        guard let label = labelNode(for: diagnostic), let file = label.url else { return nil }
+        var located = diagnostic; located.file = file; located.line = 1
+        return located
+    }
+    func openDiagnostic(_ diagnostic: BuildDiagnostic) {
+        build.selectDiagnostic(diagnostic)
+        if let label = labelNode(for: diagnostic), diagnostic.message.localizedCaseInsensitiveContains("multiply"), let file = label.url {
+            openSource(file, offset: label.offset)
+        } else if let located = resolvedDiagnostic(diagnostic), let file = located.file {
+            openSource(file, line: located.line ?? 1)
+        } else { return }
+        if diagnostic.category.isProofreading, canSync, let document = activeDocument {
+            syncSourceToPDF(line: EditorSurface.lineNumber(atCharacter: document.selection.location, in: document.text))
+        }
+    }
+    func navigateDiagnostic(_ offset: Int) {
+        let candidates = build.diagnostics.compactMap(resolvedDiagnostic)
+        guard let diagnostic = build.neighboringDiagnostic(offset: offset, in: candidates) else { return }
+        sidebarVisible = true; sidebarMode = .result
+        openDiagnostic(diagnostic)
+    }
 
     /// Show a source line in the PDF: used by ⌘-click and by sidebar navigation.
     /// Does nothing when the project has never been built, which keeps those gestures
     /// harmless before the first compile.
     func syncSourceToPDF(line: Int) {
-        guard let synctex = BuildSettings.shared.synctexPath, let pdf = build.pdfURL,
-              let document = activeDocument else { return }
-        guard let found = SyncTeXService.forward(line: line, file: document.url, pdf: pdf, executable: synctex) else { return }
-        if paneMode == .editor { paneMode = .split }
-        build.highlight(page: found.page, point: found.point)
+        guard let document = activeDocument else { return }
+        guard let pdf = build.pdfURL else { syncStatusMessage = "Compile the document before locating it in the PDF."; return }
+        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX was not found in the configured TeX folder."; return }
+        syncTask?.cancel(); syncStatusMessage = "Locating in PDF…"
+        let source = document.url, main = root, version = build.pdfVersion
+        syncTask = Task { [weak self] in
+            do {
+                let found = try await SyncTeXService.forward(line: line, file: source, pdf: pdf, executable: synctex)
+                guard !Task.isCancelled, let self, self.root == main, self.build.pdfVersion == version else { return }
+                if self.paneMode == .editor { self.paneMode = .split }
+                self.build.highlight(page: found.page, point: found.point, width: found.width, height: found.height)
+                self.syncStatusMessage = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.syncStatusMessage = error.localizedDescription
+            }
+        }
     }
 
     /// ⌘-click in the PDF: open the matching source line.
     func syncPDFToSource(page: Int, point: CGPoint) {
-        guard let synctex = BuildSettings.shared.synctexPath, let pdf = build.pdfURL else { return }
-        guard let found = SyncTeXService.inverse(page: page, x: point.x, y: point.y, pdf: pdf, executable: synctex) else { return }
-        openSource(found.file, line: found.line)
+        guard let pdf = build.pdfURL else { syncStatusMessage = "Compile the document before locating its source."; return }
+        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX was not found in the configured TeX folder."; return }
+        syncTask?.cancel(); syncStatusMessage = "Locating source…"
+        let main = root, version = build.pdfVersion, sourceDirectory = directory
+        syncTask = Task { [weak self] in
+            do {
+                let found = try await SyncTeXService.inverse(page: page, x: point.x, y: point.y, pdf: pdf, executable: synctex, sourceDirectory: sourceDirectory)
+                guard !Task.isCancelled, let self, self.root == main, self.build.pdfVersion == version else { return }
+                self.openSource(found.file, line: found.line)
+                if let document = self.activeDocument, document.url == found.file.standardizedFileURL {
+                    if let surface = document.editorSurface { surface.textView.highlightSourceLine(found.line) }
+                    else { document.pendingHighlightedLine = found.line }
+                }
+                self.syncStatusMessage = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.syncStatusMessage = error.localizedDescription
+            }
+        }
     }
     func navigate(_ node: NavigationNode) {
         selectedNodes[sidebarMode] = node.id
@@ -506,6 +731,8 @@ final class ProjectStore: ObservableObject {
         let location = history[target]; openSource(location.url, offset: location.offset, recordHistory: false)
     }
     func edited(_ doc: SourceDocument) {
+        editRevision += 1; previewIsOutdated = true
+        scheduleSessionSave()
         objectWillChange.send()
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         refreshIndex()
@@ -524,7 +751,7 @@ final class ProjectStore: ObservableObject {
             try doc.text.write(to: doc.url, atomically: true, encoding: .utf8)
             doc.savedText = doc.text; doc.diskText = doc.text
             objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
-            refreshIndex(immediate: true); return true
+            refreshIndex(immediate: true); scheduleSessionSave(); return true
         } catch {
             if ProjectIndexer.isPermissionError(error) { verifyFolderAccess(prompt: false); promptForFolderAccess() }
             else { showError("Could Not Save", error.localizedDescription) }
@@ -538,9 +765,11 @@ final class ProjectStore: ObservableObject {
         doc.url = destination
         if root == oldURL { root = destination; try? library.record(destination) }
         history = history.map { $0.url == oldURL ? EditorLocation(url: destination, offset: $0.offset) : $0 }
+        indexCache.invalidateInventory()
         if selectedFolder == oldURL.deletingLastPathComponent() { selectedFolder = destination.deletingLastPathComponent() }
         objectWillChange.send()
         refreshIndex(immediate: true)
+        persistSession(force: true); sessionStore.flush()
     }
 
     func saveActive() {
@@ -571,15 +800,22 @@ final class ProjectStore: ObservableObject {
         alert.informativeText = dirty.map { $0.url.lastPathComponent }.joined(separator: "\n")
         alert.addButton(withTitle: "Save"); alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Discard Changes")
         switch alert.runModal() {
-        case .alertFirstButtonReturn: return dirty.allSatisfy { save($0) }
+        case .alertFirstButtonReturn:
+            let saved = dirty.allSatisfy { save($0) }
+            if saved { persistSession(); sessionStore.flush() }
+            return saved
         case .alertThirdButtonReturn: return true
         default: return false
         }
     }
     func close(_ doc: SourceDocument) {
         guard doc.url != root, confirmClose([doc]) else { return }
-        if activeID == doc.id { activeID = documents.first?.id }
+        if activeID == doc.id {
+            syncTask?.cancel(); syncStatusMessage = nil
+            activeID = documents.first?.id
+        }
         documents.removeAll { $0.id == doc.id }
+        persistSession(force: true); sessionStore.flush()
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         refreshIndex(immediate: true)
     }
@@ -604,9 +840,9 @@ final class ProjectStore: ObservableObject {
     /// Manual compile: save everything first, and stop if any save fails.
     func buildNow() {
         guard let root else { return }
-        guard BuildSettings.shared.toolchain.isReady else {
-            showError("No TeX installation found",
-                      "QuillTeX could not find latexmk in \(BuildSettings.shared.texBinDirectory). Set the TeX path in Settings, then try again.")
+        let preflight = BuildSettings.shared.preflight(engine: engine, strategy: strategy)
+        guard preflight.isReady else {
+            showError("Compile Tools Missing", preflight.message)
             return
         }
         guard saveAll() else {
@@ -619,7 +855,8 @@ final class ProjectStore: ObservableObject {
                                               engine: engine,
                                               steps: strategy.steps,
                                               toolPaths: settings.toolchain.paths,
-                                              environment: settings.environment))
+                                              environment: settings.environment,
+                                              sourceRevision: editRevision))
     }
 
     /// AUTO mode: save after typing settles, then compile after a second pause.
@@ -643,10 +880,20 @@ final class ProjectStore: ObservableObject {
         autoCompileTask?.cancel()
         guard let pdf = expectedPDF, FileManager.default.fileExists(atPath: pdf.path) else { return }
         build.adoptExistingPDF(pdf)
+        previewIsOutdated = previewIsOutdated || sourcesAreNewerThanPDF(documents.map(\.url))
+    }
+
+    private func sourcesAreNewerThanPDF(_ urls: [URL]) -> Bool {
+        guard let pdf = build.pdfURL,
+              let date = try? pdf.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return false }
+        return urls.contains { url in
+            guard let changed = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return false }
+            return changed > date
+        }
     }
 
     func refreshIndex(immediate: Bool = false) {
-        indexTask?.cancel(); generation += 1
+        indexTask?.cancel(); indexWorker?.cancel(); generation += 1
         let token = generation
         guard let root else { return }
         let snapshots = Dictionary(uniqueKeysWithValues: documents.map { ($0.url, $0.text) })
@@ -654,12 +901,21 @@ final class ProjectStore: ObservableObject {
             if !immediate { try? await Task.sleep(for: .milliseconds(500)) }
             guard !Task.isCancelled else { return }
             self?.isIndexing = true
-            let result = await Task.detached(priority: .userInitiated) { ProjectIndexer(root: root, overrides: snapshots).build() }.value
-            guard !Task.isCancelled, let self, token == self.generation else { return }
+            guard let self else { return }
+            let cache = self.indexCache
+            let worker = Task.detached(priority: .userInitiated) { ProjectIndexer(root: root, overrides: snapshots, cache: cache).build() }
+            self.indexWorker = worker
+            let result = await worker.value
+            guard !Task.isCancelled, token == self.generation else { return }
             self.index = result; self.isIndexing = false
+            func sourceURLs(_ nodes: [NavigationNode]) -> [URL] {
+                nodes.flatMap { node in (node.kind == .source ? node.url.map { [$0] } ?? [] : []) + sourceURLs(node.children) }
+            }
+            if self.sourcesAreNewerThanPDF(sourceURLs(result.subfiles) + [root]) { self.previewIsOutdated = true }
         }
     }
     func checkExternalChanges() {
+        indexCache.invalidateInventory()
         guard !checkingExternal else { return }
         checkingExternal = true; defer { checkingExternal = false }
         for doc in documents {
@@ -677,8 +933,10 @@ final class ProjectStore: ObservableObject {
         refreshIndex(immediate: true)
     }
     private func replace(_ doc: SourceDocument, with text: String) {
+        editRevision += 1; previewIsOutdated = true
         doc.text = text; doc.savedText = text; doc.diskText = text
         doc.editorSurface?.reloadFromDisk()
+        scheduleSessionSave()
     }
 }
 
