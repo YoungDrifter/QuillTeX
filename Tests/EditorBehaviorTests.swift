@@ -20,19 +20,8 @@ struct EditorBehaviorTests {
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
-        let visibleFrame = NSRect(x: 100, y: 50, width: 900, height: 600)
-        for caret in [NSRect(x: 990, y: 620, width: 2, height: 20),
-                      NSRect(x: 100, y: 60, width: 2, height: 20),
-                      NSRect(x: 600, y: 350, width: 2, height: 20)] {
-            let popup = CompletionPanel.popupFrame(width: 440, count: 60, caret: caret, visibleFrame: visibleFrame)
-            check(visibleFrame.insetBy(dx: 8, dy: 8).contains(popup), "long completion list stays inside the usable screen")
-            check(popup.height <= 300 && popup.width <= 440, "completion popup has a bounded area")
-        }
-        let smallPopup = CompletionPanel.popupFrame(width: 196, count: 2,
-            caret: NSRect(x: 200, y: 400, width: 2, height: 20), visibleFrame: visibleFrame)
-        check(smallPopup.height == 61, "short lists size to their contents")
-        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates")))
-        let visibility = ProjectStore(library: store.library)
+        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates")), maintainsRootDirectives: false)
+        let visibility = ProjectStore(library: store.library, maintainsRootDirectives: false)
         visibility.documents = [SourceDocument(url: root, text: "")]
         check(!visibility.isTabBarVisible, "one file hides tabs by default")
         visibility.documents.append(SourceDocument(url: child, text: ""))
@@ -44,7 +33,7 @@ struct EditorBehaviorTests {
         visibility.setTabBarVisible(true)
         visibility.documents.removeLast(2)
         check(visibility.isTabBarVisible, "manual show survives closing to one file")
-        check(!ProjectStore(library: store.library).isTabBarVisible, "new workspace has its own default")
+        check(!ProjectStore(library: store.library, maintainsRootDirectives: false).isTabBarVisible, "new workspace has its own default")
 
         store.openProject(child, explicitRoot: true)
         check(store.root == child && store.activeDocument?.url == child, "explicit open uses the selected file despite its root directive")
@@ -58,7 +47,7 @@ struct EditorBehaviorTests {
         check(store.root == root, "root directive resolves main")
         check(store.documents.count == 2 && store.documents.first?.url == root, "root tab pinned first")
         check(store.activeDocument?.url == child, "standalone child open activates the child")
-        let switching = ProjectStore(library: store.library)
+        let switching = ProjectStore(library: store.library, maintainsRootDirectives: false)
         switching.openProject(standalone)
         check(switching.root == standalone, "no directive never substitutes a neighboring main.tex")
         BuildSettings.shared.requireMainFile = true
@@ -74,19 +63,14 @@ struct EditorBehaviorTests {
         switching.openSource(nestedMain)
         let promoted = switching.activeDocument!
         promoted.text += "buffer"
-        try switching.selectMainFile(nestedMain)
-        check(switching.root == nestedMain && switching.directory == nested, "promotion changes compile root and Folder directory")
-        check(switching.documents.first === promoted && switching.documents.count == 2, "new main reuses its existing buffer and becomes the pinned first tab")
-        check(switching.documents.contains { $0 === oldMain && $0.isDirty && $0.selection.location == 3 }, "old main retains unsaved text and selection")
-        check(promoted.text == "Chapter onlybuffer", "promotion preserves the new main's unsaved buffer")
-        check(switching.expectedPDF?.lastPathComponent == "chapter.pdf", "new main replaces preview output name")
-        switching.close(promoted)
-        check(switching.documents.count == 2, "new main is unclosable")
-        try switching.selectMainFile(standalone)
-        check(switching.documents.first === oldMain && switching.documents.count == 2, "switching back reuses old main without duplicate tabs")
+        do { try switching.selectMainFile(nestedMain); fatalError("main file changed") }
+        catch { check(switching.root == standalone, "main-file selection stays fixed after opening a workspace") }
+        check(switching.documents.first === oldMain && switching.documents.count == 2, "a rejected main change preserves tab order")
+        check(oldMain.isDirty && oldMain.selection.location == 3 && promoted.text == "Chapter onlybuffer", "a rejected main change preserves both edited buffers")
+        check(switching.expectedPDF?.lastPathComponent == standalone.deletingPathExtension().lastPathComponent + ".pdf", "a rejected main change preserves the compile target")
         promoted.savedText = promoted.text
         switching.close(promoted)
-        check(switching.documents.count == 1, "former main becomes closable")
+        check(switching.documents.count == 1, "ordinary subfiles remain closable")
         let missing = directory.appendingPathComponent("missing-root.tex")
         try "% !TeX root = absent.tex\nChild".write(to: missing, atomically: true, encoding: .utf8)
         let missingResolution = try ProjectStore.resolveMainFile(missing)
@@ -110,8 +94,8 @@ struct EditorBehaviorTests {
         let dummyPDF = directory.appendingPathComponent("old.pdf")
         try Data("old preview".utf8).write(to: dummyPDF)
         switching.build.adoptExistingPDF(dummyPDF)
-        try switching.selectMainFile(nestedMain)
-        check(switching.build.pdfURL == nil && switching.build.diagnostics.isEmpty, "main switch clears the previous preview and diagnostics")
+        do { try switching.selectMainFile(nestedMain); fatalError("main file changed") } catch {}
+        check(switching.build.pdfURL == dummyPDF, "a rejected main change preserves the existing preview")
         BuildSettings.shared.requireMainFile = false
         store.openSource(root)
         let doc = store.activeDocument!
@@ -256,7 +240,7 @@ struct EditorBehaviorTests {
               "labels come from the project")
         let environmentSuggestion = suggestion("\\begin{ite")!
         let expansion = LaTeXCompletion.insertion(for: "itemize", suggestion: environmentSuggestion, in: "\\begin{ite")
-        check(expansion.text == "itemize}\n\n\\end{itemize}", "an environment closes itself")
+        check(expansion.text == "itemize}\n  \n\\end{itemize}", "an environment closes itself")
         check(LaTeXCompletion.candidates(for: suggestion("\\my")!, labels: [], citations: [],
               projectCommands: ["\\myNorm", "\\myNorm"]).filter { $0 == "\\myNorm" }.count == 1,
               "project macros join completion without duplicate rows")
@@ -267,7 +251,7 @@ struct EditorBehaviorTests {
         let closedEnvironmentInsertion = LaTeXCompletion.insertion(for: "itemize", suggestion: closedEnvironmentSuggestion, in: closedEnvironmentSource)
         let environmentResult = NSMutableString(string: closedEnvironmentSource)
         environmentResult.replaceCharacters(in: closedEnvironmentInsertion.range, with: closedEnvironmentInsertion.text)
-        check(environmentResult as String == "\\begin{itemize}\n\n\\end{itemize}", "an existing closing brace is consumed exactly once")
+        check(environmentResult as String == "\\begin{itemize}\n  \n\\end{itemize}", "an existing closing brace is consumed exactly once")
         let endSource = "\\end{ali}"
         let endInsertion = LaTeXCompletion.insertion(for: "align", suggestion: LaTeXCompletion.suggestion(in: endSource, at: 8)!, in: endSource)
         check(endInsertion.text == "align}" && endInsertion.placeholders.isEmpty, "end completion never inserts an extra end block")
@@ -280,8 +264,86 @@ struct EditorBehaviorTests {
         let fraction = LaTeXCompletion.insertion(for: "\\frac", suggestion: suggestion("\\fra")!, in: "\\fra")
         check(fraction.text == "\\frac{}{}" && fraction.placeholders == [NSRange(location: 6, length: 0), NSRange(location: 8, length: 0)], "fraction snippets have two empty argument ranges")
         let existingArguments = "\\fra{a}{b}"
-        check(LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: existingArguments, at: 4)!, in: existingArguments).text == "\\frac",
+        check(LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: existingArguments, at: 4)!, in: existingArguments).text == "\\frac{a}{b}",
               "command completion preserves existing arguments")
+
+        let reused = LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: existingArguments, at: 4)!, in: existingArguments)
+        check(reused.placeholders == [NSRange(location: 6, length: 1), NSRange(location: 9, length: 1)], "existing arguments remain editable snippet stops")
+        let customSource = "\\myNo{v}"
+        let customInsertion = LaTeXCompletion.insertion(for: "\\myNorm", suggestion: LaTeXCompletion.suggestion(in: customSource, at: 5)!, in: customSource)
+        check(customInsertion.text == "\\myNorm{v}" && customInsertion.placeholders == [NSRange(location: 8, length: 1)], "custom commands also enter their existing argument instead of stopping before the brace")
+        let partialArguments = "\\fra{a}"
+        let partialExpansion = LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: partialArguments, at: 4)!, in: partialArguments)
+        check(partialExpansion.text == "\\frac{a}{}", "missing arguments are appended after existing ones")
+        let unclosedSource = "\\fra{a\nnext line"
+        let unclosedInsertion = LaTeXCompletion.insertion(for: "\\frac", suggestion: LaTeXCompletion.suggestion(in: unclosedSource, at: 4)!, in: unclosedSource)
+        check(unclosedInsertion.text == "\\frac{a}{}" && unclosedInsertion.range.length == 6, "an unfinished argument is repaired without consuming the next line")
+        let beginCommand = LaTeXCompletion.insertion(for: "\\begin", suggestion: suggestion("\\beg")!, in: "\\beg")
+        check(beginCommand.text == "\\begin{}" && beginCommand.placeholders.first?.location == 7, "begin command parks the caret between braces")
+        let refExpansion = LaTeXCompletion.insertion(for: "eq:one", suggestion: suggestion("\\ref{eq")!, in: "\\ref{eq")
+        check(refExpansion.text == "eq:one}", "key completion repairs a missing closing brace")
+        let nestedCompletion = "\\begin{document}\n\\begin{mytheorem}\n\\begin{proof}\n\\end{"
+        let nestedEnd = suggestion(nestedCompletion)!
+        check(LaTeXCompletion.candidates(for: nestedEnd, labels: [], citations: []).prefix(3) == ["proof", "mytheorem", "document"], "end candidates follow the unmatched environment stack, including custom names")
+        let closedNested = "\\begin{document}\n\\begin{proof}\n\\end{proof}\n\\end{"
+        check(LaTeXCompletion.candidates(for: suggestion(closedNested)!, labels: [], citations: []).first == "document", "closed environments are popped from the context")
+        let ignoredBegins = "% \\begin{fake}\n\\verb|\\begin{literal}|\n\\begin{real}\n\\end{"
+        check(LaTeXCompletion.candidates(for: suggestion(ignoredBegins)!, labels: [], citations: []).first == "real", "comments and literal text cannot capture end completion")
+        let endCommandSource = "\\begin{proof}\n\\en"
+        check(LaTeXCompletion.insertion(for: "\\end", suggestion: suggestion(endCommandSource)!, in: endCommandSource).text == "\\end{proof}", "end command completion fills the nearest open name")
+        let innerSame = "\\begin{itemize}\n  \\begin{ite}\n\\end{itemize}"
+        let innerOffset = (innerSame as NSString).range(of: "ite}").location + 3
+        let innerExpansion = LaTeXCompletion.insertion(for: "itemize", suggestion: LaTeXCompletion.suggestion(in: innerSame, at: innerOffset)!, in: innerSame)
+        check(innerExpansion.text == "itemize}", "an existing closer can finish the current nested environment")
+        let futureNested = "\\begin{ite}\n\\begin{itemize}\n\\end{itemize}"
+        let futureExpansion = LaTeXCompletion.insertion(for: "itemize", suggestion: LaTeXCompletion.suggestion(in: futureNested, at: 10)!, in: futureNested)
+        check(futureExpansion.text.contains("\n  \n\\end{itemize}"), "a closer belonging to a later nested block does not suppress the current closing pair")
+        let pairView = SourceTextView()
+        pairView.isRichText = false; pairView.allowsUndo = true
+        pairView.documentUndoManager.groupsByEvent = false
+        func typeIntoPair(_ text: String) {
+            pairView.documentUndoManager.beginUndoGrouping()
+            pairView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            pairView.documentUndoManager.endUndoGrouping()
+        }
+        pairView.string = ""; typeIntoPair("{")
+        check(pairView.string == "{}" && pairView.selectedRange().location == 1, "typing an opener inserts its pair with the caret inside")
+        pairView.documentUndoManager.beginUndoGrouping()
+        pairView.deleteBackward(nil)
+        pairView.documentUndoManager.endUndoGrouping()
+        check(pairView.string.isEmpty, "backspace removes an empty automatic pair together")
+        typeIntoPair("{")
+        typeIntoPair("中文😀"); typeIntoPair("}")
+        check(pairView.string == "{中文😀}" && pairView.selectedRange().location == 6, "typing an existing closer advances past it without duplicating Unicode text")
+        pairView.string = "selected"; pairView.setSelectedRange(NSRange(location: 0, length: 8))
+        typeIntoPair("(")
+        check(pairView.string == "(selected)" && pairView.selectedRange() == NSRange(location: 1, length: 8), "pair typing wraps and preserves selected source")
+        pairView.string = "\\begin{proof}"; pairView.setSelectedRange(NSRange(location: 12, length: 0))
+        pairView.documentUndoManager.removeAllActions(); typeIntoPair("}")
+        check(pairView.string == "\\begin{proof}\n  \n\\end{proof}" && pairView.selectedRange().location == 16, "manually finishing begin creates end and parks the caret in the body")
+        pairView.documentUndoManager.undo()
+        check(pairView.string == "\\begin{proof}", "the automatic closing environment is a single undoable edit")
+        check(LaTeXCompletion.typingInsertion("{", range: NSRange(location: 3, length: 0), in: "% x") == nil, "pair insertion leaves comments untouched")
+        let literalPair = "\\begin{verbatim}\n"
+        check(LaTeXCompletion.typingInsertion("(", range: NSRange(location: literalPair.utf16.count, length: 0), in: literalPair) == nil, "pair insertion leaves literal environments untouched")
+        pairView.string = ""; pairView.setSelectedRange(NSRange(location: 0, length: 0)); typeIntoPair("\\ref{eq}")
+        check(pairView.string == "\\ref{eq}", "pasted source bypasses single-key pairing")
+        pairView.string = "\\"; pairView.setSelectedRange(NSRange(location: 1, length: 0))
+        typeIntoPair("["); typeIntoPair("x"); typeIntoPair("\\"); typeIntoPair("]")
+        check(pairView.string == "\\[x\\]" && pairView.selectedRange().location == 5, "display-math delimiter pairs can be typed through without duplicate slashes")
+        pairView.string = "\\left"; pairView.setSelectedRange(NSRange(location: 5, length: 0))
+        typeIntoPair("("); typeIntoPair("x"); typeIntoPair(")")
+        check(pairView.string == "\\left(x\\right)" && pairView.selectedRange().location == 14, "left delimiters get a matching right command and can be typed through")
+        pairView.string = ""; pairView.setSelectedRange(NSRange(location: 0, length: 0))
+        pairView.documentUndoManager.beginUndoGrouping()
+        pairView.setMarkedText("{", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        check(pairView.string == "{" && pairView.hasMarkedText(), "input-method composition bypasses pair insertion")
+        pairView.unmarkText()
+        pairView.documentUndoManager.endUndoGrouping()
+        let crlfBegin = "\\begin{document}\r\n  \\begin{proof}"
+        let crlfCaret = crlfBegin.utf16.count - 1
+        let crlfEnd = LaTeXCompletion.typingInsertion("}", range: NSRange(location: crlfCaret, length: 0), in: crlfBegin)
+        check(crlfEnd?.text == "}\r\n    \r\n  \\end{proof}", "automatic environments preserve CRLF and current indentation")
 
         let snippetView = SourceTextView()
         snippetView.isRichText = false; snippetView.allowsUndo = true; snippetView.string = "\\fra"
@@ -339,14 +401,103 @@ struct EditorBehaviorTests {
               "environments hint too")
         check(LaTeXCompletion.inline(in: "\\ref{wave", at: 9, labels: ["wave_function"], citations: [])?.remainder == "_function",
               "labels hint from the project")
+        let emptyEnvironment = "\\begin{}"
+        let emptyEnvironmentHint = LaTeXCompletion.inline(in: emptyEnvironment, at: 7, labels: [], citations: [])!
+        let emptyEnvironmentPreview = LaTeXCompletion.inlinePreview(for: emptyEnvironmentHint, in: emptyEnvironment, at: 7)!
+        check(emptyEnvironmentPreview.text == "abstract}" &&
+              emptyEnvironmentPreview.coveredBrace == NSRange(location: 7, length: 1),
+              "an empty environment previews the complete brace argument without drawing over the existing closer")
+        let partialEnvironment = "\\begin{a}"
+        let partialEnvironmentHint = LaTeXCompletion.inline(in: partialEnvironment, at: 8, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: partialEnvironmentHint, in: partialEnvironment, at: 8)?.text == "bstract}",
+              "typing part of an environment still previews its closing brace")
+        let missingEnvironmentBrace = "\\begin{a"
+        let missingEnvironmentHint = LaTeXCompletion.inline(in: missingEnvironmentBrace, at: 8, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: missingEnvironmentHint, in: missingEnvironmentBrace, at: 8) ==
+              .init(text: "bstract}", coveredBrace: nil), "the preview includes a missing closer without covering source")
+        let previewFractionHint = LaTeXCompletion.inline(in: "\\fra", at: 4, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: previewFractionHint, in: "\\fra", at: 4)?.text == "c{}{}",
+              "command previews show the same parameter braces that acceptance will insert")
+        for (formula, prefix) in [("$\\al$", "$\\al"), ("\\[\\fra\\]", "\\[\\fra"),
+                                  ("\\(\\sq\\)", "\\(\\sq"), ("$\\frac{\\al}{x}+1$", "$\\frac{\\al"),
+                                  ("\\begin{equation}\n\\su+1\n\\end{equation}", "\\begin{equation}\n\\su")] {
+            let offset = prefix.utf16.count
+            let hint = LaTeXCompletion.inline(in: formula, at: offset, labels: [], citations: [])!
+            let preview = LaTeXCompletion.inlinePreview(for: hint, in: formula, at: offset)
+            check(hint.inMath && preview != nil, "math completion is visible before paired delimiters and existing math source")
+            check(preview?.coveredTail?.location == offset && preview?.trailingText != nil,
+                  "math source is moved after the hint instead of being overpainted")
+        }
+        let pairedFraction = "$\\fra$"
+        let pairedHint = LaTeXCompletion.inline(in: pairedFraction, at: 5, labels: [], citations: [])!
+        let pairedPreview = LaTeXCompletion.inlinePreview(for: pairedHint, in: pairedFraction, at: 5)!
+        check(pairedPreview.text == "c{}{}" && pairedPreview.trailingText == NSRange(location: 5, length: 1),
+              "fraction hints include both argument pairs while retaining the closing dollar")
+        let fullFraction = "$\\frac$"
+        let fullFractionHint = LaTeXCompletion.inline(in: fullFraction, at: 6, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: fullFractionHint, in: fullFraction, at: 6)?.text == "{}{}",
+              "a complete math command still offers its missing argument braces")
+        let occupiedTail = "\\begin{a} remaining text"
+        let occupiedHint = LaTeXCompletion.inline(in: occupiedTail, at: 8, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: occupiedHint, in: occupiedTail, at: 8) == nil,
+              "a preview cannot cover following prose")
+        let insideName = "\\begin{align}"
+        let insideHint = LaTeXCompletion.inline(in: insideName, at: 8, labels: [], citations: [])!
+        check(LaTeXCompletion.inlinePreview(for: insideHint, in: insideName, at: 8) == nil,
+              "a preview cannot cover the rest of an existing environment name")
+        func environmentHint(_ prefix: String) -> LaTeXCompletion.Inline? {
+            LaTeXCompletion.inline(in: "\\begin{\(prefix)}", at: 7 + prefix.utf16.count, labels: [], citations: [],
+                                   projectEnvironments: ["algorithmic", "analysis"])
+        }
+        check(environmentHint("a")?.full == "algorithmic", "matching custom environments precede built-in environments")
+        check(environmentHint("al")?.full == "algorithmic" && environmentHint("ali")?.full == "align",
+              "the inline suggestion follows each typed prefix and falls back to matching built-ins")
+        check(LaTeXCompletion.inline(in: "\\mat", at: 4, labels: [], citations: [],
+              projectCommands: ["\\mathy"])?.full == "\\mathy", "matching custom commands precede built-in commands")
+        let closingProof = "\\begin{proof}\n\\end{p"
+        check(LaTeXCompletion.inline(in: closingProof, at: closingProof.utf16.count, labels: [], citations: [],
+              projectEnvironments: ["proposition"])?.full == "proof", "end completion still prefers the current open environment")
+        check(LaTeXCompletion.inline(in: "\\pha", at: 4, labels: [], citations: []) == nil,
+              "inline completion follows the prefix instead of matching letters inside unrelated names")
 
-        // The candidate box is as wide as its longest row, within bounds.
-        let narrow = LaTeXCompletion.panelWidth(for: [.init(title: "\\frac")])
-        let wide = LaTeXCompletion.panelWidth(for: [.init(title: "\\DeclareMathOperatorWithAVeryLongName")])
-        check(wide > narrow, "a longer candidate makes a wider panel")
-        check(narrow >= 196, "the panel keeps a comfortable floor")
-        check(LaTeXCompletion.panelWidth(for: [.init(title: "\\" + String(repeating: "x", count: 120))]) <= 440,
-              "a very long name cannot stretch the panel past its cap")
+        let inlineView = SourceTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 180))
+        inlineView.isRichText = false; inlineView.allowsUndo = true
+        inlineView.documentUndoManager.groupsByEvent = false
+        inlineView.string = emptyEnvironment
+        let inlineWindow = NSWindow(contentRect: inlineView.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        inlineWindow.contentView = inlineView
+        inlineWindow.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        inlineWindow.orderFront(nil)
+        inlineWindow.makeFirstResponder(inlineView)
+        inlineView.setSelectedRange(NSRange(location: 7, length: 0))
+        inlineView.refreshInlineHint()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+        check(inlineView.string == emptyEnvironment && !inlineView.documentUndoManager.canUndo,
+              "a visible preview never enters source text or undo history")
+        check(inlineView.acceptInlineHint(), "Tab can accept the inline preview without a candidate list")
+        check(inlineView.string == "\\begin{abstract}\n  \n\\end{abstract}" && inlineView.selectedRange().location == 19,
+              "accepting the complete preview inserts one closing brace and enters the environment body")
+        inlineView.string = "\\beg"; inlineView.endSnippet()
+        inlineView.setSelectedRange(NSRange(location: 4, length: 0))
+        inlineView.refreshInlineHint()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        check(inlineView.acceptInlineHint() && inlineView.string == "\\begin{}",
+              "an inline command completion enters its empty parameter")
+        inlineView.refreshInlineHint()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let inlineTab = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: inlineWindow.windowNumber, context: nil, characters: "\t",
+            charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48)!
+        inlineView.keyDown(with: inlineTab)
+        check(inlineView.string == "\\begin{abstract}\n  \n\\end{abstract}" && inlineView.selectedRange().location == 19,
+              "Tab accepts the environment hint before advancing out of the command snippet")
+        inlineView.string = occupiedTail; inlineView.endSnippet()
+        inlineView.setSelectedRange(NSRange(location: 8, length: 0))
+        inlineView.refreshInlineHint()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        check(!inlineView.acceptInlineHint() && inlineView.string == occupiedTail,
+              "Tab never accepts an invisible suggestion over existing prose")
+        inlineWindow.close()
 
         // Citation keys come out of .bib files.
         check(ProjectIndexer.citationKeys(in: "@article{knuth84,\n  title={Literate Programming}\n}\n@book{lamport94}") == ["knuth84", "lamport94"],
@@ -410,7 +561,7 @@ struct EditorBehaviorTests {
         check(store.creationDirectory?.standardizedFileURL == directory.standardizedFileURL, "creation defaults to the project root")
         let chapters = try store.createFolder(named: "chapters", in: directory)
         let subfolder = try store.createFolder(named: "中文 文件夹", in: chapters)
-        store.sidebarMode = .folder; store.selectedFolder = subfolder
+        store.sidebarMode = .folder; store.toggleFolder(subfolder)
         check(store.creationDirectory?.standardizedFileURL == subfolder.standardizedFileURL, "folder selection determines the creation location")
         store.sidebarMode = .subfiles
         check(store.creationDirectory?.standardizedFileURL == directory.standardizedFileURL, "Subfiles creation starts at the project root")

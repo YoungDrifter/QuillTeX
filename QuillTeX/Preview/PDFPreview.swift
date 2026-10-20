@@ -5,37 +5,62 @@ import AppKit
 /// The header controls act on the mounted PDFKit view without reloading the PDF.
 final class PDFPreviewControls: ObservableObject {
     weak var view: SyncPDFView?
+    @Published private(set) var scaleFactor: CGFloat = 1
+    @Published private(set) var hasDocument = false
+    private var observers: [NSObjectProtocol] = []
+    private var refresh: DispatchWorkItem?
+    static func formattedPercentage(_ scale: CGFloat) -> String {
+        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), scale * 100)
+            .replacingOccurrences(of: ".0", with: "") + "%"
+    }
+    var percentage: String { hasDocument ? Self.formattedPercentage(scaleFactor) : "—" }
+
     func attach(_ view: SyncPDFView) {
+        guard self.view !== view else { return }
+        observers.forEach(NotificationCenter.default.removeObserver)
         self.view = view
+        for name in [Notification.Name.PDFViewScaleChanged, .PDFViewDocumentChanged] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: view, queue: .main) { [weak self] _ in
+                self?.scheduleRefresh()
+            })
+        }
+        scheduleRefresh()
     }
-
-    private func manualZoom() {
-        view?.autoScales = false
-        view?.zoomMode = .manual
+    private func scheduleRefresh() {
+        refresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let scale = self.view?.scaleFactor ?? 1
+            if scale.isFinite, self.scaleFactor != scale { self.scaleFactor = scale }
+            let loaded = self.view?.document != nil
+            if self.hasDocument != loaded { self.hasDocument = loaded }
+        }
+        refresh = work
+        DispatchQueue.main.async(execute: work)
     }
-
-    func zoomIn() {
-        guard let view, view.document != nil else { return }
-        manualZoom()
-        view.scaleFactor = min(view.maxScaleFactor, view.scaleFactor + 0.25)
-        view.scheduleReadingStateReport()
+    deinit {
+        refresh?.cancel()
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
-
-    func zoomOut() {
-        guard let view, view.document != nil else { return }
-        manualZoom()
-        view.scaleFactor = max(view.minScaleFactor, view.scaleFactor - 0.25)
-        view.scheduleReadingStateReport()
+    func zoomIn() { view?.zoomIn(nil) }
+    func zoomOut() { view?.zoomOut(nil) }
+    func setPercentage(_ text: String) -> Bool {
+        let number = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "%", with: "").replacingOccurrences(of: ",", with: ".")
+        guard let percentage = Double(number), percentage.isFinite, percentage > 0,
+              let view, view.document != nil else { return false }
+        view.setZoomPercentage(CGFloat(percentage))
+        return true
     }
+    func actualSize() { view?.actualSize(nil) }
+    func fitWidth() { view?.fitWidth() }
+}
 
-    func fitPage() {
-        guard let view, view.document != nil else { return }
-        view.fitPage()
-    }
-
-    func fitWidth() {
-        guard let view, view.document != nil else { return }
-        view.fitWidth()
+private struct PDFPreviewControlsKey: FocusedValueKey { typealias Value = PDFPreviewControls }
+extension FocusedValues {
+    var pdfPreviewControls: PDFPreviewControls? {
+        get { self[PDFPreviewControlsKey.self] }
+        set { self[PDFPreviewControlsKey.self] = newValue }
     }
 }
 
@@ -132,7 +157,7 @@ final class SyncPDFView: PDFView {
     var onCommandClick: ((Int, CGPoint) -> Void)?
     var onReadingStateChanged: ((PDFReadingState) -> Void)?
     typealias ZoomMode = PDFZoomMode
-    var zoomMode = ZoomMode.wholePage
+    var zoomMode = ZoomMode.width
     private weak var observedClip: NSClipView?
     private var boundsObserver: NSObjectProtocol?
     private var adjustingHorizontalPosition = false
@@ -151,7 +176,7 @@ final class SyncPDFView: PDFView {
         readingStateReport?.cancel()
         lastReportedState = nil
         removeTargetHighlight()
-        zoomMode = .wholePage
+        zoomMode = .width
         document = nil
     }
 
@@ -181,7 +206,7 @@ final class SyncPDFView: PDFView {
             self.document = document
             minScaleFactor = 0.1
             maxScaleFactor = 4
-            if let previous { restore(previous) } else { fitPage() }
+            if let previous { restore(previous) } else { fitWidth() }
             layoutSubtreeIfNeeded()
             layoutDocumentView()
         }
@@ -190,6 +215,7 @@ final class SyncPDFView: PDFView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             guard let self, self.refreshGeneration == generation else { return }
             self.layoutSubtreeIfNeeded()
+            if previous == nil, self.zoomMode == .width { self.fitWidth() }
             self.documentView?.displayIfNeeded()
             self.displayIfNeeded()
             self.refreshCover?.removeFromSuperview()
@@ -210,34 +236,38 @@ final class SyncPDFView: PDFView {
         return page.rotation % 180 == 0 ? size : NSSize(width: size.height, height: size.width)
     }
 
-    /// Fit Page uses both viewport dimensions; Fit Width uses only its width.
-    var wholePageScale: CGFloat {
-        guard let size = pageSize, size.width > 0, size.height > 0 else { return 1 }
-        let width = bounds.width
-        let height = bounds.height
-        guard width > 0, height > 0 else { return 1 }
-        return min(width / size.width, height / size.height)
+    override func zoomIn(_ sender: Any?) { setManualScale(scaleFactor + 0.25) }
+    override func zoomOut(_ sender: Any?) { setManualScale(scaleFactor - 0.25) }
+    @objc func actualSize(_ sender: Any?) { setManualScale(1) }
+    func setZoomPercentage(_ percent: CGFloat) { setManualScale(percent / 100) }
+    @objc private func fitWidthFromMenu(_ sender: Any?) { fitWidth() }
+
+    private func setManualScale(_ scale: CGFloat) {
+        guard document != nil else { return }
+        zoomMode = .manual
+        autoScales = false
+        scaleFactor = min(maxScaleFactor, max(minScaleFactor, scale))
+        configureHorizontalScrolling()
+        layoutDocumentView()
+        scheduleReadingStateReport()
     }
 
-    func fitPage() {
-        zoomMode = .wholePage
-        autoScales = false
-        pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-        configureHorizontalScrolling()
-        scaleFactor = min(maxScaleFactor, max(minScaleFactor, wholePageScale))
-        if let page = currentPage ?? document?.page(at: 0) {
-            layoutDocumentView()
-            if let scroll = documentView?.enclosingScrollView, let documentView = scroll.documentView {
-                let pageRect = convert(page.bounds(for: displayBox), from: page)
-                let rect = documentView.convert(pageRect, from: self)
-                let clip = scroll.contentView.bounds
-                scroll.contentView.scroll(to: NSPoint(x: rect.midX - clip.width / 2,
-                                                     y: max(documentView.bounds.minY, rect.midY - clip.height / 2)))
-                scroll.reflectScrolledClipView(scroll.contentView)
-            }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        for (title, action) in [("Zoom In", #selector(zoomIn(_:))), ("Zoom Out", #selector(zoomOut(_:))),
+                                ("Actual Size", #selector(actualSize(_:))), ("Fit Width", #selector(fitWidthFromMenu(_:)))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = document != nil
+            menu.addItem(item)
         }
-        centerHorizontally()
-        scheduleReadingStateReport()
+        if currentSelection != nil {
+            menu.addItem(.separator())
+            let copy = NSMenuItem(title: "Copy", action: #selector(PDFView.copy(_:)), keyEquivalent: "")
+            copy.target = self
+            menu.addItem(copy)
+        }
+        return menu
     }
 
     override func layout() {
@@ -347,12 +377,12 @@ final class SyncPDFView: PDFView {
         let index = min(max(position.pageIndex, 0), document.pageCount - 1)
         guard let page = document.page(at: index) else { return }
         guard position.topPoint.x.isFinite, position.topPoint.y.isFinite,
-              position.scale.isFinite, position.scale > 0 else { fitPage(); return }
+              position.scale.isFinite, position.scale > 0 else { fitWidth(); return }
         let media = page.bounds(for: .mediaBox)
         let point = CGPoint(x: media.minX + position.topPoint.x, y: media.maxY - position.topPoint.y)
-        zoomMode = position.zoomMode
-        pageBreakMargins = zoomMode == .wholePage ? NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-            : NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        // Old sessions may contain wholePage; retain their scale as a manual zoom.
+        zoomMode = position.zoomMode == .wholePage ? .manual : position.zoomMode
+        pageBreakMargins = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
         autoScales = false
         scaleFactor = min(maxScaleFactor, max(minScaleFactor, position.scale))
         configureHorizontalScrolling()
@@ -435,6 +465,47 @@ struct PreviewPane: View {
     @ObservedObject var store: ProjectStore
     @ObservedObject private var build: BuildController
     @StateObject private var controls = PDFPreviewControls()
+    @State private var zoomText = ""
+    @State private var zoomTextEdited = false
+    @FocusState private var zoomFocused: Bool
+
+    private func commitZoom() {
+        guard zoomTextEdited else { return }
+        zoomTextEdited = false
+        _ = controls.setPercentage(zoomText)
+        let factor = controls.view?.scaleFactor ?? controls.scaleFactor
+        zoomText = controls.hasDocument ? PDFPreviewControls.formattedPercentage(factor) : "—"
+    }
+
+    private func performZoom(_ action: () -> Void) {
+        zoomTextEdited = false
+        action()
+        zoomText = PDFPreviewControls.formattedPercentage(controls.view?.scaleFactor ?? controls.scaleFactor)
+    }
+
+    private var zoomInput: some View {
+        TextField("Zoom", text: Binding(get: { zoomText }, set: { zoomText = $0; zoomTextEdited = true }))
+            .textFieldStyle(.plain).font(.system(size: 11, weight: .medium)).monospacedDigit()
+            .multilineTextAlignment(.center)
+            .focused($zoomFocused)
+            .onSubmit { commitZoom(); zoomFocused = false }
+            .onChange(of: zoomFocused) { _, focused in
+                if !focused { commitZoom() }
+            }
+            .onChange(of: controls.percentage) { _, value in
+                zoomText = value
+                zoomTextEdited = false
+            }
+            .onAppear { zoomText = controls.percentage }
+            .accessibilityLabel("Zoom percentage")
+        .padding(.horizontal, 10)
+        .frame(width: ChromeMetrics.zoomInputWidth, height: ChromeMetrics.previewControlHeight)
+        .foregroundStyle(Palette.primaryInk).tint(Palette.primaryInk)
+        .modifier(PreviewControlSurface(focused: zoomFocused))
+        .contentShape(Capsule())
+        .onTapGesture { if controls.hasDocument { zoomFocused = true } }
+        .help("Enter a zoom percentage")
+    }
 
     init(store: ProjectStore) {
         self.store = store
@@ -447,10 +518,9 @@ struct PreviewPane: View {
                 Text("PDF Preview").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 4) {
-                    PreviewZoomButton(icon: "minus.magnifyingglass", label: "Zoom Out", action: controls.zoomOut)
-                    PreviewZoomButton(icon: "plus.magnifyingglass", label: "Zoom In", action: controls.zoomIn)
-                    PreviewZoomButton(icon: "arrow.down.forward.and.arrow.up.backward", label: "Fit Page", action: controls.fitPage)
-                    PreviewZoomButton(icon: "arrow.left.and.right", label: "Fit Width", action: controls.fitWidth)
+                    zoomInput
+                    PreviewZoomButton(icon: "1.square", label: "Actual Size (100%)") { performZoom(controls.actualSize) }
+                    PreviewZoomButton(icon: "arrow.left.and.right", label: "Fit Width") { performZoom(controls.fitWidth) }
                 }
                 .fixedSize()
                 .disabled(build.pdfURL == nil)
@@ -483,27 +553,59 @@ struct PreviewPane: View {
             }
         }
         .background(Palette.previewCanvas)
+        .focusedSceneValue(\.pdfPreviewControls, controls)
+    }
+}
+
+/// One surface language for all three PDF controls, including the editable value.
+private struct PreviewControlSurface: ViewModifier {
+    var focused = false
+    var pressed = false
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                Capsule().fill(LinearGradient(
+                    colors: [pressed ? Palette.subtleSurface : .white,
+                             focused ? .white : Palette.subtleSurface],
+                    startPoint: .top, endPoint: .bottom))
+            }
+            .overlay {
+                Capsule().strokeBorder(Palette.primaryInk.opacity(focused ? 0.6 : (hovered || pressed ? 0.34 : 0.22)),
+                    lineWidth: focused ? 1.2 : 0.8).allowsHitTesting(false)
+            }
+            .opacity(isEnabled ? 1 : 0.4)
+            .onHover { hovered = $0 && isEnabled }
+            .animation(reduceMotion ? nil : ChromeMotion.feedback, value: hovered)
+            .animation(reduceMotion ? nil : ChromeMotion.feedback, value: focused)
+            .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
+    }
+}
+
+private struct PreviewControlButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Palette.primaryInk)
+            .modifier(PreviewControlSurface(pressed: configuration.isPressed))
+            .contentShape(Capsule())
     }
 }
 
 private struct PreviewZoomButton: View {
     let icon: String
     let label: String
-    var selected = false
     let action: () -> Void
-    @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-            .font(.system(size: 16))
-            .foregroundStyle(Palette.primaryInk)
-            .frame(width: 28, height: 28)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Palette.primaryInk.opacity(selected ? Palette.selectedOpacity : (hovered ? Palette.chromeHoverOpacity : 0))))
-            .contentShape(Rectangle())
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: ChromeMetrics.previewActionWidth, height: ChromeMetrics.previewControlHeight)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PreviewControlButtonStyle())
         .help(label).accessibilityLabel(label)
-        .onHover { hovered = $0 }
     }
 }

@@ -52,32 +52,129 @@ extension View {
 
 struct ChromeButtonStyle: ButtonStyle {
     var selected = false
+    var selectionNamespace: Namespace.ID? = nil
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.chromeSegmentedNamespace) private var segmentedNamespace
     func makeBody(configuration: Configuration) -> some View {
+        let pressed = isEnabled && configuration.isPressed
+        let groupedSelection = selectionNamespace != nil && selectionNamespace == segmentedNamespace
         configuration.label
-            .foregroundStyle(Palette.primaryInk.opacity(isEnabled ? 1 : 0.3))
-            .background(Capsule().fill(Palette.primaryInk.opacity(
-                isEnabled && configuration.isPressed ? Palette.pressedOpacity :
-                    (selected ? Palette.selectedOpacity : 0))))
+            .foregroundStyle((selected ? Color.white : Palette.primaryInk).opacity(isEnabled ? 1 : 0.3))
+            .background {
+                if selected && !groupedSelection {
+                    ChromeSelectionSurface(pressed: pressed)
+                        .modifier(ChromeSelectionMotion(namespace: selectionNamespace))
+                        .padding(ChromeMetrics.buttonSurfaceInset)
+                        .opacity(isEnabled ? 1 : 0.35)
+                } else if pressed && !selected {
+                    Capsule().fill(Palette.primaryInk.opacity(0.08)).padding(ChromeMetrics.buttonSurfaceInset)
+                }
+            }
             .contentShape(Capsule())
+            .scaleEffect(pressed && !reduceMotion ? 0.94 : 1)
+            .animation(reduceMotion ? nil : ChromeMotion.press, value: configuration.isPressed)
+            .animation(reduceMotion ? nil : ChromeMotion.press, value: selected)
+            .anchorPreference(key: ChromeSelectionBoundsKey.self, value: .bounds) { bounds in
+                selected && groupedSelection ? ChromeSelectionBounds(bounds: bounds, pressed: pressed, enabled: isEnabled) : nil
+            }
+    }
+}
+
+private struct ChromeSelectionSurface: View {
+    var pressed = false
+    var body: some View {
+        Capsule()
+            .fill(LinearGradient(colors: [Color(white: pressed ? 0.12 : 0.27), Color(white: pressed ? 0.08 : 0.12)],
+                startPoint: .top, endPoint: .bottom))
+            .overlay(Capsule().strokeBorder(LinearGradient(colors: [.white.opacity(0.4), .black.opacity(0.25)],
+                startPoint: .top, endPoint: .bottom), lineWidth: 0.7))
+    }
+}
+
+private struct ChromeSegmentedNamespaceKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
+private extension EnvironmentValues {
+    var chromeSegmentedNamespace: Namespace.ID? {
+        get { self[ChromeSegmentedNamespaceKey.self] }
+        set { self[ChromeSegmentedNamespaceKey.self] = newValue }
+    }
+}
+private struct ChromeSelectionBounds {
+    let bounds: Anchor<CGRect>
+    let pressed: Bool
+    let enabled: Bool
+}
+private struct ChromeSelectionBoundsKey: PreferenceKey {
+    static let defaultValue: ChromeSelectionBounds? = nil
+    static func reduce(value: inout ChromeSelectionBounds?, nextValue: () -> ChromeSelectionBounds?) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct ChromeSelectionMotion: ViewModifier {
+    var namespace: Namespace.ID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ViewBuilder func body(content: Content) -> some View {
+        if let namespace, !reduceMotion { content.matchedGeometryEffect(id: "selection", in: namespace) }
+        else { content }
+    }
+}
+
+/// One persistent selection surface belongs to the group, not to its buttons.
+/// Moving its frame avoids the insertion/removal fades of per-button backgrounds.
+struct ChromeSegmentedGroup<Selection: Equatable, Content: View>: View {
+    let selection: Selection
+    @ViewBuilder let content: (Namespace.ID) -> Content
+    @Namespace private var namespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: ChromeMetrics.chromeSpacing) { content(namespace) }
+            .environment(\.chromeSegmentedNamespace, namespace)
+            .backgroundPreferenceValue(ChromeSelectionBoundsKey.self) { selected in
+                GeometryReader { geometry in
+                    if let selected {
+                        let frame = geometry[selected.bounds].insetBy(dx: ChromeMetrics.buttonSurfaceInset, dy: ChromeMetrics.buttonSurfaceInset)
+                        ChromeSelectionSurface(pressed: selected.pressed)
+                            .frame(width: frame.width, height: frame.height)
+                            .position(x: frame.midX, y: frame.midY)
+                            .opacity(selected.enabled ? 1 : 0.35)
+                            .animation(reduceMotion ? nil : ChromeMotion.press, value: frame)
+                            .animation(reduceMotion ? nil : ChromeMotion.press, value: selected.pressed)
+                    }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 }
 
 /// Hover feedback for the controls living in the title row. SwiftUI's `onHover`
 /// does not fire reliably inside that hosting view (the same reason PaperLens
-/// 1.0.3 moved to an AppKit tracker), so the highlight is drawn by a tracking
-/// overlay that reads the real pointer position and never takes clicks.
+/// 1.0.3 moved to an AppKit tracker). The tracker only reports pointer changes;
+/// hover moves the glyph and reveals a short rule, without drawing a surface.
 struct ChromeHoverFeedback: ViewModifier {
+    var selected = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
     func body(content: Content) -> some View {
-        content.overlay(ChromeHoverTracker(isEnabled: isEnabled).allowsHitTesting(false))
+        content
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Palette.primaryInk.opacity(0.7))
+                    .frame(width: 10, height: 1.5).padding(.bottom, 2)
+                    .opacity(hovered && !selected ? 1 : 0).allowsHitTesting(false)
+            }
+            .scaleEffect(hovered && !reduceMotion ? 1.055 : 1)
+            .offset(y: hovered && !reduceMotion ? -0.75 : 0)
+            .background(ChromeHoverTracker(isEnabled: isEnabled && !selected, onChange: { hovered = $0 }).allowsHitTesting(false))
+            .animation(reduceMotion ? nil : ChromeMotion.press, value: hovered)
     }
 }
 
 private struct ChromeHoverTracker: NSViewRepresentable {
     let isEnabled: Bool
+    let onChange: (Bool) -> Void
     func makeNSView(context: Context) -> ChromeHoverView { ChromeHoverView() }
     func updateNSView(_ view: ChromeHoverView, context: Context) {
+        view.onChange = onChange
         view.isControlEnabled = isEnabled
         view.refreshHover()
     }
@@ -89,21 +186,13 @@ private struct ChromeHoverTracker: NSViewRepresentable {
 
 final class ChromeHoverView: NSView {
     var isControlEnabled = true
+    var onChange: ((Bool) -> Void)?
     private var area: NSTrackingArea?
     private var mouseMonitor: Any?
     private var windowObservers: [NSObjectProtocol] = []
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-    }
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        wantsLayer = true
-    }
+    private var hovered: Bool?
     override func layout() {
         super.layout()
-        layer?.cornerRadius = min(bounds.width, bounds.height) / 2
         refreshHover()
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -150,12 +239,11 @@ final class ChromeHoverView: NSView {
         setHover(!visibleRect.isEmpty && visibleRect.contains(point) && ChromeHitShape.contains(point, in: bounds))
     }
     private func setHover(_ value: Bool) {
-        // Replace the layer colour, including clearing it: a transparent overlay
-        // that merely skips drawing would keep its previous hover pixels.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer?.backgroundColor = value ? NSColor.black.withAlphaComponent(Palette.chromeHoverOpacity).cgColor : nil
-        CATransaction.commit()
+        guard hovered != value else { return }
+        hovered = value
+        // Pointer validation also runs during SwiftUI layout updates.
+        let callback = onChange
+        DispatchQueue.main.async { callback?(value) }
     }
 }
 

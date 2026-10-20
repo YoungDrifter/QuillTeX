@@ -9,7 +9,9 @@ struct BuildControls: View {
     @ObservedObject private var settings = BuildSettings.shared
     @State private var spinning = false
     @State private var showingEnginePicker = false
-    @State private var hoveredEngine: BuildEngine?
+    @State private var showingStrategies = false
+    @Namespace private var modeSelection
+    @Namespace private var engineSelection
 
     init(store: ProjectStore) {
         self.store = store
@@ -53,7 +55,7 @@ struct BuildControls: View {
                     .padding(.horizontal, 8).frame(height: 26)
                     .contentShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChromeButtonStyle())
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
             .help(settings.mode == .manual ? "Manual: compile when asked. Click for automatic." : "Automatic: compile after typing. Click for manual.")
@@ -69,7 +71,7 @@ struct BuildControls: View {
                 .padding(.horizontal, 8).frame(height: 26)
                 .contentShape(Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChromeButtonStyle())
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
             .popover(isPresented: $showingEnginePicker) { enginePicker }
@@ -107,7 +109,7 @@ struct BuildControls: View {
             .frame(width: 22, height: 22)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ChromeButtonStyle())
         .modifier(ChromeHoverFeedback())
         .chromeControlBoundary()
         .help(build.lastSummary)
@@ -116,8 +118,8 @@ struct BuildControls: View {
 
     /// The engine choices in the same popover style as the other compile menus.
     private var enginePicker: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Compile Engine").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            QuillPopoverTitle("Compile Engine")
             VStack(spacing: 2) {
                 ForEach(BuildEngine.allCases) { engine in
                     Button {
@@ -137,39 +139,107 @@ struct BuildControls: View {
                         .padding(.horizontal, 10).frame(height: 30)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(QuillRowButtonStyle(selected: engine == store.engine))
                     .disabled(!settings.toolchain.engines.contains(engine))
-                    .quillPopupRow(active: hoveredEngine == engine)
-                    .onHover { hoveredEngine = $0 ? engine : (hoveredEngine == engine ? nil : hoveredEngine) }
                 }
             }
         }
-        .frame(width: 240).quillPopoverContent()
+        .frame(width: 200).quillPopoverContent(padding: 12)
     }
 
     private var quickSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Compile Settings").font(.headline)
-            Picker("Engine", selection: Binding(get: { store.engine }, set: { store.engine = $0 })) {
-                ForEach(BuildEngine.allCases) { engine in
-                    Text(settings.toolchain.engines.contains(engine) ? engine.title : "\(engine.title) (not installed)")
-                        .tag(engine).disabled(!settings.toolchain.engines.contains(engine))
+            QuillPopoverTitle("Compile Settings").padding(.bottom, 4)
+            QuillPopoverSettingRow(title: "Engine") {
+                HStack(spacing: 2) {
+                    ForEach(BuildEngine.allCases) { engine in
+                        Button { store.engine = engine } label: {
+                            Text(engine.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                .frame(maxWidth: .infinity).frame(height: 30)
+                        }
+                        .buttonStyle(ChromeButtonStyle(selected: store.engine == engine, selectionNamespace: engineSelection))
+                        .modifier(ChromeHoverFeedback(selected: store.engine == engine))
+                        .disabled(!settings.toolchain.engines.contains(engine))
+                        .help(settings.toolchain.engines.contains(engine) ? engine.title : "Not installed")
+                        .accessibilityAddTraits(store.engine == engine ? .isSelected : [])
+                    }
+                }
+                .padding(2).background(Palette.subtleSurface, in: Capsule())
+                .animation(reduceMotion ? nil : ChromeMotion.press, value: store.engine)
+            }
+            QuillPopoverSettingRow(title: "Mode") {
+                HStack(spacing: 2) {
+                    ForEach(BuildMode.allCases) { mode in
+                        Button { settings.mode = mode } label: {
+                            Text(mode.title).font(.system(size: 11, weight: .medium))
+                                .frame(maxWidth: .infinity).frame(height: 30)
+                        }
+                        .buttonStyle(ChromeButtonStyle(selected: settings.mode == mode, selectionNamespace: modeSelection))
+                        .modifier(ChromeHoverFeedback(selected: settings.mode == mode))
+                        .accessibilityAddTraits(settings.mode == mode ? .isSelected : [])
+                    }
+                }
+                .padding(2).background(Palette.subtleSurface, in: Capsule())
+                .animation(reduceMotion ? nil : ChromeMotion.press, value: settings.mode)
+            }
+            QuillPopoverSettingRow(title: "Strategy") {
+                VStack(spacing: 6) {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { showingStrategies.toggle() }
+                    } label: {
+                        Text(store.strategy.name).font(.system(size: 11, weight: .medium))
+                            .lineLimit(1).padding(.horizontal, 26)
+                            .frame(maxWidth: .infinity).frame(height: ChromeMetrics.popoverControlHeight)
+                            .overlay(alignment: .trailing) {
+                                Image(systemName: "chevron.right").font(.system(size: 9, weight: .medium))
+                                    .rotationEffect(.degrees(showingStrategies ? 90 : 0)).padding(.trailing, 12)
+                            }
+                    }
+                    .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback())
+                    .background(Palette.subtleSurface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.7).allowsHitTesting(false))
+                    .accessibilityLabel("Strategy")
+                    .accessibilityValue(store.strategy.name + (showingStrategies ? ", Expanded" : ", Collapsed"))
+                    if showingStrategies {
+                        ScrollView {
+                            VStack(spacing: 2) {
+                                ForEach(settings.strategies) { strategy in
+                                    Button {
+                                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                                            store.strategy = strategy; showingStrategies = false
+                                        }
+                                    } label: {
+                                        Text(strategy.name).font(.system(size: 11)).lineLimit(1)
+                                            .padding(.horizontal, 24).frame(maxWidth: .infinity).frame(height: 30)
+                                            .overlay(alignment: .trailing) {
+                                                if store.strategy == strategy {
+                                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).padding(.trailing, 10)
+                                                }
+                                            }
+                                            .contentShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    .buttonStyle(QuillRowButtonStyle(selected: store.strategy == strategy))
+                                    .accessibilityAddTraits(store.strategy == strategy ? .isSelected : [])
+                                }
+                            }.padding(4)
+                        }
+                        .frame(height: min(CGFloat(settings.strategies.count) * 32 + 6, 180))
+                        .background(Palette.subtleSurface, in: RoundedRectangle(cornerRadius: 12))
+                        .transition(reduceMotion ? .identity : .modifier(
+                            active: QuillBranchReveal(progress: 0), identity: QuillBranchReveal(progress: 1)))
+                    }
                 }
             }
-            Picker("Mode", selection: $settings.mode) {
-                ForEach(BuildMode.allCases) { Text($0.title).tag($0) }
+            HStack(spacing: 12) {
+                Color.clear.frame(width: ChromeMetrics.popoverLabelWidth, height: 0)
+                Text(store.strategy.detail(engine: store.engine))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .center)
             }
-            .pickerStyle(.segmented)
-            Picker("Strategy", selection: Binding(get: { store.strategy }, set: { store.strategy = $0 })) {
-                ForEach(settings.strategies) { Text($0.name).tag($0) }
-            }
-            Text(store.strategy.detail(engine: store.engine))
-                .font(.system(size: 11)).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        // Only the compile choices live here; the path and the rest belong to the
-        // Settings window, and a popover closes by clicking away.
-        .frame(width: 280).quillPopoverContent()
+        .frame(width: ChromeMetrics.popoverWidth).quillPopoverContent()
+        .onDisappear { showingStrategies = false }
     }
 
     private func toggleMode() {

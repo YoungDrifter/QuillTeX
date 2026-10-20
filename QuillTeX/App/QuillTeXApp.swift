@@ -28,6 +28,7 @@ struct QuillTeXApp: App {
 struct ProjectCommands: Commands {
     @ObservedObject private var updater = AppUpdater.shared
     @FocusedObject private var store: ProjectStore?
+    @FocusedValue(\.pdfPreviewControls) private var pdfControls
     @Environment(\.openWindow) private var openWindow
     @Environment(\.undoManager) private var undoManager
     private var editUndoManager: UndoManager? {
@@ -96,6 +97,14 @@ struct ProjectCommands: Commands {
             Button("Editor Only") { store?.paneMode = .editor }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Editor and PDF") { store?.showEditorAndPDF() }.keyboardShortcut("2", modifiers: [.command, .option])
             Button("PDF Only") { store?.paneMode = .preview }.keyboardShortcut("3", modifiers: [.command, .option])
+            Divider()
+            Button("Zoom In") { pdfControls?.zoomIn() }.keyboardShortcut("=")
+                .disabled(pdfControls?.hasDocument != true)
+            Button("Zoom Out") { pdfControls?.zoomOut() }.keyboardShortcut("-")
+                .disabled(pdfControls?.hasDocument != true)
+            Button("Actual Size") { pdfControls?.actualSize() }.keyboardShortcut("0")
+                .disabled(pdfControls?.hasDocument != true)
+            Button("Fit Width") { pdfControls?.fitWidth() }.disabled(pdfControls?.hasDocument != true)
         }
     }
 }

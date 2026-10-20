@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 @main
 struct DocumentLibraryTests {
@@ -25,18 +24,26 @@ struct DocumentLibraryTests {
             let source = try library.source(for: template)
             check(!source.contains("/Users/"), "bundled templates have no personal absolute paths")
         }
-        let legacy = library.templatesDirectory.appendingPathComponent("retired-test.tex")
-        let legacyData = Data("Old default".utf8)
-        let digest = SHA256.hash(data: legacyData).map { String(format: "%02x", $0) }.joined()
-        try legacyData.write(to: legacy)
-        try library.retireUnmodifiedTemplate(named: legacy.lastPathComponent, digest: digest)
-        check(!FileManager.default.fileExists(atPath: legacy.path), "unmodified old default leaves chooser")
-        let archived = try Data(contentsOf: base.appendingPathComponent("RetiredTemplates/retired-test.tex"))
-        check(archived == legacyData, "retired copy remains recoverable")
-        try Data("User customization".utf8).write(to: legacy)
-        try library.retireUnmodifiedTemplate(named: legacy.lastPathComponent, digest: digest)
-        check(FileManager.default.fileExists(atPath: legacy.path), "customized legacy template is preserved")
-        try FileManager.default.removeItem(at: legacy)
+        // Recovery is isolated from the ordinary chooser/import count checks.
+        let recovery = base.appendingPathComponent("Recovery")
+        let archived = recovery.appendingPathComponent("RetiredTemplates")
+        let current = recovery.appendingPathComponent("Templates")
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try "User edition".write(to: current.appendingPathComponent("academic-article.tex"), atomically: true, encoding: .utf8)
+        try "Retired edition".write(to: archived.appendingPathComponent("academic-article.tex"), atomically: true, encoding: .utf8)
+        try "Other edition".write(to: archived.appendingPathComponent(UUID().uuidString + "-academic-article.tex"), atomically: true, encoding: .utf8)
+        try "Unrelated".write(to: archived.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+        let recovered = DocumentLibrary(directory: recovery, bundledTemplatesDirectory: bundled)
+        let recoveredSources = try recovered.templates.filter { $0.title.hasPrefix("academic-article") }.map { try recovered.source(for: $0) }
+        check(Set(recoveredSources) == ["User edition", "Retired edition", "Other edition"], "recovery preserves all same-name copies without overwriting")
+        check(recovered.templates.filter { $0.title.hasPrefix("academic-article") }.count == 3, "old UUID collision names are restored to readable names")
+        check(FileManager.default.fileExists(atPath: archived.appendingPathComponent("keep.txt").path), "recovery leaves unrelated files alone")
+        let recoveredRestart = DocumentLibrary(directory: recovery, bundledTemplatesDirectory: bundled)
+        check(recoveredRestart.templates.count == recovered.templates.count, "recovery runs once without duplicating files on restart")
+        let reimported = try recoveredRestart.importTemplate(current.appendingPathComponent("academic-article.tex"))
+        let reimportedRestart = DocumentLibrary(directory: recovery, bundledTemplatesDirectory: bundled)
+        check(reimportedRestart.templates.contains { $0.url.standardizedFileURL.path == reimported.standardizedFileURL.path }, "explicitly imported legacy names survive restart")
         let editable = library.templates.first!
         try "customized".write(to: editable.url, atomically: true, encoding: .utf8)
         let restarted = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)

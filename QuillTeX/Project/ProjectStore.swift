@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+import PDFKit
 
 @MainActor
 final class SourceDocument: ObservableObject, Identifiable {
@@ -58,12 +59,17 @@ final class ProjectStore: ObservableObject {
     private var editRevision = 0
     private var buildRevision = 0
     private var previewIsOutdated = false
+    private let maintainsRootDirectives: Bool
+    private var maintainingRootDirectives = false
+    private var pendingRootDirectives: Set<URL> = []
+    private var sourceDirectory: URL?
     @Published var sidebarWidth: Double = 240
     @Published var editorFraction: Double = 0.5
     @Published var pdfReadingState: PDFReadingState?
     @Published var syncStatusMessage: String?
     @Published var recoveryMessage: String?
-    init(library: DocumentLibrary? = nil) {
+    init(library: DocumentLibrary? = nil, maintainsRootDirectives: Bool = true) {
+        self.maintainsRootDirectives = maintainsRootDirectives
         let library = library ?? .shared
         self.library = library
         sessionStore = WorkspaceSessionStore(directory: library.directory.appendingPathComponent("WorkspaceSessions"))
@@ -80,13 +86,25 @@ final class ProjectStore: ObservableObject {
         build.$pdfVersion.dropFirst().sink { [weak self] _ in
             self?.syncTask?.cancel()
             self?.syncStatusMessage = nil
+            self?.observedPDFData = self?.build.pdfURL.flatMap { try? Data(contentsOf: $0) }
+            self?.updateFileMonitoring()
+        }.store(in: &buildObservers)
+        BuildSettings.shared.$outputDirectory.dropFirst().sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateFileMonitoring()
+                self?.checkExternalChanges()
+            }
         }.store(in: &buildObservers)
     }
     @Published var showLibrary = false
     @Published var showTemplateChooser = false
-    @Published var root: URL?
-    @Published var documents: [SourceDocument] = []
-    @Published var activeID: UUID?
+    @Published var root: URL? { didSet { updateFileMonitoring() } }
+    @Published var documents: [SourceDocument] = [] { didSet { updateFileMonitoring() } }
+    @Published var activeID: UUID? {
+        didSet {
+            if activeID != oldValue, oldValue != nil, !restoringSession { tabBarVisibilityOverride = true }
+        }
+    }
     @Published var index = ProjectIndex()
     @Published var sidebarMode: SidebarMode = .structure
     @Published var sidebarVisible = true
@@ -107,6 +125,21 @@ final class ProjectStore: ObservableObject {
     /// Only explicitly opened branches expand; newly indexed branches start collapsed.
     @Published var expandedNodes: Set<String> = []
     @Published var selectedFolder: URL?
+    struct SidebarNameEdit {
+        enum Kind: Equatable { case file, folder, rename }
+        let id = UUID()
+        let kind: Kind
+        let parent: URL
+        let originalURL: URL?
+        let defaultName: String
+        var text: String
+        var error: String?
+        var isCreation: Bool { originalURL == nil }
+        var placeholderID: String { "pending-name:" + id.uuidString }
+    }
+    @Published var sidebarNameEdit: SidebarNameEdit?
+    private var committingSidebarName = false
+
     @Published var isIndexing = false
     /// macOS blocks reads in protected folders (Desktop, Documents, Downloads) unless
     /// the app holds a matching privacy grant. Ad-hoc builds lose it on every rebuild.
@@ -124,7 +157,21 @@ final class ProjectStore: ObservableObject {
     private var indexTask: Task<Void, Never>?
     private var generation = 0
     private var checkingExternal = false
-    weak var window: NSWindow?
+    private var externalCheckPending = false
+    weak var window: NSWindow? { didSet { updateFileMonitoring() } }
+    private let fileMonitor = ProjectFileMonitor()
+    private var observedPDFData: Data?
+    enum ExternalChangeChoice { case keepMine, useExternal }
+    /// The same decision is used by live updates and the save preflight.
+    var externalChangeDecision: ((SourceDocument) -> ExternalChangeChoice)?
+
+    private func updateFileMonitoring() {
+        guard window != nil, root != nil, !sessionClosed else { fileMonitor.stop(); return }
+        var urls = Set(documents.map(\.url))
+        if let pdf = expectedPDF { urls.insert(pdf) }
+        if let pdf = build.pdfURL { urls.insert(pdf) }
+        fileMonitor.watch(urls) { [weak self] in self?.checkExternalChanges() }
+    }
 
     var previewStatusText: String? {
         guard build.pdfURL != nil else { return nil }
@@ -162,7 +209,8 @@ final class ProjectStore: ObservableObject {
                 diskText: hasDraft ? document.diskText : nil)
         }, activePath: activeDocument?.url.path, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
             paneMode: paneMode.rawValue, tabBarVisible: tabBarVisibilityOverride, expandedNodes: Array(expandedNodes),
-            sidebarWidth: sidebarWidth, editorFraction: editorFraction, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated)
+            sidebarWidth: sidebarWidth, editorFraction: editorFraction, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated,
+            sourceDirectoryPath: sourceDirectory?.path)
         let retiring = Array(retiredSessionRoots.filter { $0 != root })
         sessionStore.save(state, retiringRoots: retiring) { [weak self] error in
             Task { @MainActor in
@@ -172,15 +220,21 @@ final class ProjectStore: ObservableObject {
         }
     }
     func finishClosing() {
+        sidebarNameEdit = nil
         persistSession(includeDrafts: false)
         sessionClosed = true
         sessionTask?.cancel()
         sessionStore.flush()
         indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
         build.cancel()
+        fileMonitor.stop()
     }
     private func restoreSession(_ state: WorkspaceSession?) {
         guard let state, state.rootPath == root?.path else { return }
+        if let path = state.sourceDirectoryPath, let root {
+            let base = URL(fileURLWithPath: path, isDirectory: true)
+            if ProjectIndexer.isWithin(root, directory: base) { sourceDirectory = base }
+        }
         var restored: [SourceDocument] = []
         for saved in state.documents {
             let url = URL(fileURLWithPath: saved.path).standardizedFileURL
@@ -199,7 +253,7 @@ final class ProjectStore: ObservableObject {
             restored.append(document)
         }
         if let main = documents.first(where: { $0.url == root }), !restored.contains(where: { $0.url == root }) { restored.insert(main, at: 0) }
-        restored.sort { $0.url == root && $1.url != root }
+        restored = restored.filter { $0.url == root } + restored.filter { $0.url != root }
         documents = restored
         activeID = restored.first(where: { $0.url.path == state.activePath })?.id ?? restored.first?.id
         sidebarVisible = state.sidebarVisible
@@ -238,34 +292,162 @@ final class ProjectStore: ObservableObject {
             openProject(url, explicitRoot: true)
         } catch { showError("Could Not Create Document", error.localizedDescription) }
     }
-    var creationDirectory: URL? {
-        guard let directory else { return nil }
-        if sidebarMode == .folder, let selectedFolder,
-           ProjectIndexer.isWithin(selectedFolder, directory: directory) {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: selectedFolder.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                return selectedFolder
-            }
-        }
-        return directory
+    private var folderExpansionOrder: [URL] = []
+    static func folderExpansionKey(_ url: URL) -> String { "Folder:folder:" + url.resolvingSymlinksInPath().standardizedFileURL.path }
+
+    func isProjectRootFolder(_ url: URL) -> Bool {
+        url.resolvingSymlinksInPath().standardizedFileURL.path == directory?.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
-    func newFolder() {
-        guard let target = creationDirectory else { return }
-        let alert = NSAlert()
-        alert.messageText = "New Folder"
-        alert.informativeText = "Create a folder in \(relativePath(target))."
-        let name = NSTextField(string: "New Folder")
-        name.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
-        alert.accessoryView = name
-        alert.addButton(withTitle: "Create"); alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = name
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+    private func visibleExpandedFolder(_ url: URL) -> Bool {
+        guard let directory, ProjectIndexer.isWithin(url, directory: directory),
+              (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return false }
+        var ancestor = url.resolvingSymlinksInPath().standardizedFileURL
+        while true {
+            if isProjectRootFolder(ancestor) { return true }
+            guard expandedNodes.contains(Self.folderExpansionKey(ancestor)) else { return false }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+    }
+
+    var creationDirectory: URL? {
+        guard let directory else { return nil }
+        guard sidebarMode == .folder else { return directory }
+        if let selectedFolder, visibleExpandedFolder(selectedFolder) { return selectedFolder }
+        if let recent = folderExpansionOrder.reversed().first(where: visibleExpandedFolder) { return recent }
+        // Restored workspaces have expansion state but no click history yet.
+        let prefix = "Folder:folder:"
+        return expandedNodes.filter { $0.hasPrefix(prefix) }
+            .map { URL(fileURLWithPath: String($0.dropFirst(prefix.count))) }
+            .filter(visibleExpandedFolder)
+            .sorted { first, second in
+                if first.pathComponents.count != second.pathComponents.count { return first.pathComponents.count > second.pathComponents.count }
+                return first.path < second.path
+            }.first ?? directory
+    }
+
+    func toggleFolder(_ url: URL) {
+        let url = url.standardizedFileURL
+        let key = Self.folderExpansionKey(url)
+        if isProjectRootFolder(url) {
+            selectedFolder = url; selectedNodes[.folder] = "folder:" + url.path
+            return
+        }
+        if expandedNodes.contains(key) { expandedNodes.remove(key) }
+        else {
+            expandedNodes.insert(key)
+            folderExpansionOrder.removeAll { $0 == url }
+            folderExpansionOrder.append(url)
+        }
+        selectedFolder = url
+        selectedNodes[.folder] = "folder:" + url.path
+        scheduleSessionSave()
+    }
+
+    private func revealCreationParent(_ parent: URL) {
+        guard let directory else { return }
+        var ancestor = parent.standardizedFileURL
+        while ProjectIndexer.isWithin(ancestor, directory: directory) {
+            expandedNodes.insert(Self.folderExpansionKey(ancestor))
+            if ancestor.path == directory.standardizedFileURL.path { break }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+        folderExpansionOrder.removeAll { $0 == parent }
+        folderExpansionOrder.append(parent)
+        selectedFolder = parent
+    }
+
+    private func defaultSidebarName(folder: Bool, in parent: URL) -> String {
+        let stem = folder ? "New Folder" : "Untitled"
+        let suffix = folder ? "" : ".tex"
+        var name = stem + suffix
+        var number = 2
+        while FileManager.default.fileExists(atPath: parent.appendingPathComponent(name).path) {
+            name = stem + " " + String(number) + suffix; number += 1
+        }
+        return name
+    }
+
+    func beginSidebarCreation(folder: Bool, in parent: URL? = nil) {
+        guard commitSidebarNameEdit(), let parent = parent ?? creationDirectory,
+              let directory, ProjectIndexer.isWithin(parent, directory: directory) else { return }
+        revealCreationParent(parent)
+        sidebarMode = .folder
+        let name = defaultSidebarName(folder: folder, in: parent)
+        sidebarNameEdit = SidebarNameEdit(kind: folder ? .folder : .file, parent: parent,
+            originalURL: nil, defaultName: name, text: name)
+        selectedNodes[.folder] = sidebarNameEdit?.placeholderID
+    }
+
+    func beginSidebarRename(_ url: URL) {
+        guard commitSidebarNameEdit(), let directory, ProjectIndexer.isWithin(url, directory: directory),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        sidebarMode = .folder
+        sidebarNameEdit = SidebarNameEdit(kind: .rename, parent: url.deletingLastPathComponent(),
+            originalURL: url, defaultName: url.lastPathComponent, text: url.lastPathComponent)
+        selectedNodes[.folder] = "file:" + url.path
+    }
+
+    func updateSidebarName(_ text: String, id: UUID) {
+        guard sidebarNameEdit?.id == id else { return }
+        sidebarNameEdit?.text = text; sidebarNameEdit?.error = nil
+    }
+
+    @discardableResult
+    func commitSidebarNameEdit(id: UUID? = nil) -> Bool {
+        guard !committingSidebarName else { return true }
+        guard let edit = sidebarNameEdit, id == nil || id == edit.id else { return true }
+        committingSidebarName = true
+        defer { committingSidebarName = false }
+        var name = edit.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let extensionOnly = edit.kind != .folder && name == "." + (edit.defaultName as NSString).pathExtension
+        if name.isEmpty || extensionOnly { name = edit.defaultName }
         do {
-            selectedFolder = try createFolder(named: name.stringValue, in: target)
-            selectedNodes[.folder] = selectedFolder.map { "folder:" + $0.path }
-            refreshIndex(immediate: true)
-        } catch { showError("Could Not Create Folder", error.localizedDescription) }
+            if let original = edit.originalURL { _ = try renameProjectFile(original, to: name) }
+            else {
+                if name == edit.defaultName { name = defaultSidebarName(folder: edit.kind == .folder, in: edit.parent) }
+                if edit.kind == .folder { _ = try createFolder(named: name, in: edit.parent) }
+                else { _ = try createTeXFile(named: name, in: edit.parent) }
+            }
+            if sidebarNameEdit?.id == edit.id { sidebarNameEdit = nil }
+            return true
+        } catch {
+            if sidebarNameEdit?.id == edit.id { sidebarNameEdit?.error = error.localizedDescription }
+            return false
+        }
+    }
+
+    func cancelSidebarNameEdit(id: UUID) {
+        guard sidebarNameEdit?.id == id else { return }
+        sidebarNameEdit = nil
+    }
+
+    func sidebarChildren(of node: NavigationNode) -> [NavigationNode] {
+        guard node.kind == .folder, let edit = sidebarNameEdit, edit.isCreation,
+              node.url?.resolvingSymlinksInPath().path == edit.parent.resolvingSymlinksInPath().path else { return node.children }
+        let url = edit.parent.appendingPathComponent(edit.defaultName, isDirectory: edit.kind == .folder)
+        return node.children + [NavigationNode(id: edit.placeholderID, title: edit.defaultName,
+            kind: edit.kind == .folder ? .folder : .source, url: url)]
+    }
+
+    func sidebarIsNaming(_ node: NavigationNode) -> Bool {
+        guard let edit = sidebarNameEdit else { return false }
+        return edit.isCreation ? node.id == edit.placeholderID : node.url == edit.originalURL
+    }
+
+    @discardableResult
+    func createTeXFile(named proposedName: String, in parent: URL) throws -> URL {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+            throw ProjectError.message("Enter a file name without path separators.")
+        }
+        let filename = name.lowercased().hasSuffix(".tex") ? name : name + ".tex"
+        let url = parent.appendingPathComponent(filename).standardizedFileURL
+        try createSubfile(at: url)
+        revealCreationParent(parent)
+        selectedNodes[.folder] = "file:" + url.path
+        scheduleSessionSave()
+        return url
     }
 
     @discardableResult
@@ -280,20 +462,11 @@ final class ProjectStore: ObservableObject {
         }
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
         indexCache.invalidateInventory()
+        revealCreationParent(parent)
+        selectedNodes[.folder] = "folder:" + target.path
+        refreshIndex(immediate: true)
+        scheduleSessionSave()
         return target
-    }
-
-    func newSubfile() {
-        guard let directory else { return }
-        let panel = NSSavePanel()
-        panel.title = "New Subfile"; panel.prompt = "Create"
-        panel.message = "Choose a location inside this project. Use New Folder to create a folder. An input reference will be added to the main file."
-        panel.directoryURL = creationDirectory ?? directory; panel.nameFieldStringValue = "Untitled.tex"
-        panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try createSubfile(at: url) }
-        catch { showError("Could Not Create Subfile", error.localizedDescription) }
     }
 
     /// Create and link a new child; leave the main document's edits unsaved and
@@ -338,9 +511,218 @@ final class ProjectStore: ObservableObject {
         refreshIndex(immediate: true)
     }
 
+    /// Only project sources participate; hidden/build folders, application data
+    /// and symlinks leaving the project are never edited by metadata maintenance.
+    private var projectTeXFiles: [URL] {
+        guard let directory = sourceDirectory ?? directory, let enumerator = FileManager.default.enumerator(at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return documents.map(\.url) }
+        var files = Set(documents.map(\.url).filter { ProjectIndexer.isWithin($0, directory: directory) })
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == "build" || url.standardizedFileURL == library.directory.standardizedFileURL
+                || !ProjectIndexer.isWithin(url, directory: directory) {
+                enumerator.skipDescendants(); continue
+            }
+            if url.pathExtension.lowercased() == "tex", (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true {
+                files.insert(url.standardizedFileURL)
+            }
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    struct MainSubfileReference: Identifiable, Equatable {
+        let url: URL
+        let commandRange: NSRange
+        let lineRange: NSRange
+        let command: String
+        var id: String { "\(commandRange.location):" + url.path }
+    }
+    enum SubfilePlacement: Hashable {
+        case before(String), after(String), editorOffset(Int), end
+    }
+    var mainSubfiles: [MainSubfileReference] {
+        guard let root, let main = documents.first(where: { $0.url == root }) else { return [] }
+        let ns = main.text as NSString
+        return ProjectIndexer.matches(#"\\(?:input|include|subfile)(?:\[[^\]\r\n]*\])?\s*\{([^{}\r\n]+)\}"#,
+            in: ProjectIndexer.masked(main.text)).compactMap { match in
+            let path = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            guard !path.contains("\\"), !path.contains("#") else { return nil }
+            var url = URL(fileURLWithPath: path, relativeTo: root.deletingLastPathComponent()).standardizedFileURL
+            if url.pathExtension.isEmpty { url.appendPathExtension("tex") }
+            return MainSubfileReference(url: url, commandRange: match.range,
+                lineRange: ns.lineRange(for: match.range), command: ns.substring(with: match.range))
+        }
+    }
+    var unlinkedSubfiles: [URL] {
+        let included = Set(mainSubfiles.map { $0.url.resolvingSymlinksInPath().path })
+        let mainPath = root?.resolvingSymlinksInPath().path
+        return Set(index.texFiles + documents.map(\.url)).filter {
+            $0.pathExtension.lowercased() == "tex" && $0.resolvingSymlinksInPath().path != mainPath
+                && !included.contains($0.resolvingSymlinksInPath().path)
+        }.sorted { relativePath($0).localizedStandardCompare(relativePath($1)) == .orderedAscending }
+    }
+
+    @discardableResult
+    func insertSubfile(_ url: URL, moving referenceID: String? = nil, at placement: SubfilePlacement) throws -> Bool {
+        guard let root, let main = documents.first(where: { $0.url == root }), !main.hasMarkedText,
+              let base = sourceDirectory ?? directory, ProjectIndexer.isWithin(url, directory: base),
+              url.resolvingSymlinksInPath().path != root.resolvingSymlinksInPath().path,
+              url.pathExtension.lowercased() == "tex", FileManager.default.fileExists(atPath: url.path) else {
+            throw ProjectError.message("Choose an existing TeX subfile and finish the current input before inserting it.")
+        }
+        let references = mainSubfiles
+        let ns = main.text as NSString
+        var offset: Int
+        switch placement {
+        case .before(let id), .after(let id):
+            guard let reference = references.first(where: { $0.id == id }) else {
+                throw ProjectError.message("The main file changed during the drag. Try again.")
+            }
+            if case .before = placement { offset = reference.lineRange.location }
+            else { offset = NSMaxRange(reference.lineRange) }
+        case .editorOffset(let point):
+            let bounded = min(max(0, point), ns.length)
+            offset = bounded == ns.length ? bounded : ns.lineRange(for: NSRange(location: bounded, length: 0)).location
+        case .end:
+            offset = ProjectIndexer.matches(#"\\end\s*\{document\}"#, in: ProjectIndexer.masked(main.text)).last
+                .map { ns.lineRange(for: $0.range).location } ?? ns.length
+        }
+        let path = Self.relativeFilePath(to: url, from: root.deletingLastPathComponent())
+        guard path.rangeOfCharacter(from: CharacterSet(charactersIn: "%#{}\\\r\n")) == nil else {
+            throw ProjectError.message("This path cannot be used in a literal LaTeX input command.")
+        }
+        var insertion = "\\input{\(path)}"
+        var text = main.text
+        if let referenceID {
+            guard let moving = references.first(where: { $0.id == referenceID }) else {
+                throw ProjectError.message("The main file changed during the drag. Try again.")
+            }
+            let prefix = ns.substring(with: NSRange(location: moving.lineRange.location, length: moving.commandRange.location - moving.lineRange.location))
+            let tail = ns.substring(with: NSRange(location: NSMaxRange(moving.commandRange), length: NSMaxRange(moving.lineRange) - NSMaxRange(moving.commandRange)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let wholeLine = prefix.trimmingCharacters(in: .whitespaces).isEmpty && (tail.isEmpty || tail.hasPrefix("%"))
+            let removal = wholeLine ? moving.lineRange : moving.commandRange
+            if offset >= removal.location && offset <= NSMaxRange(removal) { return false }
+            insertion = wholeLine ? ns.substring(with: removal).trimmingCharacters(in: .newlines) : moving.command
+            text = ns.replacingCharacters(in: removal, with: "")
+            if offset > removal.location { offset -= removal.length }
+        } else if references.contains(where: { $0.url.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path }) {
+            throw ProjectError.message("This subfile is already included. Drag its existing reference to move it.")
+        }
+        let newline = main.text.contains("\r\n") ? "\r\n" : "\n"
+        let remaining = text as NSString
+        let prefix = offset > 0 && remaining.character(at: offset - 1) != 10 && remaining.character(at: offset - 1) != 13 ? newline : ""
+        text = remaining.replacingCharacters(in: NSRange(location: offset, length: 0), with: prefix + insertion + newline)
+        applyMetadataText(text, to: main, actionName: referenceID == nil ? "Insert Subfile" : "Move Subfile")
+        if main.editorSurface == nil { edited(main) }
+        refreshIndex(immediate: true)
+        return true
+    }
+
+    func previewSubfileInsertion(atScreenPoint point: NSPoint) -> Int? {
+        guard let root, let doc = activeDocument, doc.url == root, !doc.hasMarkedText,
+              let window, let surface = doc.editorSurface else { clearSubfileInsertionPreview(); return nil }
+        let view = surface.textView
+        let location = view.convert(window.convertPoint(fromScreen: point), from: nil)
+        guard view.visibleRect.contains(location), let layout = view.layoutManager, let container = view.textContainer else {
+            clearSubfileInsertionPreview(); return nil
+        }
+        let local = NSPoint(x: location.x - view.textContainerOrigin.x, y: location.y - view.textContainerOrigin.y)
+        let glyph = layout.glyphIndex(for: local, in: container)
+        let character = local.y >= layout.usedRect(for: container).maxY || glyph >= layout.numberOfGlyphs
+            ? view.string.utf16.count : layout.characterIndexForGlyph(at: glyph)
+        let ns = view.string as NSString
+        let offset = character == ns.length ? ns.length : ns.lineRange(for: NSRange(location: character, length: 0)).location
+        view.subfileInsertionOffset = offset
+        return offset
+    }
+    func clearSubfileInsertionPreview() { documents.forEach { $0.editorSurface?.textView.subfileInsertionOffset = nil } }
+
+    static func updatingRootDirective(in text: String, to path: String, replacingExisting: Bool) -> String {
+        let newline = text.contains("\r\n") ? "\r\n" : "\n"
+        let directive = "% !TeX root = " + path
+        let literal = LaTeXHighlighter.spans(in: text).filter { $0.token == .verbatim }
+        let matches = ProjectIndexer.matches(#"(?im)^(?:\x{FEFF})?[\t ]*(%[\t ]*![\t ]*tex[\t ]+root[\t ]*=[^\r\n]*)"#, in: text)
+            .filter { match in !literal.contains { NSIntersectionRange($0.range, match.range).length > 0 } }
+        if !matches.isEmpty {
+            guard replacingExisting else { return text }
+            let result = NSMutableString(string: text)
+            for match in matches.reversed() { result.replaceCharacters(in: match.range(at: 1), with: directive) }
+            return result as String
+        }
+        // Keep a UTF-8 BOM at the start of the file, before the new first line.
+        if text.hasPrefix("\u{FEFF}") { return "\u{FEFF}" + directive + newline + text.dropFirst() }
+        return directive + newline + text
+    }
+
+    func maintainProjectRootDirectives(replacingExisting: Bool, additionalFiles: [URL] = []) {
+        guard maintainsRootDirectives, !maintainingRootDirectives, let root else { return }
+        maintainingRootDirectives = true
+        defer { maintainingRootDirectives = false }
+        var failed: [String] = []
+        for url in Set(projectTeXFiles + additionalFiles).sorted(by: { $0.path < $1.path }) {
+            let document = documents.first { $0.url == url }
+            if document?.hasMarkedText == true { pendingRootDirectives.insert(url); continue }
+            pendingRootDirectives.remove(url)
+            do {
+                var disk = try String(contentsOf: url, encoding: .utf8)
+                if let document, disk != document.diskText {
+                    guard reconcile(document, with: disk) else { continue }
+                    disk = try String(contentsOf: url, encoding: .utf8)
+                }
+                let path = Self.relativeFilePath(to: root, from: url.deletingLastPathComponent())
+                let updated = Self.updatingRootDirective(in: disk, to: path, replacingExisting: replacingExisting)
+                if updated != disk {
+                    guard try String(contentsOf: url, encoding: .utf8) == disk else {
+                        failed.append(url.lastPathComponent); continue
+                    }
+                    try updated.write(to: url, atomically: true, encoding: .utf8)
+                }
+                if let document {
+                    let buffer = Self.updatingRootDirective(in: document.text, to: path, replacingExisting: replacingExisting)
+                    document.savedText = updated; document.diskText = updated
+                    applyMetadataText(buffer, to: document)
+                }
+            } catch { failed.append(url.lastPathComponent) }
+        }
+        if !failed.isEmpty { recoveryMessage = "Could not update main-file comments: " + failed.joined(separator: ", ") }
+        indexCache.invalidateInventory()
+        refreshIndex(immediate: true); scheduleSessionSave()
+        objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
+    }
+
+    /// Register one minimal native edit, preserving existing undo and unsaved body
+    /// text rather than reloading a dirty buffer wholesale.
+    private func applyMetadataText(_ text: String, to doc: SourceDocument, actionName: String = "Update Main File Comment") {
+        guard text != doc.text else { return }
+        let before = doc.text as NSString, after = text as NSString
+        var prefix = 0, suffix = 0
+        while prefix < min(before.length, after.length), before.character(at: prefix) == after.character(at: prefix) { prefix += 1 }
+        if prefix > 0, prefix < before.length, (0xDC00...0xDFFF).contains(before.character(at: prefix)) { prefix -= 1 }
+        while suffix < min(before.length, after.length) - prefix,
+              before.character(at: before.length - suffix - 1) == after.character(at: after.length - suffix - 1) { suffix += 1 }
+        if suffix > 0, (0xDC00...0xDFFF).contains(before.character(at: before.length - suffix)) { suffix -= 1 }
+        let range = NSRange(location: prefix, length: before.length - prefix - suffix)
+        let replacement = after.substring(with: NSRange(location: prefix, length: after.length - prefix - suffix))
+        let oldSelection = doc.selection
+        let delta = replacement.utf16.count - range.length
+        let location = oldSelection.location >= NSMaxRange(range) ? oldSelection.location + delta : min(oldSelection.location, prefix)
+        let selection = NSRange(location: max(0, location), length: min(oldSelection.length, max(0, after.length - location)))
+        if let surface = doc.editorSurface {
+            let scroll = surface.contentView.bounds.origin
+            doc.undoManager.beginUndoGrouping()
+            surface.textView.breakUndoCoalescing()
+            surface.textView.insertText(replacement, replacementRange: range)
+            surface.textView.breakUndoCoalescing()
+            doc.undoManager.setActionName(actionName)
+            doc.undoManager.endUndoGrouping()
+            surface.textView.setSelectedRange(selection)
+            surface.contentView.scroll(to: scroll); surface.reflectScrolledClipView(surface.contentView)
+        } else { doc.text = text; doc.selection = selection }
+    }
+
     private static func relativeFilePath(to url: URL, from directory: URL) -> String {
-        let target = url.standardizedFileURL.pathComponents
-        let base = directory.standardizedFileURL.pathComponents
+        let target = url.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let base = directory.resolvingSymlinksInPath().standardizedFileURL.pathComponents
         var common = 0
         while common < min(target.count, base.count), target[common] == base[common] { common += 1 }
         return (Array(repeating: "..", count: base.count - common) + target.dropFirst(common)).joined(separator: "/")
@@ -374,7 +756,7 @@ final class ProjectStore: ObservableObject {
     private func chooseRoot(directory: URL) -> URL? {
         let panel = NSOpenPanel(); panel.directoryURL = directory
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
-        panel.message = "Choose the main .tex file for this project"; panel.prompt = "Set as Main File"
+        panel.message = "Choose the main .tex file to open this project"; panel.prompt = "Open Project"
         return panel.runModal() == .OK ? panel.url : nil
     }
     // MARK: - Folder access
@@ -431,11 +813,6 @@ final class ProjectStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    func changeRoot() {
-        guard let directory, let choice = chooseRoot(directory: directory) else { return }
-        setMainFile(choice)
-    }
-
     struct MainFileResolution {
         let url: URL
         let warning: String?
@@ -466,18 +843,18 @@ final class ProjectStore: ObservableObject {
         } catch {
             // Fail normally if the file the user actually opened is unreadable.
             _ = try String(contentsOf: incoming, encoding: .utf8)
-            return MainFileResolution(url: incoming, warning: "The declared main file could not be used: \(error.localizedDescription)\nThis file is now the main file. You can choose another in Folder.")
+            return MainFileResolution(url: incoming, warning: "The declared main file could not be used: \(error.localizedDescription)\nThis file is now the main file for this workspace.")
         }
     }
 
-    func setMainFile(_ url: URL) {
-        do { try selectMainFile(url) }
-        catch { showError("Could Not Set Main File", error.localizedDescription) }
-    }
-
-    /// Promote a buffer without closing or saving any of the other open documents.
+    /// The main file is fixed for this workspace. Opening another project uses
+    /// the restoration path to configure a separate workspace root.
     func selectMainFile(_ incoming: URL) throws {
         let main = incoming.standardizedFileURL
+        guard root == nil || root == main || restoringSession else {
+            throw ProjectError.message("The main file is fixed for this project.")
+        }
+        if sourceDirectory == nil { sourceDirectory = root?.deletingLastPathComponent() ?? main.deletingLastPathComponent() }
         guard main.pathExtension.lowercased() == "tex" else {
             throw ProjectError.message("Choose a .tex file as the main file.")
         }
@@ -485,10 +862,6 @@ final class ProjectStore: ObservableObject {
         if let existing = documents.first(where: { $0.url == main }) { document = existing }
         else { document = SourceDocument(url: main, text: try String(contentsOf: main, encoding: .utf8)) }
         if root == main { activate(document); return }
-        if !restoringSession {
-            persistSession()
-            if let root { retiredSessionRoots.insert(root) }
-        }
         rememberCurrentLocation()
         indexTask?.cancel(); indexWorker?.cancel(); generation += 1; isIndexing = false
         syncTask?.cancel(); syncStatusMessage = nil; pdfReadingState = nil
@@ -499,18 +872,14 @@ final class ProjectStore: ObservableObject {
         documents = [document] + documents.filter { $0.id != document.id }
         previewIsOutdated = documents.contains { $0.isDirty }
         activeID = document.id
-        if historyPosition >= 0 {
-            history = Array(history.prefix(historyPosition + 1))
-            history.append(EditorLocation(url: main, offset: document.selection.location))
-            historyPosition = history.count - 1
-        }
-        index = ProjectIndex(); expandedNodes = []; selectedNodes = [:]; selectedFolder = nil
+        index = ProjectIndex(); expandedNodes = []; selectedNodes = [:]; selectedFolder = nil; folderExpansionOrder = []
         window?.title = "QuillTeX — \(main.deletingPathExtension().lastPathComponent)"
         window?.representedURL = main
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         verifyFolderAccess()
         refreshIndex(immediate: true)
         adoptExistingPDF()
+        if !restoringSession { maintainProjectRootDirectives(replacingExisting: false) }
         showLibrary = false
         do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
         if !restoringSession { persistSession(force: true); sessionStore.flush() }
@@ -518,6 +887,7 @@ final class ProjectStore: ObservableObject {
     }
 
     func openProject(_ incoming: URL, explicitRoot: Bool = false) {
+        guard commitSidebarNameEdit() else { return }
         let incoming = incoming.standardizedFileURL
         do {
             let recoverableMain = !FileManager.default.fileExists(atPath: incoming.path)
@@ -539,6 +909,10 @@ final class ProjectStore: ObservableObject {
                 restoringSession = true
                 defer { restoringSession = false; scheduleSessionSave() }
                 sessionClosed = false
+                sourceDirectory = main.deletingLastPathComponent()
+                if ProjectIndexer.isWithin(main, directory: incoming.deletingLastPathComponent()) {
+                    sourceDirectory = incoming.deletingLastPathComponent()
+                }
                 recoveryMessage = nil
                 documents = []; history = []; historyPosition = -1
                 documents = [SourceDocument(url: main, text: mainText)]
@@ -547,11 +921,13 @@ final class ProjectStore: ObservableObject {
                 restoreSession(savedSession)
                 if incoming != main { openSource(incoming) }
             }
+            maintainProjectRootDirectives(replacingExisting: explicitRoot)
             if let warning = resolution.warning { showError("Main File Directive", warning) }
         } catch { showError("Could Not Open Project", error.localizedDescription) }
     }
 
     func openSource(_ url: URL, offset: Int? = nil, recordHistory: Bool = true) {
+        guard commitSidebarNameEdit() else { return }
         let url = url.standardizedFileURL
         do {
             if recordHistory { rememberCurrentLocation() }
@@ -583,6 +959,19 @@ final class ProjectStore: ObservableObject {
         }
     }
     func activate(_ doc: SourceDocument) { openSource(doc.url) }
+
+    /// Reorder buffers without activating them or disturbing their editor state.
+    /// The current main file remains pinned at index zero.
+    func moveTab(_ id: UUID, to proposedIndex: Int) {
+        guard let from = documents.firstIndex(where: { $0.id == id }),
+              documents[from].url != root, documents.count > 1 else { return }
+        let destination = min(documents.count - 1, max(1, proposedIndex))
+        guard from != destination else { return }
+        let document = documents.remove(at: from)
+        documents.insert(document, at: destination)
+        scheduleSessionSave()
+    }
+
 
     /// UTF-16 offset of the first character of a one-based line.
     static func offset(ofLine line: Int, in text: String) -> Int {
@@ -731,6 +1120,10 @@ final class ProjectStore: ObservableObject {
         let location = history[target]; openSource(location.url, offset: location.offset, recordHistory: false)
     }
     func edited(_ doc: SourceDocument) {
+        guard !maintainingRootDirectives else { return }
+        if pendingRootDirectives.contains(doc.url), !doc.hasMarkedText {
+            maintainProjectRootDirectives(replacingExisting: true)
+        }
         editRevision += 1; previewIsOutdated = true
         scheduleSessionSave()
         objectWillChange.send()
@@ -742,7 +1135,14 @@ final class ProjectStore: ObservableObject {
         guard !doc.hasMarkedText else { showError("Finish Typing First", "Confirm the current input method candidate before saving."); return false }
         do {
             let current = try? String(contentsOf: doc.url, encoding: .utf8)
-            if current != doc.diskText {
+            if let current, current != doc.diskText {
+                guard reconcile(doc, with: current) else { return false }
+                if !doc.isDirty {
+                    objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
+                    refreshIndex(immediate: true)
+                    return true
+                }
+            } else if current == nil {
                 let alert = NSAlert(); alert.messageText = "File Changed on Disk"
                 alert.informativeText = "\(doc.url.lastPathComponent) was changed or deleted outside QuillTeX. Overwrite it with the current editor contents?"
                 alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Overwrite")
@@ -760,16 +1160,142 @@ final class ProjectStore: ObservableObject {
     }
     func updateActiveFile(_ destination: URL, tags: [String]) throws {
         guard let doc = activeDocument else { return }
+        let previousProjectFiles = projectTeXFiles
         let oldURL = doc.url
         try updateDocumentFile(from: oldURL, to: destination, tags: tags)
         doc.url = destination
+        updateFileMonitoring()
         if root == oldURL { root = destination; try? library.record(destination) }
         history = history.map { $0.url == oldURL ? EditorLocation(url: destination, offset: $0.offset) : $0 }
         indexCache.invalidateInventory()
         if selectedFolder == oldURL.deletingLastPathComponent() { selectedFolder = destination.deletingLastPathComponent() }
         objectWillChange.send()
         refreshIndex(immediate: true)
+        updateProjectReferences(from: oldURL, to: destination, files: previousProjectFiles.filter { $0 != oldURL } + [destination])
+        if root == destination { maintainProjectRootDirectives(replacingExisting: true, additionalFiles: previousProjectFiles.filter { $0 != oldURL } + [destination]) }
         persistSession(force: true); sessionStore.flush()
+    }
+
+    @discardableResult
+    func renameProjectFile(_ url: URL, to proposedName: String) throws -> URL {
+        guard let directory, ProjectIndexer.isWithin(url, directory: directory) else {
+            throw ProjectError.message("Choose a file inside this project.")
+        }
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+              !name.contains("\0"), !name.contains("\n"), !name.contains("\r") else {
+            throw ProjectError.message("Enter a file name without path separators or line breaks.")
+        }
+        let filename = (name as NSString).pathExtension.isEmpty && !url.pathExtension.isEmpty ? name + "." + url.pathExtension : name
+        let destination = url.deletingLastPathComponent().appendingPathComponent(filename).standardizedFileURL
+        guard destination != url else { return url }
+        let previousProjectFiles = projectTeXFiles
+        let doc = documents.first { $0.url == url }
+        guard doc?.hasMarkedText != true else { throw ProjectError.message("Finish the current input method composition before renaming.") }
+        let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
+        try updateDocumentFile(from: url, to: destination, tags: tags)
+        doc?.url = destination
+        if root == url {
+            root = destination
+            try? library.record(destination)
+            window?.representedURL = destination
+        }
+        history = history.map { $0.url == url ? EditorLocation(url: destination, offset: $0.offset) : $0 }
+        selectedNodes[.folder] = "file:" + destination.path
+        updateFileMonitoring(); indexCache.invalidateInventory()
+        updateProjectReferences(from: url, to: destination, files: previousProjectFiles.filter { $0 != url } + [destination])
+        if root == destination {
+            maintainProjectRootDirectives(replacingExisting: true,
+                additionalFiles: previousProjectFiles.filter { $0 != url } + [destination])
+        }
+        refreshIndex(immediate: true); persistSession(force: true); sessionStore.flush()
+        return destination
+    }
+
+    @discardableResult
+    func trashProjectFile(_ url: URL) throws -> Bool {
+        guard let directory, ProjectIndexer.isWithin(url, directory: directory),
+              (try url.resourceValues(forKeys: [.isDirectoryKey])).isDirectory != true else {
+            throw ProjectError.message("Choose a file inside this project.")
+        }
+        let deletingMain = url == root
+        let affected = deletingMain ? documents : documents.filter { $0.url == url }
+        guard confirmClose(affected) else { return false }
+        try moveFileToTrash(url)
+        if deletingMain {
+            persistSession(includeDrafts: false); sessionStore.flush()
+            build.resetProject()
+            indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
+            generation += 1; isIndexing = false
+            root = nil; sourceDirectory = nil; documents = []; activeID = nil
+            index = ProjectIndex(); history = []; historyPosition = -1
+            selectedNodes = [:]; expandedNodes = []; selectedFolder = nil; folderExpansionOrder = []
+            pdfReadingState = nil; syncStatusMessage = nil
+            window?.representedURL = nil
+        } else {
+            documents.removeAll { $0.url == url }
+            if !documents.contains(where: { $0.id == activeID }) { activeID = documents.first?.id }
+            history = history.filter { $0.url != url }
+            historyPosition = min(historyPosition, history.count - 1)
+            selectedNodes[.folder] = nil
+            indexCache.invalidateInventory(); refreshIndex(immediate: true)
+            persistSession(force: true); sessionStore.flush()
+        }
+        window?.isDocumentEdited = documents.contains { $0.isDirty }
+        return true
+    }
+
+    var moveFileToTrash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
+
+    static func updatingFileReferences(in text: String, owner: URL, from old: URL, to new: URL) -> String {
+        let clean = ProjectIndexer.masked(text)
+        let matches = ProjectIndexer.matches(#"\\(?:input|include|subfile|includegraphics|addbibresource|bibliography)\*?(?:\[[^\]\r\n]*\])?[\t ]*\{([^{}\r\n]+)\}"#, in: clean)
+        let result = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let range = match.range(at: 1)
+            let original = (text as NSString).substring(with: range)
+            let parts = original.components(separatedBy: ",").map { part -> String in
+                let path = part.trimmingCharacters(in: .whitespaces)
+                guard !path.contains("\\"), !path.contains("#") else { return part }
+                let target = URL(fileURLWithPath: path, relativeTo: owner.deletingLastPathComponent()).standardizedFileURL
+                let hasExtension = !(path as NSString).pathExtension.isEmpty
+                let resolved = hasExtension ? target : target.appendingPathExtension(old.pathExtension)
+                guard resolved.path == old.standardizedFileURL.path else { return part }
+                let replacement = path.hasPrefix("/") ? new.path : relativeFilePath(to: new, from: owner.deletingLastPathComponent())
+                let final = hasExtension ? replacement : (replacement as NSString).deletingPathExtension
+                return part.replacingOccurrences(of: path, with: final)
+            }
+            result.replaceCharacters(in: range, with: parts.joined(separator: ","))
+        }
+        return result as String
+    }
+
+    private func updateProjectReferences(from old: URL, to new: URL, files: [URL]) {
+        guard old != new else { return }
+        let wasMaintaining = maintainingRootDirectives
+        maintainingRootDirectives = true
+        defer { maintainingRootDirectives = wasMaintaining }
+        for file in files where file.pathExtension.lowercased() == "tex" {
+            do {
+                let doc = documents.first { $0.url == file }
+                if doc?.hasMarkedText == true { continue }
+                var disk = try String(contentsOf: file, encoding: .utf8)
+                if let doc, disk != doc.diskText {
+                    guard reconcile(doc, with: disk) else { continue }
+                    disk = try String(contentsOf: file, encoding: .utf8)
+                }
+                let updated = Self.updatingFileReferences(in: disk, owner: file, from: old, to: new)
+                if disk != updated {
+                    guard try String(contentsOf: file, encoding: .utf8) == disk else { continue }
+                    try updated.write(to: file, atomically: true, encoding: .utf8)
+                }
+                if let doc {
+                    let buffer = Self.updatingFileReferences(in: doc.text, owner: file, from: old, to: new)
+                    doc.savedText = updated; doc.diskText = updated
+                    applyMetadataText(buffer, to: doc)
+                }
+            } catch { recoveryMessage = "Could not update file references in " + file.lastPathComponent }
+        }
     }
 
     func saveActive() {
@@ -794,6 +1320,7 @@ final class ProjectStore: ObservableObject {
         return true
     }
     func confirmClose(_ docs: [SourceDocument]) -> Bool {
+        guard commitSidebarNameEdit() else { return false }
         let dirty = docs.filter { $0.isDirty }
         guard !dirty.isEmpty else { return true }
         let alert = NSAlert(); alert.messageText = "Save changes before closing?"
@@ -916,28 +1443,135 @@ final class ProjectStore: ObservableObject {
     }
     func checkExternalChanges() {
         indexCache.invalidateInventory()
-        guard !checkingExternal else { return }
-        checkingExternal = true; defer { checkingExternal = false }
+        guard !checkingExternal else { externalCheckPending = true; return }
+        checkingExternal = true
+        defer {
+            checkingExternal = false
+            if externalCheckPending { externalCheckPending = false; fileMonitor.requestCheck() }
+        }
         for doc in documents {
             guard let text = try? String(contentsOf: doc.url, encoding: .utf8), text != doc.diskText else { continue }
-            if doc.hasMarkedText { continue }
-            if doc.isDirty {
-                let alert = NSAlert(); alert.messageText = "External Change Detected"
-                alert.informativeText = "\(doc.url.lastPathComponent) also has unsaved edits. Keep your edits, or reload the version on disk?"
-                alert.addButton(withTitle: "Keep My Edits"); alert.addButton(withTitle: "Reload from Disk")
-                if alert.runModal() == .alertSecondButtonReturn { replace(doc, with: text) }
-                else { doc.diskText = text; doc.savedText = text }
-            } else { replace(doc, with: text) }
+            if doc.hasMarkedText { fileMonitor.requestCheck(); continue }
+            _ = reconcile(doc, with: text)
         }
+        refreshExternalPDF()
         objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
         refreshIndex(immediate: true)
+    }
+
+    @discardableResult
+    private func reconcile(_ doc: SourceDocument, with external: String) -> Bool {
+        var text = external
+        while text != doc.diskText {
+            if !doc.isDirty || doc.text == text { replace(doc, with: text); return true }
+            let choice: ExternalChangeChoice
+            if let externalChangeDecision { choice = externalChangeDecision(doc) }
+            else {
+                let alert = NSAlert()
+                alert.messageText = "External Change Detected"
+                alert.informativeText = "\(doc.url.lastPathComponent) has changed outside QuillTeX and has unsaved edits here. Choose which version to keep. Keeping your edits leaves the external file unchanged until you save."
+                alert.addButton(withTitle: "Keep My Edits")
+                alert.addButton(withTitle: "Use External Version")
+                choice = alert.runModal() == .alertSecondButtonReturn ? .useExternal : .keepMine
+            }
+            // The file may change again while the user is deciding. Never accept
+            // a stale snapshot, or overwrite a file which disappeared meanwhile.
+            guard documents.contains(where: { $0 === doc }),
+                  let latest = try? String(contentsOf: doc.url, encoding: .utf8) else { return false }
+            if latest != text { text = latest; continue }
+            if choice == .useExternal { replace(doc, with: text) }
+            else {
+                doc.diskText = text; doc.savedText = text
+                scheduleSessionSave()
+            }
+        }
+        return true
+    }
+
+    private func refreshExternalPDF() {
+        // A compiler can briefly truncate its output. Keep displaying the last
+        // valid document until the build finishes or a valid external PDF arrives.
+        guard !build.status.isRunning, let pdf = expectedPDF,
+              let data = try? Data(contentsOf: pdf), data != observedPDFData,
+              let document = PDFDocument(data: data), document.pageCount > 0 else { return }
+        build.adoptExistingPDF(pdf)
+        previewIsOutdated = documents.contains { $0.isDirty } || sourcesAreNewerThanPDF(documents.map(\.url))
     }
     private func replace(_ doc: SourceDocument, with text: String) {
         editRevision += 1; previewIsOutdated = true
         doc.text = text; doc.savedText = text; doc.diskText = text
+        let length = (text as NSString).length
+        doc.selection.location = min(doc.selection.location, length)
+        doc.selection.length = min(doc.selection.length, length - doc.selection.location)
+        doc.undoManager.removeAllActions()
         doc.editorSurface?.reloadFromDisk()
         scheduleSessionSave()
     }
+}
+
+/// Watch both the file and its directory: many editors save by renaming a new
+/// inode over the old one. Re-arm after each settled event so subsequent writes
+/// follow the replacement, including files created after opening the workspace.
+@MainActor
+private final class ProjectFileMonitor {
+    private var urls: Set<URL> = []
+    private var sources: [DispatchSourceFileSystemObject] = []
+    private var pending: DispatchWorkItem?
+    private var onChange: (() -> Void)?
+
+    func watch(_ urls: Set<URL>, onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        guard self.urls != urls else { return }
+        self.urls = urls
+        rearm()
+        requestCheck()
+    }
+
+    func requestCheck() {
+        guard !urls.isEmpty else { return }
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rearm()
+                self.onChange?()
+            }
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    private func rearm() {
+        sources.forEach { $0.cancel() }; sources = []
+        var paths = urls
+        for url in urls {
+            var parent = url.deletingLastPathComponent()
+            while !FileManager.default.fileExists(atPath: parent.path), parent.path != "/" {
+                parent = parent.deletingLastPathComponent()
+            }
+            paths.insert(parent)
+        }
+        for url in paths {
+            let descriptor = open(url.path, O_EVTONLY)
+            guard descriptor >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor,
+                eventMask: [.write, .extend, .attrib, .rename, .delete, .revoke], queue: .main)
+            source.setEventHandler { [weak self] in
+                MainActor.assumeIsolated { self?.requestCheck() }
+            }
+            source.setCancelHandler { Darwin.close(descriptor) }
+            sources.append(source)
+            source.resume()
+        }
+    }
+
+    func stop() {
+        pending?.cancel(); pending = nil
+        sources.forEach { $0.cancel() }; sources = []
+        urls = []; onChange = nil
+    }
+
+    deinit { pending?.cancel(); sources.forEach { $0.cancel() } }
 }
 
 enum ProjectError: LocalizedError {

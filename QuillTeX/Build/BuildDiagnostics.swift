@@ -73,29 +73,6 @@ struct BuildDiagnostic: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-/// Shared by the result list and problem navigation, so hidden problems cannot
-/// unexpectedly become the next selected row.
-struct BuildDiagnosticFilter: Equatable {
-    enum Severity: String, CaseIterable, Identifiable {
-        case all, errors, warnings
-        var id: String { rawValue }
-        var title: String {
-            switch self { case .all: "All severities"; case .errors: "Errors"; case .warnings: "Warnings" }
-        }
-    }
-    var severity: Severity = .all
-    var category: BuildDiagnostic.Category?
-
-    func includes(_ diagnostic: BuildDiagnostic) -> Bool {
-        if let category, diagnostic.category != category { return false }
-        switch severity {
-        case .all: return true
-        case .errors: return diagnostic.severity == .error
-        case .warnings: return diagnostic.severity == .warning
-        }
-    }
-}
-
 /// Turns a LaTeX/latexmk transcript into diagnostics. Pure string work so it can be
 /// tested against captured logs without running TeX.
 enum BuildLogParser {

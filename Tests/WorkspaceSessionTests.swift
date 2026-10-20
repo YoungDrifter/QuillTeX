@@ -21,10 +21,26 @@ struct WorkspaceSessionTests {
             guard condition() else { fatalError("FAILED: \(message)") }
             checks += 1
         }
-        let original = ProjectStore(library: library)
+        let original = ProjectStore(library: library, maintainsRootDirectives: false)
         original.openProject(root, explicitRoot: true)
+        original.setTabBarVisible(false)
         original.openSource(child)
+        check(original.isTabBarVisible, "opening a new tab reveals a manually hidden tab bar")
         original.openSource(missing)
+        original.setTabBarVisible(false)
+        original.activate(original.documents.first { $0.url == child }!)
+        check(original.isTabBarVisible, "switching existing tabs reveals a manually hidden tab bar")
+        original.activate(original.documents.first { $0.url == missing }!)
+        let childID = original.documents.first { $0.url == child }!.id
+        let mainID = original.documents.first!.id
+        original.moveTab(childID, to: 2)
+        check(original.documents.map(\.url) == [root, missing, child], "subfiles move across the tab strip")
+        original.moveTab(mainID, to: 2)
+        check(original.documents.first!.url == root, "the main tab cannot be moved")
+        original.moveTab(childID, to: 0)
+        check(original.documents.map(\.url) == [root, child, missing], "subfiles cannot move before the pinned main tab")
+        original.moveTab(childID, to: 2)
+        check(original.activeDocument?.url == missing, "dragging preserves the active document")
         let deleted = original.activeDocument!
         deleted.text += " unsaved"
         original.activate(original.documents.first { $0.url == child }!)
@@ -44,9 +60,9 @@ struct WorkspaceSessionTests {
         original.sessionStore.flush()
         try "Changed externally".write(to: child, atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: missing)
-        let recovered = ProjectStore(library: library)
+        let recovered = ProjectStore(library: library, maintainsRootDirectives: false)
         recovered.openProject(root, explicitRoot: true)
-        check(recovered.documents.map(\.url) == [root, child, missing], "restore ordered tabs and recover a deleted dirty file")
+        check(recovered.documents.map(\.url) == [root, missing, child], "restore ordered tabs and recover a deleted dirty file")
         check(recovered.activeDocument?.url == child, "restore active file")
         check(recovered.activeDocument?.text == draft.text, "recover unsaved Unicode draft")
         check(recovered.activeDocument?.isDirty == true, "recovery does not pretend the draft was saved")
@@ -67,7 +83,7 @@ struct WorkspaceSessionTests {
         recovered.sessionStore.flush()
         check(recovered.sessionStore.load(root: root)?.documents.first { $0.path == child.path }?.draft == draft.text, "IME composition never replaces stable recovery data")
         recovered.finishClosing()
-        let reopened = ProjectStore(library: library)
+        let reopened = ProjectStore(library: library, maintainsRootDirectives: false)
         reopened.openProject(root, explicitRoot: true)
         check(reopened.activeDocument?.text == "Changed externally", "normal close with discarded drafts restores disk contents")
         check(!reopened.documents.contains { $0.url == missing }, "missing clean tabs are skipped")
@@ -85,7 +101,7 @@ struct WorkspaceSessionTests {
         bounded.documents[0].selectionLength = Int.max
         reopened.sessionStore.save(bounded)
         reopened.sessionStore.flush()
-        let clamped = ProjectStore(library: library)
+        let clamped = ProjectStore(library: library, maintainsRootDirectives: false)
         clamped.openProject(root, explicitRoot: true)
         check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.15, "clamp saved geometry")
         let main = clamped.documents.first!
@@ -95,7 +111,7 @@ struct WorkspaceSessionTests {
         clamped.sessionStore.flush()
         try FileManager.default.removeItem(at: root)
         check(clamped.sessionStore.lastWorkspace() == root, "a deleted main file with a draft remains recoverable at launch")
-        let deletedMain = ProjectStore(library: library)
+        let deletedMain = ProjectStore(library: library, maintainsRootDirectives: false)
         deletedMain.openProject(root)
         check(deletedMain.root == root && deletedMain.documents.first?.text == main.text, "recover the deleted main buffer without reading its missing file")
         check(deletedMain.documents.first?.isDirty == true && !FileManager.default.fileExists(atPath: root.path), "deleted main recovery preserves the source and unsaved state")
@@ -103,21 +119,25 @@ struct WorkspaceSessionTests {
         let second = directory.appendingPathComponent("second.tex")
         try "First".write(to: first, atomically: true, encoding: .utf8)
         try "Second".write(to: second, atomically: true, encoding: .utf8)
-        let promoted = ProjectStore(library: library)
+        let promoted = ProjectStore(library: library, maintainsRootDirectives: false)
         promoted.openProject(first, explicitRoot: true)
         promoted.activeDocument!.text += " unsaved"
         promoted.persistSession(); promoted.sessionStore.flush()
-        try promoted.selectMainFile(second)
-        check(promoted.sessionStore.load(root: first)?.documents.first?.draft == nil, "main promotion retires the previous recovery draft only after saving its new workspace")
-        check(promoted.sessionStore.load(root: second)?.documents.first { $0.path == first.path }?.draft == "First unsaved", "promotion keeps the draft in the new workspace")
+        do { try promoted.selectMainFile(second); fatalError("fixed main file changed") }
+        catch { check(promoted.root == first, "same-directory files cannot replace the fixed main file") }
+        check(promoted.sessionStore.load(root: first)?.documents.first?.draft == "First unsaved", "a rejected main change keeps the original workspace draft")
+        check(promoted.sessionStore.load(root: second) == nil && promoted.activeDocument?.text == "First unsaved", "a rejected main change creates no replacement session and preserves the active buffer")
         promoted.finishClosing()
-        let afterDiscard = ProjectStore(library: library)
+        let afterDiscard = ProjectStore(library: library, maintainsRootDirectives: false)
         afterDiscard.openProject(first, explicitRoot: true)
-        check(afterDiscard.activeDocument?.text == "First" && afterDiscard.activeDocument?.isDirty == false, "discard after main promotion does not resurrect an old session draft")
+        check(afterDiscard.activeDocument?.text == "First" && afterDiscard.activeDocument?.isDirty == false, "discard after a rejected main change clears the original draft")
+        afterDiscard.openProject(second, explicitRoot: true)
+        check(afterDiscard.root == second && afterDiscard.activeDocument?.text == "Second", "main locking still permits explicitly opening a separate project")
+        afterDiscard.finishClosing()
         let previousMode = BuildSettings.shared.mode
         BuildSettings.shared.mode = .manual
         defer { BuildSettings.shared.mode = previousMode }
-        let revisionStore = ProjectStore(library: library)
+        let revisionStore = ProjectStore(library: library, maintainsRootDirectives: false)
         revisionStore.openProject(first, explicitRoot: true)
         let fakeEngine = directory.appendingPathComponent("delayed-engine")
         try "#!/bin/sh\nsleep 0.3\necho done\n".write(to: fakeEngine, atomically: true, encoding: .utf8)

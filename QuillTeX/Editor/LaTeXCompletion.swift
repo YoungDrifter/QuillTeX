@@ -1,7 +1,6 @@
 import Foundation
-import AppKit
 
-/// What the editor offers in its completion popup.
+/// Prefix-based inline completions for the editor.
 ///
 /// Commands, environments and packages come from the bundled lists; labels and
 /// citation keys come from the project index. The rules are pure so they can be
@@ -23,6 +22,8 @@ enum LaTeXCompletion {
         var range: NSRange
         /// The typed text inside `range`.
         var prefix: String
+        var openEnvironments: [String] = []
+        var inMath = false
     }
 
     // MARK: - Deciding what is being typed
@@ -35,7 +36,7 @@ enum LaTeXCompletion {
         while start > 0, let scalar = UnicodeScalar(ns.character(at: start - 1)), word.contains(scalar) {
             start -= 1
         }
-        let result: Suggestion
+        var result: Suggestion
         if start > 0, ns.character(at: start - 1) == backslash, !escaped(start - 1, in: ns) {
             var end = limit
             while end < ns.length, let scalar = UnicodeScalar(ns.character(at: end)), word.contains(scalar) { end += 1 }
@@ -79,10 +80,15 @@ enum LaTeXCompletion {
         // The same lexer used by highlighting excludes comments and literal regions.
         // UI callers evaluate this pure function on a background task.
         let prefix = ns.substring(to: limit)
-        let excluded = LaTeXHighlighter.spans(in: prefix).filter { $0.token == .comment || $0.token == .verbatim }
+        let spans = LaTeXHighlighter.spans(in: prefix)
+        let excluded = spans.filter { $0.token == .comment || $0.token == .verbatim }
         let checkedStart = result.prefix.isEmpty ? max(0, result.range.location - 1) : result.range.location
         let checkedRange = NSRange(location: checkedStart, length: max(1, limit - checkedStart))
         guard !excluded.contains(where: { NSIntersectionRange($0.range, checkedRange).length > 0 }) else { return nil }
+        result.inMath = spans.contains { $0.inMath && NSIntersectionRange($0.range, checkedRange).length > 0 }
+        if result.context == .endEnvironment {
+            result.openEnvironments = openEnvironments(in: ns.substring(to: result.range.location))
+        }
         return result
     }
 
@@ -93,7 +99,8 @@ enum LaTeXCompletion {
         let pool: [String]
         switch suggestion.context {
         case .command: pool = commands + projectCommands
-        case .environment, .endEnvironment: pool = environments + projectEnvironments
+        case .environment: pool = environments + projectEnvironments
+        case .endEnvironment: pool = suggestion.openEnvironments + environments + projectEnvironments
         case .package: pool = packages
         case .label: pool = labels
         case .citation: pool = citations
@@ -103,12 +110,23 @@ enum LaTeXCompletion {
             (value.hasPrefix("\\") ? String(value.dropFirst()) : value).lowercased()
         }
         let needle = key(suggestion.prefix)
+        let custom: Set<String>
+        switch suggestion.context {
+        case .command: custom = Set(projectCommands)
+        case .environment, .endEnvironment: custom = Set(projectEnvironments)
+        default: custom = []
+        }
         return Array(Set(pool))
-            .filter { needle.isEmpty || key($0).contains(needle) }
+            .filter { needle.isEmpty || key($0).hasPrefix(needle) }
             .sorted { first, second in
                 let a = key(first), b = key(second)
-                let firstStarts = a.hasPrefix(needle), secondStarts = b.hasPrefix(needle)
-                if firstStarts != secondStarts { return firstStarts }
+                if suggestion.context == .endEnvironment {
+                    let nearest = Array(suggestion.openEnvironments.reversed())
+                    let firstRank = nearest.firstIndex(of: first) ?? Int.max
+                    let secondRank = nearest.firstIndex(of: second) ?? Int.max
+                    if firstRank != secondRank { return firstRank < secondRank }
+                }
+                if custom.contains(first) != custom.contains(second) { return custom.contains(first) }
                 return a.localizedStandardCompare(b) == .orderedAscending
             }
     }
@@ -135,47 +153,183 @@ enum LaTeXCompletion {
                 let closing = "\\end{\(candidate)}"
                 let tail = ns.substring(from: NSMaxRange(range))
                 // Complete an existing environment without creating a second closing pair.
-                if !tail.contains(closing) {
+                if !hasClosingEnvironment(candidate, in: tail) {
                     let newline = source.contains("\r\n") ? "\r\n" : "\n"
-                    text += newline
+                    let indent = indentation(in: source, at: range.location)
+                    text += newline + indent + "  "
                     placeholders = [NSRange(location: text.utf16.count, length: 0)]
-                    text += newline + closing
+                    text += newline + indent + closing
                 }
             }
-        } else if suggestion.context == .command,
-                  !(next < ns.length && (ns.character(at: next) == openBrace || ns.character(at: next) == 0x5B)),
-                  let arguments = commandArguments[candidate] {
-            for _ in 0..<arguments {
-                text += "{"
-                placeholders.append(NSRange(location: text.utf16.count, length: 0))
-                text += "}"
+        } else if suggestion.context == .command {
+            var cursor = next
+            // Reuse existing optional/required groups, including their contents.
+            // Their ranges belong to the same snippet as newly inserted arguments.
+            while let group = argumentGroup(in: ns, at: cursor, opening: 0x5B, closing: 0x5D) {
+                let suffix = ns.substring(with: NSRange(location: cursor, length: NSMaxRange(group.range) - cursor))
+                if group.contentLength == 0 { placeholders.append(NSRange(location: text.utf16.count + group.range.location - cursor + 1, length: 0)) }
+                text += suffix + String(repeating: "]", count: group.missingClosers)
+                cursor = NSMaxRange(group.range)
             }
+            var argument = 0
+            let expectedArguments = commandArguments[candidate]
+            while expectedArguments.map({ argument < $0 }) ?? true {
+                if let group = argumentGroup(in: ns, at: cursor, opening: openBrace, closing: 0x7D) {
+                    placeholders.append(NSRange(location: text.utf16.count + group.range.location - cursor + 1, length: group.contentLength))
+                    text += ns.substring(with: NSRange(location: cursor, length: NSMaxRange(group.range) - cursor))
+                    text += String(repeating: "}", count: group.missingClosers)
+                    cursor = NSMaxRange(group.range)
+                } else if expectedArguments != nil {
+                    text += "{"
+                    placeholders.append(NSRange(location: text.utf16.count, length: 0))
+                    text += "}"
+                } else { break }
+                argument += 1
+            }
+            range.length = cursor - range.location
+            if candidate == "\\end", let name = openEnvironments(in: ns.substring(to: range.location)).last,
+               let argument = placeholders.first, argument.length == 0 {
+                let expanded = NSMutableString(string: text)
+                expanded.replaceCharacters(in: argument, with: name)
+                text = expanded as String
+                placeholders = []
+            }
+        } else if suggestion.context == .label || suggestion.context == .citation || suggestion.context == .package {
+            if hasBrace { range.length += 1 }
+            // A comma continues this argument; a closing brace completes it.
+            if hasBrace || next == ns.length || ns.character(at: next) != 0x2C { text += "}" }
         }
         return Insertion(range: range, text: text, placeholders: placeholders, finalOffset: text.utf16.count)
     }
 
-    // MARK: - Popup items
-
-    /// One row of the completion popup.
-    struct Item: Equatable, Identifiable, Sendable {
-        var id: String { title }
-        var title: String
+    private struct ArgumentGroup {
+        var range: NSRange
+        var missingClosers = 0
+        var contentLength: Int { max(0, range.length - (missingClosers == 0 ? 2 : 1)) }
     }
 
-    static func items(for suggestion: Suggestion, labels: [String], citations: [String],
-                      projectCommands: [String] = [], projectEnvironments: [String] = []) -> [Item] {
-        candidates(for: suggestion, labels: labels, citations: citations,
-                   projectCommands: projectCommands, projectEnvironments: projectEnvironments)
-            .map { Item(title: $0) }
+    private static func argumentGroup(in ns: NSString, at offset: Int, opening: UInt16, closing: UInt16) -> ArgumentGroup? {
+        var start = offset
+        while start < ns.length, ns.character(at: start) == 0x20 || ns.character(at: start) == 0x09 { start += 1 }
+        guard start < ns.length, ns.character(at: start) == opening else { return nil }
+        var depth = 0
+        var lineEnd: (offset: Int, depth: Int)?
+        for cursor in start..<ns.length where !escaped(cursor, in: ns) {
+            let unit = ns.character(at: cursor)
+            if lineEnd == nil, unit == 0x0A || unit == 0x0D { lineEnd = (cursor, depth) }
+            if unit == opening { depth += 1 }
+            if unit == closing {
+                depth -= 1
+                if depth == 0 { return ArgumentGroup(range: NSRange(location: start, length: cursor - start + 1)) }
+            }
+        }
+        // Repair only the current line when no closing delimiter exists anywhere.
+        let end = lineEnd ?? (ns.length, depth)
+        return ArgumentGroup(range: NSRange(location: start, length: end.offset - start), missingClosers: end.depth)
     }
 
-    /// How wide the popup should be for these rows: as wide as the longest candidate,
-    /// inside bounds so a very long name cannot stretch the panel across the screen.
-    static func panelWidth(for items: [Item]) -> CGFloat {
-        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        let widest = items.map { ($0.title as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
-        // Row padding 9+9, container padding 5+5, selection slack.
-        return min(440, max(196, max(widest, 96) + 46))
+    private static let environmentPattern = try! NSRegularExpression(pattern: #"\\(begin|end)\s*\{([^{}\r\n]+)\}"#)
+    private static func environmentTokens(in source: String) -> [(opening: Bool, name: String)] {
+        let ns = source as NSString
+        let excluded = LaTeXHighlighter.spans(in: source).filter { $0.token == .comment || $0.token == .verbatim }
+        return environmentPattern.matches(in: source, range: NSRange(location: 0, length: ns.length)).compactMap { match in
+            guard !escaped(match.range.location, in: ns),
+                  !excluded.contains(where: { NSLocationInRange(match.range.location, $0.range) }) else { return nil }
+            return (ns.substring(with: match.range(at: 1)) == "begin", ns.substring(with: match.range(at: 2)))
+        }
+    }
+
+    static func openEnvironments(in source: String) -> [String] {
+        var stack: [String] = []
+        for token in environmentTokens(in: source) {
+            if token.opening { stack.append(token.name) }
+            else if let index = stack.lastIndex(of: token.name) { stack.removeSubrange(index...) }
+        }
+        return stack
+    }
+
+    private static func hasClosingEnvironment(_ name: String, in tail: String) -> Bool {
+        var depth = 0
+        for token in environmentTokens(in: tail) where token.name == name {
+            if token.opening { depth += 1 }
+            else if depth == 0 { return true }
+            else { depth -= 1 }
+        }
+        return false
+    }
+
+    private static func indentation(in source: String, at offset: Int) -> String {
+        let ns = source as NSString
+        let line = ns.lineRange(for: NSRange(location: offset, length: 0))
+        return String(ns.substring(with: line).prefix { $0 == " " || $0 == "\t" })
+    }
+
+    /// Single-key edits only. Paste, marked text and completion expansions bypass
+    /// these rules, so authored source is never rewritten on insertion.
+    static func typingInsertion(_ typed: String, range: NSRange, in source: String) -> Insertion? {
+        guard typed.utf16.count == 1, "{}()[]\\".contains(typed), range.location >= 0,
+              NSMaxRange(range) <= source.utf16.count else { return nil }
+        let ns = source as NSString
+        let prefix = ns.substring(to: range.location)
+        let excluded = LaTeXHighlighter.spans(in: prefix).filter { $0.token == .comment || $0.token == .verbatim }
+        guard !excluded.contains(where: { NSMaxRange($0.range) == range.location }) else { return nil }
+        let unit = typed.utf16.first!
+        let isEscaped = escaped(range.location, in: ns)
+        if typed == "\\" {
+            // Reuse the slash in an automatically paired \), \] or \}.
+            guard !isEscaped, range.length == 0, range.location + 1 < ns.length,
+                  ns.character(at: range.location) == backslash else { return nil }
+            let close = ns.character(at: range.location + 1)
+            guard let open = [UInt16(0x29): UInt16(0x28), 0x5D: 0x5B, 0x7D: 0x7B][close] else { return nil }
+            var depth = 0
+            for index in 0..<range.location where escaped(index, in: ns) &&
+                !excluded.contains(where: { NSLocationInRange(index, $0.range) }) {
+                if ns.character(at: index) == open { depth += 1 }
+                if ns.character(at: index) == close { depth -= 1 }
+            }
+            return depth > 0 ? Insertion(range: range, text: "", finalOffset: 1) : nil
+        }
+        if typed == "}", !isEscaped, range.length == 0,
+           let match = prefix.range(of: #"\\begin\{([^{}\s]+)$"#, options: .regularExpression),
+           !escaped(NSRange(match, in: prefix).location, in: ns) {
+            let begin = String(prefix[match])
+            let name = String(begin.dropFirst(7))
+            let consumed = range.location < ns.length && ns.character(at: range.location) == 0x7D ? 1 : 0
+            if !hasClosingEnvironment(name, in: ns.substring(from: range.location + consumed)) {
+                let newline = source.contains("\r\n") ? "\r\n" : "\n"
+                let indent = indentation(in: source, at: range.location)
+                let body = "}" + newline + indent + "  "
+                return Insertion(range: NSRange(location: range.location, length: consumed),
+                    text: body + newline + indent + "\\end{\(name)}", finalOffset: body.utf16.count)
+            }
+        }
+        let pairs: [UInt16: UInt16] = [0x7B: 0x7D, 0x28: 0x29, 0x5B: 0x5D]
+        if let closing = pairs[unit] {
+            let selected = ns.substring(with: range)
+            let left = prefix.range(of: #"\\left\s*\\?$"#, options: .regularExpression)
+            let needsRight = left.map { !escaped(NSRange($0, in: prefix).location, in: ns) } ?? false
+            let suffix = (needsRight ? "\\right" : "") + (isEscaped ? "\\" : "") + String(UnicodeScalar(closing)!)
+            return Insertion(range: range, text: typed + selected + suffix,
+                             placeholders: range.length > 0 ? [NSRange(location: 1, length: range.length)] : [],
+                             finalOffset: 1 + range.length)
+        }
+        guard range.length == 0, range.location < ns.length,
+              let opening = pairs.first(where: { $0.value == unit })?.key else { return nil }
+        let tail = ns.substring(from: range.location)
+        let right = "\\right" + typed
+        let escapedRight = "\\right\\" + typed
+        let rightLength = tail.hasPrefix(right) ? right.utf16.count : (tail.hasPrefix(escapedRight) ? escapedRight.utf16.count : 0)
+        guard ns.character(at: range.location) == unit || rightLength > 0 else { return nil }
+        let openingEscaped = rightLength > 0 ? tail.hasPrefix(escapedRight) : isEscaped
+        var depth = 0
+        for index in 0..<range.location where escaped(index, in: ns) == openingEscaped &&
+            !excluded.contains(where: { NSLocationInRange(index, $0.range) }) {
+            let value = ns.character(at: index)
+            if value == opening { depth += 1 }
+            if value == unit { depth -= 1 }
+        }
+        // Skip a closer that already belongs to an opening delimiter.
+        return depth > 0 ? Insertion(range: range, text: "", finalOffset: max(1, rightLength)) : nil
     }
 
     // MARK: - Inline hint
@@ -189,6 +343,47 @@ enum LaTeXCompletion {
         /// Characters the candidate replaces.
         var range: NSRange
         var context: Context
+        var inMath = false
+    }
+
+    struct InlinePreview: Equatable, Sendable {
+        /// The visible suffix, including parameter delimiters from the insertion.
+        var text: String
+        /// A closing brace already in the source, temporarily covered while its
+        /// preview is painted after the proposed name. Source offsets stay intact.
+        var coveredBrace: NSRange?
+        /// A math suffix is repainted after the hint, without editing the buffer.
+        var coveredTail: NSRange? = nil
+        var trailingText: NSRange? = nil
+    }
+
+    static func inlinePreview(for hint: Inline, in source: String, at offset: Int) -> InlinePreview? {
+        let ns = source as NSString
+        guard NSMaxRange(hint.range) == offset, offset <= ns.length else { return nil }
+        let line = ns.lineRange(for: NSRange(location: offset, length: 0))
+        let tail = ns.substring(with: NSRange(location: offset, length: NSMaxRange(line) - offset))
+        let trimmed = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let argument = hint.context != .command
+        let hasBrace = argument && tail.hasPrefix("}") && trimmed == "}"
+        // Other source text must remain readable in its native position.
+        let closingTail = tail.range(of: #"^(?:[\s}\])$]|\\[)\]])+$"#, options: .regularExpression) != nil
+        let moveTail = !trimmed.isEmpty && !hasBrace && (hint.inMath || closingTail)
+        guard trimmed.isEmpty || hasBrace || moveTail else { return nil }
+        let suggestion = Suggestion(context: hint.context, range: hint.range,
+                                    prefix: ns.substring(with: hint.range))
+        let insertion = insertion(for: hint.full, suggestion: suggestion, in: source)
+        let firstLine = insertion.text.prefix { $0 != "\n" && $0 != "\r" }
+        let preview = String(firstLine.dropFirst(suggestion.prefix.count))
+        guard !preview.isEmpty else { return nil }
+        if moveTail {
+            let end = NSMaxRange(line) - (tail.hasSuffix("\r\n") ? 2 : (tail.hasSuffix("\n") || tail.hasSuffix("\r") ? 1 : 0))
+            guard NSMaxRange(insertion.range) <= end else { return nil }
+            let remaining = max(offset, NSMaxRange(insertion.range))
+            return InlinePreview(text: preview, coveredBrace: nil,
+                coveredTail: NSRange(location: offset, length: end - offset),
+                trailingText: NSRange(location: remaining, length: end - remaining))
+        }
+        return InlinePreview(text: preview, coveredBrace: hasBrace ? NSRange(location: offset, length: 1) : nil)
     }
 
     /// A hint is only offered when what has been typed is a genuine prefix of a
@@ -208,11 +403,13 @@ enum LaTeXCompletion {
         guard let best = candidates(for: suggestion, labels: labels, citations: citations,
                                     projectCommands: projectCommands, projectEnvironments: projectEnvironments).first else { return nil }
         let candidate = best.hasPrefix("\\") ? String(best.dropFirst()) : best
-        guard candidate.lowercased().hasPrefix(typed.lowercased()), candidate.count > typed.count else { return nil }
+        let hasArguments = suggestion.context == .command && (commandArguments[best] ?? 0) > 0
+        guard candidate.lowercased().hasPrefix(typed.lowercased()),
+              candidate.count > typed.count || hasArguments else { return nil }
         return Inline(full: best,
                       remainder: String(candidate.dropFirst(typed.count)),
                       range: suggestion.range,
-                      context: suggestion.context)
+                      context: suggestion.context, inMath: suggestion.inMath)
     }
 
     // MARK: - Looking backwards
@@ -231,6 +428,14 @@ enum LaTeXCompletion {
     }
 
     private static let commandArguments: [String: Int] = [
+        "\\begin": 1, "\\end": 1, "\\documentclass": 1, "\\usepackage": 1,
+        "\\section": 1, "\\section*": 1, "\\subsection": 1, "\\subsection*": 1,
+        "\\subsubsection": 1, "\\paragraph": 1, "\\chapter": 1, "\\part": 1,
+        "\\title": 1, "\\author": 1, "\\date": 1, "\\caption": 1, "\\footnote": 1,
+        "\\label": 1, "\\ref": 1, "\\eqref": 1, "\\pageref": 1, "\\autoref": 1,
+        "\\cref": 1, "\\Cref": 1, "\\cite": 1, "\\citep": 1, "\\citet": 1,
+        "\\parencite": 1, "\\textcite": 1, "\\input": 1, "\\include": 1,
+        "\\includegraphics": 1, "\\emph": 1, "\\textbf": 1, "\\textit": 1, "\\texttt": 1,
         "\\frac": 2, "\\dfrac": 2, "\\tfrac": 2, "\\sqrt": 1,
         "\\mathbb": 1, "\\mathcal": 1, "\\mathbf": 1, "\\mathrm": 1, "\\mathit": 1,
         "\\mathsf": 1, "\\mathfrak": 1, "\\boldsymbol": 1, "\\text": 1,

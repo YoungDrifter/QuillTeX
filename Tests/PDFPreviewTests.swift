@@ -103,6 +103,33 @@ struct PDFPreviewTests {
         settle(0.4)
         check(reportedState?.zoomMode == .manual && abs((reportedState?.scale ?? 0) - 1.15) < 0.001,
               "zoom controls report the new reading state for the workspace session")
+        controls.actualSize()
+        settle()
+        check(view.scaleFactor == 1 && view.zoomMode == .manual, "Actual Size selects exactly 100 percent")
+        check(controls.percentage == "100%", "percentage follows Actual Size")
+        view.scaleFactor = 1.37
+        settle()
+        check(controls.percentage == "137%", "percentage follows direct PDFKit zoom changes")
+        check(controls.setPercentage("125%"), "percentage field accepts a percent suffix")
+        settle()
+        check(view.scaleFactor == 1.25 && controls.percentage == "125%", "editing percentage changes the actual PDF scale")
+        check(controls.setPercentage("87.5"), "percentage field accepts decimals without a suffix")
+        check(abs(view.scaleFactor - 0.875) < 0.001, "fractional percentage is applied precisely")
+        check(!controls.setPercentage("abc") && !controls.setPercentage("-5"), "invalid zoom input leaves the PDF scale unchanged")
+        check(abs(view.scaleFactor - 0.875) < 0.001, "invalid input does not change the last valid zoom")
+        _ = controls.setPercentage("9999%")
+        check(view.scaleFactor == view.maxScaleFactor, "entered percentages respect PDF zoom limits")
+        controls.fitWidth()
+        settle()
+        check(view.zoomMode == .width && controls.percentage == "\(Int((view.scaleFactor * 100).rounded()))%", "percentage follows Fit Width")
+        let menuEvent = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        let menu = view.menu(for: menuEvent)!
+        check(menu.items.map(\.title).prefix(4) == ["Zoom In", "Zoom Out", "Actual Size", "Fit Width"], "PDF menu exposes zoom, Actual Size and Fit Width")
+        check(!menu.items.contains { $0.title == "Fit Page" }, "Fit Page is removed from the PDF menu")
+        controls.zoomOut()
+        settle()
+        check(view.zoomMode == .manual, "menu zoom remains available after Fit Width")
         view.restore(PDFReadingState(pageIndex: 999, topPoint: .zero, scale: 99, zoomMode: .manual))
         settle()
         check(view.readerPosition()?.pageIndex == 2 && view.scaleFactor == view.maxScaleFactor,

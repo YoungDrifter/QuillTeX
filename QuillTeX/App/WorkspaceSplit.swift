@@ -191,6 +191,8 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
     var onLayoutChange: ((Double, Double) -> Void)?
     private var reportingLayout = false
     private var layoutReportPending = false
+    private var sidebarAnimating = false
+    private var sidebarAnimationGeneration = 0
 
     init(sidebar: NSViewController, editor: NSViewController, preview: NSViewController, tabBar: NSViewController? = nil) {
         content = WorkspaceContentSplitController(editor: editor, preview: preview)
@@ -242,11 +244,12 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
     }
     @objc private func splitResized() { reportLayout() }
     private func reportLayout() {
-        guard initialized, !reportingLayout, !layoutReportPending else { return }
+        guard initialized, !reportingLayout, !layoutReportPending, !sidebarAnimating else { return }
         layoutReportPending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.layoutReportPending = false
+            guard !self.sidebarAnimating else { return }
             if self.previousSidebar { self.sidebarWidth = self.splitViewItems[0].viewController.view.frame.width }
             if !self.content.splitViewItems.contains(where: \.isCollapsed) { self.savedEditorFraction = self.content.editorFraction }
             self.onLayoutChange?(self.sidebarWidth, self.savedEditorFraction)
@@ -270,11 +273,27 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         tabBarHeight?.constant = showTabs ? 32 : 0
         tabBarController?.view.isHidden = !showTabs
         if previousSidebar != sidebarVisible {
-            if previousSidebar { sidebarWidth = splitViewItems[0].viewController.view.frame.width }
-            splitViewItems[0].isCollapsed = !sidebarVisible
+            if previousSidebar && !sidebarAnimating { sidebarWidth = splitViewItems[0].viewController.view.frame.width }
             previousSidebar = sidebarVisible
-            splitView.adjustSubviews()
-            if sidebarVisible { splitView.setPosition(sidebarWidth, ofDividerAt: 0) }
+            sidebarAnimationGeneration += 1
+            let generation = sidebarAnimationGeneration
+            let animate = initialized && view.window?.isVisible == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            sidebarAnimating = animate
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = animate ? 0.28 : 0
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                if animate { splitViewItems[0].animator().isCollapsed = !sidebarVisible }
+                else { splitViewItems[0].isCollapsed = !sidebarVisible }
+            } completionHandler: { [weak self] in
+                guard let self, self.sidebarAnimationGeneration == generation else { return }
+                self.sidebarAnimating = false
+                if self.previousSidebar { self.splitView.setPosition(self.sidebarWidth, ofDividerAt: 0) }
+                self.reportLayout()
+            }
+            if !animate {
+                splitView.adjustSubviews()
+                if sidebarVisible { splitView.setPosition(sidebarWidth, ofDividerAt: 0) }
+            }
         }
         let equalize = previousSplitLayoutVersion != splitLayoutVersion
         previousSplitLayoutVersion = splitLayoutVersion

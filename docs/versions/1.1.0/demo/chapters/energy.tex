@@ -1,0 +1,23 @@
+% !TeX root = ../main.tex
+\section{先写下能量}
+\label{sec:energy}
+设 $f\in C([0,1])$。在满足 $u(0)=u(1)=0$ 的函数中，考虑
+\begin{equation}
+  \energy[u]=\int_0^1\left(\frac12 |u'(x)|^2-f(x)u(x)\right)\,\mathrm{d}x.
+  \label{eq:energy}
+\end{equation}
+第一项衡量函数变化的代价，第二项描述外部作用。
+我们先在光滑函数上计算，再说明表达式为何自然延伸到弱导数的框架。
+
+\begin{observation}
+固定端点意味着允许的扰动也必须在两个端点为零。
+这是后续分部积分中边界项消失的原因。
+\end{observation}
+
+取满足 $v(0)=v(1)=0$ 的试探函数 $v$，沿 $u+tv$ 展开，得到
+\begin{align*}
+  \energy[u+tv]-\energy[u]
+    &=t\int_0^1(u'v'-fv)\,\mathrm{d}x
+      +\frac{t^2}{2}\int_0^1|v'|^2\,\mathrm{d}x.
+\end{align*}
+这个展开同时给出一阶变化和余项，而不必预先猜测微分方程。

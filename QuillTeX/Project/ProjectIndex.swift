@@ -371,7 +371,10 @@ struct ProjectIndexer {
             let resolved = url.resolvingSymlinksInPath()
             guard seenDirectories.insert(resolved).inserted else { return node }
             let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
-            for child in contents.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            for entry in contents.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+                // Keep the chosen project path spelling (for example /tmp rather
+                // than /private/tmp) consistent with open buffer identities.
+                let child = url.appendingPathComponent(entry.lastPathComponent)
                 if Task.isCancelled { break }
                 guard child.lastPathComponent != "build", Self.isWithin(child, directory: directory) else { continue }
                 let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true

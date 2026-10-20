@@ -72,7 +72,6 @@ private struct SettingsCategoryButton: View {
     let symbol: String
     let selected: Bool
     let action: () -> Void
-    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -82,12 +81,9 @@ private struct SettingsCategoryButton: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10).frame(height: 36)
-            .background(selected ? SettingsStyle.selection : (hovering ? SettingsStyle.secondarySurface : .clear),
-                        in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(QuillRowButtonStyle(selected: selected))
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -163,6 +159,17 @@ struct SettingsActionStyle: ButtonStyle {
             .overlay(Capsule().strokeBorder(SettingsStyle.border, lineWidth: 1))
             .contentShape(Capsule())
             .opacity(isEnabled ? 1 : 0.4)
+            .modifier(SettingsActionFeedback(pressed: configuration.isPressed))
+    }
+}
+
+private struct SettingsActionFeedback: ViewModifier {
+    let pressed: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content.modifier(ChromeHoverFeedback())
+            .scaleEffect(pressed && !reduceMotion ? 0.97 : 1)
+            .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
     }
 }
 
@@ -175,7 +182,7 @@ struct SettingsIconButton: View {
             Image(systemName: symbol).font(.system(size: 12))
                 .frame(width: 28, height: 28).contentShape(Circle())
         }
-        .buttonStyle(.plain).help(label).accessibilityLabel(label)
+        .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback()).help(label).accessibilityLabel(label)
     }
 }
 

@@ -33,5 +33,5 @@ struct PDFReadingState: Codable, Equatable {
     var pageIndex: Int
     var topPoint: CGPoint
     var scale: CGFloat
-    var zoomMode: PDFZoomMode = .wholePage
+    var zoomMode: PDFZoomMode = .width
 }

@@ -158,7 +158,7 @@ struct SettingsView: View {
                                            bibliography: draftBibliography == 1 ? .bibtex
                                                : (draftBibliography == 2 ? .biber : nil))
         return VStack(alignment: .leading, spacing: 16) {
-            Text("New Compile Strategy").font(.headline)
+            QuillPopoverTitle("New Compile Strategy")
             TextField("Name", text: $draftName).textFieldStyle(.roundedBorder).frame(width: 300)
             LabeledContent("Engine passes") {
                 Stepper(value: $draftRuns, in: 1...6) { Text("\(draftRuns)").monospacedDigit() }
@@ -172,9 +172,9 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
             HStack {
                 Spacer()
-                Button("Cancel") { showingCustomStrategy = false }
+                Button("Cancel") { showingCustomStrategy = false }.buttonStyle(SettingsActionStyle())
                 Button("Add") { settings.addStrategy(preview); showingCustomStrategy = false }
-                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(SettingsActionStyle()).keyboardShortcut(.defaultAction)
             }
         }
         .quillSheetContent().frame(width: 380)

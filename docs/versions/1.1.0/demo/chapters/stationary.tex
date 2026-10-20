@@ -1,0 +1,26 @@
+% !TeX root = ../main.tex
+\section{驻值条件怎样变成方程}
+\label{sec:stationary}
+记 $\variation{\energy}{u}(v)$ 为方向 $v$ 上的一阶变化。
+若 $u$ 是极小点，则所有允许方向的一阶变化都为零，即
+\begin{equation}
+  \variation{\energy}{u}(v)
+    =\int_0^1(u'v'-fv)\,\mathrm{d}x=0.
+  \label{eq:weak}
+\end{equation}
+当 $u$ 足够光滑时，分部积分把式~\eqref{eq:weak} 写成
+$\int_0^1(-u''-f)v\,\mathrm{d}x=0$。于是得到边值问题
+\begin{equation}
+  -u''=f\quad\text{于 }(0,1),\qquad u(0)=u(1)=0.
+  \label{eq:boundary}
+\end{equation}
+反过来，满足式~\eqref{eq:weak} 的函数具有
+\[
+  \energy[u+v]-\energy[u]=\frac12\int_0^1|v'|^2\,\mathrm{d}x\geq 0.
+\]
+因此驻值条件在这里已经足以保证极小性；固定端点还排除了非零常数扰动。
+
+\begin{observation}
+式~\eqref{eq:weak} 只含一阶导数。把试探函数空间取为 $H_0^1(0,1)$，
+就得到同一问题的弱形式，而无需要求未知函数具有连续的二阶导数。
+\end{observation}

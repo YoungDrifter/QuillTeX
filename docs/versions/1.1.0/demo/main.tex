@@ -1,0 +1,25 @@
+% !TeX program = xelatex
+\documentclass[UTF8,fontset=mac,zihao=-4]{ctexart}
+\usepackage[a4paper,margin=28mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\newcommand{\energy}{\mathcal{E}}
+\newcommand{\variation}[2]{\delta #1[#2]}
+\newtheorem{observation}{观察}
+\title{从变分到方程\\[0.5em]\large 一份关于能量方法的写作札记}
+\author{QuillTeX 1.1.0 示例文稿}
+\date{}
+\pagestyle{plain}
+\begin{document}
+\maketitle
+\begin{abstract}
+从一个带固定端点的能量泛函出发，沿着试探函数、驻值条件和弱形式，
+把一维边值问题的几种描述联系起来。本文保留计算的中间步骤，
+也记录写作时需要核对的假设、符号与交叉引用。
+\end{abstract}
+\input{chapters/energy}
+\input{chapters/stationary}
+\input{chapters/review}
+\end{document}

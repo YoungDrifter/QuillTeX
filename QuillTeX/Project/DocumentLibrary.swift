@@ -1,6 +1,5 @@
 import Foundation
 import Combine
-import CryptoKit
 
 struct RecentDocument: Codable, Identifiable {
     let path: String
@@ -66,11 +65,8 @@ final class DocumentLibrary: ObservableObject {
                 let destination = templatesDirectory.appendingPathComponent(source.lastPathComponent)
                 if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.copyItem(at: source, to: destination) }
             }
-            // Earlier releases seeded private templates into the local library.
-            // Retire only byte-identical copies; edited and imported files stay usable.
-            for (name, digest) in Self.retiredDefaults {
-                try retireUnmodifiedTemplate(named: name, digest: digest)
-            }
+            do { try restoreRetiredTemplates() }
+            catch { storageError = error.localizedDescription }
             reloadTemplates()
             if FileManager.default.fileExists(atPath: historyURL.path) {
                 do { recents = try JSONDecoder().decode([RecentDocument].self, from: Data(contentsOf: historyURL)) }
@@ -78,26 +74,31 @@ final class DocumentLibrary: ObservableObject {
             }
         } catch { storageError = error.localizedDescription }
     }
-    private static let retiredDefaults = [
-        "academic-article.tex": "214f2e9fb729239d9da612d7bdff720bf4a07d6c4cbf30cea241e41182cad450",
-        "academic-beamer.tex": "a9144ca65ed53e5f8971ed076ccac677ff831940808bb38fa0be65cb5f899e7c",
-        "academic-ctexart.tex": "9be200f54ef5a2612ab78377d78fae78da650978479a485ea93bf85ecab6affa"
-    ]
-
-    /// Keep recoverable copies outside the chooser rather than deleting local files.
-    func retireUnmodifiedTemplate(named name: String, digest: String) throws {
-        let source = templatesDirectory.appendingPathComponent(name)
-        guard FileManager.default.fileExists(atPath: source.path) else { return }
-        let data = try Data(contentsOf: source)
-        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard actual == digest else { return }
+    /// Earlier versions could mistake an explicitly imported template for a retired
+    /// default. Bring those files back once, preserving every same-name copy.
+    private func restoreRetiredTemplates() throws {
         let archive = directory.appendingPathComponent("RetiredTemplates", isDirectory: true)
-        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
-        var destination = archive.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            destination = archive.appendingPathComponent(UUID().uuidString + "-" + name)
+        guard FileManager.default.fileExists(atPath: archive.path) else { return }
+        let files = try FileManager.default.contentsOfDirectory(at: archive, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        for source in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard source.pathExtension.lowercased() == "tex",
+                  try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            var name = source.deletingPathExtension().lastPathComponent
+            // The old collision handler prepended a UUID to the author's name.
+            if name.count > 37, UUID(uuidString: String(name.prefix(36))) != nil,
+               name.dropFirst(36).first == "-" { name = String(name.dropFirst(37)) }
+            let destination = availableTemplateURL(named: name)
+            try FileManager.default.moveItem(at: source, to: destination)
         }
-        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
+    private func availableTemplateURL(named name: String) -> URL {
+        var destination = templatesDirectory.appendingPathComponent(name + ".tex")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: destination.path) {
+            destination = templatesDirectory.appendingPathComponent("\(name) \(suffix).tex"); suffix += 1
+        }
+        return destination
     }
 
     func reloadTemplates() {
@@ -147,11 +148,7 @@ final class DocumentLibrary: ObservableObject {
         guard source.pathExtension.lowercased() == "tex" else { throw CocoaError(.fileReadUnsupportedScheme) }
         _ = try String(contentsOf: source, encoding: .utf8)
         let name = source.deletingPathExtension().lastPathComponent
-        var destination = templatesDirectory.appendingPathComponent(name + ".tex")
-        var suffix = 2
-        while FileManager.default.fileExists(atPath: destination.path) {
-            destination = templatesDirectory.appendingPathComponent("\(name) \(suffix).tex"); suffix += 1
-        }
+        let destination = availableTemplateURL(named: name)
         try FileManager.default.copyItem(at: source, to: destination)
         reloadTemplates()
         return destination

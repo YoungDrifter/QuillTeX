@@ -26,6 +26,7 @@ struct WorkspaceSession: Codable {
     var editorFraction: Double
     var pdf: PDFReadingState?
     var pdfIsOutdated: Bool? = nil
+    var sourceDirectoryPath: String? = nil
 }
 
 /// A serial writer keeps a slow draft write from replacing a newer workspace state.

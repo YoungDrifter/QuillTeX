@@ -182,7 +182,7 @@ struct TemplateChooser: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Start From a Template").font(.system(size: 23, weight: .regular, design: .serif))
+                    Text("Start From a Template").font(.system(size: 23, weight: .semibold))
                     Text("Templates are stored on this Mac, and you can add your own .tex files.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
@@ -221,7 +221,8 @@ struct TemplateChooser: View {
                     store.createDocument(from: template)
                 }
             }.font(.system(size: 12))
-        }.padding(30).frame(width: 720).preferredColorScheme(.light)
+        }.padding(30).frame(width: 720).foregroundStyle(Palette.primaryInk)
+            .tint(.black).background(Color.white).preferredColorScheme(.light)
             .onAppear {
                 library.reloadTemplates()
                 if let template = library.templates.first(where: { $0.title == "academic-ctexart" }) ?? library.templates.first { select(template) }

@@ -9,9 +9,12 @@ if (!/^\d+\.\d+\.\d+$/.test(version ?? '') || extra.length) {
   throw new Error('Usage: node '+path.basename(fileURLToPath(import.meta.url))+' VERSION [SCENE]');
 }
 const assets = path.join(root, 'docs/versions', version);
+let configuration;
+try { configuration = JSON.parse(await readFile(path.join(assets, 'promo.json'), 'utf8')); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
 const brand = "QuillTeX";
 const platform = "macOS 14+";
-const scenes = [["welcome", "让想法，落在纸上。", "打开一份文稿，开始一段专注的写作。", "开始写作"], ["writing", "写作与成稿，同时在场。", "章节切换、语法高亮与成稿预览，始终在一个工作区。", "多标签写作"], ["navigation", "长篇文稿，也有清晰线索。", "沿着章节与标签，快速找到下一处要写的内容。", "结构导航"], ["project", "每个章节，都各归其位。", "主文稿、子文件与目录结构，一目了然。", "工程管理"]];
+const scenes = configuration?.scenes ?? [["welcome", "让想法，落在纸上。", "打开一份文稿，开始一段专注的写作。", "开始写作"], ["writing", "写作与成稿，同时在场。", "章节切换、语法高亮与成稿预览，始终在一个工作区。", "多标签写作"], ["navigation", "长篇文稿，也有清晰线索。", "沿着章节与标签，快速找到下一处要写的内容。", "结构导航"], ["project", "每个章节，都各归其位。", "主文稿、子文件与目录结构，一目了然。", "工程管理"]];
 if (scene && !scenes.some(([name]) => name === scene)) throw new Error(`Unknown scene: ${scene}`);
 const icon = (await readFile(path.join(root, "QuillTeX/App/Assets.xcassets/AppIcon.appiconset/icon_128_128.png"))).toString('base64');
 const escape = value => value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
@@ -29,7 +32,7 @@ for (const [index, [name, title, subtitle, label]] of scenes.entries()) {
   const colours = [['#ff5f57','#e0443e'], ['#febc2e','#dea123'], ['#28c840','#1eac30']];
   const centres = name === 'welcome' ? [32,78,124] : [42,88,134];
   const cy = name === 'welcome' ? 32 : 56;
-  const controls = `<g transform="translate(${x} ${y}) scale(${scale})">${centres.map((cx,i) => `<circle cx="${cx}" cy="${cy}" r="13" fill="${colours[i][0]}" stroke="${colours[i][1]}" stroke-width="1"/>`).join('')}</g>`;
+  const controls = configuration?.preserveNativeControls ? '' : `<g transform="translate(${x} ${y}) scale(${scale})">${centres.map((cx,i) => `<circle cx="${cx}" cy="${cy}" r="13" fill="${colours[i][0]}" stroke="${colours[i][1]}" stroke-width="1"/>`).join('')}</g>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1500" viewBox="0 0 1800 1500">
     <defs>
       <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000" flood-opacity=".09"/></filter>
@@ -47,7 +50,7 @@ for (const [index, [name, title, subtitle, label]] of scenes.entries()) {
       <g clip-path="url(#capture)"><image href="data:image/png;base64,${capture.toString('base64')}" x="${x}" y="${y}" width="${w}" height="${h}"/>${controls}</g>
       <rect ${windowRect} fill="none" stroke="#ddd" stroke-width="1"/>
       <text x="100" y="1450" font-size="20" fill="#777">${escape(brand)} · ${escape(version)} · ${escape(platform)}</text>
-      <text x="1700" y="1450" text-anchor="end" font-size="20" fill="#777">${String(index+1).padStart(2,'0')} / 04</text>
+      ${scenes.length > 1 ? `<text x="1700" y="1450" text-anchor="end" font-size="20" fill="#777">${String(index+1).padStart(2,'0')} / ${String(scenes.length).padStart(2,'0')}</text>` : '<!-- Single promotional image -->'}
     </g>
   </svg>`;
   await writeFile(path.join(assets, `images/source/${name}.svg`), svg);

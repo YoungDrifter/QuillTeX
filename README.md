@@ -6,36 +6,32 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.0.3** · macOS 14+ · Apple Silicon
+**Version 1.1.0** · macOS 14+ · Apple Silicon
 
-[下载 1.0.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3)
+[下载 1.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.0)
 
-![QuillTeX 01 · 启动页](docs/versions/1.0.0/images/welcome.png)
-
-![QuillTeX 02 · 写作与预览](docs/versions/1.0.0/images/writing.png)
-
-![QuillTeX 03 · 结构导航](docs/versions/1.0.0/images/navigation.png)
-
-![QuillTeX 04 · 工程管理](docs/versions/1.0.0/images/project.png)
+![QuillTeX 1.1.0 · 写作与预览](docs/versions/1.1.0/images/writing.png)
 
 ## 功能
 
 - 本地文稿库、最近打开与模板，支持多标签编辑和多文件工程。
 - 章节、标签和图表导航，帮助定位长篇文稿与子文件。
-- LaTeX 语法高亮及命令、环境、标签和引用键补全，支持项目自定义命令与数学参数跳转。
+- LaTeX 语法高亮及随输入更新的行内补全，优先匹配工程自定义命令与环境，支持数学参数跳转。
 - 使用 XeLaTeX、pdfLaTeX 或 LuaLaTeX 本地编译，点击诊断跳转到对应源码。
-- 编译问题筛选、实时日志与排版校对，帮助检查错误、溢出行和未解析引用。
-- 源码与 PDF 并排显示，支持缩放、页面适配及 ⌘-点击双向定位。
-- 独立标签栏可按需显示或隐藏；点击顶栏文件名可重命名并设置 Finder 标签。
-- 切换主文件时同步工程、编译目标与预览；自动编译期间继续显示已有 PDF。
-- 从 Finder 打开 `.tex` 文件，识别 `% !TeX root = ...`；支持在工程中切换主文件。
+- 可折叠的警告／错误列表与排版校对，帮助检查错误、溢出行和未解析引用。
+- 源码与 PDF 并排显示，支持手势缩放、Actual Size、适应宽度和实时缩放比例，以及 ⌘-点击双向定位。
+- 新开或切换文件自动显示标签栏，主文件固定在首位，其余标签可拖动排序；点击顶栏文件名可重命名并设置 Finder 标签。
+- 主文件固定为工程的编译与预览目标；自动编译期间继续显示已有 PDF。
+- 从 Finder 打开 `.tex` 文件，自动补充主文件注释；工程打开后主文件固定，重命名时相关注释同步更新。
+- 在展开的文件夹中直接新建 TeX 或文件夹，名称在文件行内编辑，回车或点击侧栏空白处保存，留空使用默认名；右键可重命名或移到废纸篓；子文件按主文稿引用顺序排列，可拖动到引用前后或源码指定行插入。
 - 恢复工程标签、编辑位置与 PDF 阅读状态，保留异常退出前的未保存编辑。
+- TeX 与 PDF 跟随外部保存自动刷新；存在未保存的 TeX 编辑时，可选择保留当前编辑或采用外部版本。
 - 统一的分类设置界面，包含编译配置、自动构建、插件入口与应用信息。
 - 每天自动检查 GitHub 正式版；有更新时在应用内提示、下载并安装，也可从应用菜单或 About 手动检查。
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3) 下载 `QuillTeX-1.0.3.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.0) 下载 `QuillTeX-1.1.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -63,9 +59,15 @@
 
 ### 1.0.3 · 写作与校对优化
 
-优化补全与数学参数输入、长文稿分析、编译诊断和实时日志；恢复工程编辑与阅读状态，完善 PDF 定位反馈与排版校对。所有改进直接作为基础功能提供。
+优化补全与数学参数输入、长文稿分析、编译诊断与 Result 列表；恢复工程编辑与阅读状态，完善 PDF 定位反馈与排版校对。所有改进直接作为基础功能提供。
 
 [更新说明](docs/versions/1.0.3/README.md) · [下载 1.0.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.3)
+
+### 1.1.0 · 写作与交互焕新
+
+跟随输入的行内补全、完整的环境与括号配对、自定义命令优先匹配；可折叠的警告与错误列表；玻璃胶囊分组、统一的滑动选择与悬停反馈，以及对齐的编译设置与策略抽屉。支持子文件标签拖动排序、PDF 实际大小与实时缩放比例，修复导入模板被移出模板库的问题。
+
+[版本介绍与全新演示](docs/versions/1.1.0/README.md) · [下载 1.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.0)
 
 ## 本地构建
 

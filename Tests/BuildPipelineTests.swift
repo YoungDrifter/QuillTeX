@@ -130,10 +130,6 @@ struct BuildPipelineTests {
         check(proofreading.allSatisfy { $0.file?.lastPathComponent == "中文 文件.tex" }, "parentheses in dimensions do not lose the source file")
         check(proofreading.contains { $0.relatedKey == "smith2026" && $0.line == 9 }, "an unresolved citation keeps its key and line")
         check(proofreading.contains { $0.relatedKey == "eq:one" && $0.guidance?.contains("unique") == true }, "a duplicate label includes its key and repair advice")
-        check(BuildDiagnosticFilter(severity: .errors).includes(error!), "error filter includes compilation errors")
-        check(!BuildDiagnosticFilter(severity: .errors).includes(proofreading[0]), "error filter excludes proofreading warnings")
-        check(proofreading.filter(BuildDiagnosticFilter(category: .references).includes).count == 2,
-              "category filtering isolates reference problems")
         check(BuildLogParser.summary(for: proofreading, succeeded: true).contains("3 proofreading issues"), "successful typesetting reports proofreading separately")
         let wrappedWarning = BuildLogParser.diagnostics(in: "(./main.tex\nLaTeX Warning: Reference `long-label' on page 1 undefined on input line\n  42.\n\nLaTeX Warning: There were undefined references.\n)", workingDirectory: directory)
         check(wrappedWarning.count == 1 && wrappedWarning[0].line == 42 && wrappedWarning[0].relatedKey == "long-label",

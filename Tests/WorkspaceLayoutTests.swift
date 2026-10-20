@@ -23,7 +23,7 @@ struct WorkspaceLayoutTests {
         defer { window.close() }
         func settle() {
             window.contentView?.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.35))
             window.contentView?.layoutSubtreeIfNeeded()
         }
         var checks = 0

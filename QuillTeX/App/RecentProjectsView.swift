@@ -25,7 +25,7 @@ struct RecentProjectsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Recent Projects").font(.headline)
+                QuillPopoverTitle("Recent Projects")
                 Spacer(minLength: 12)
                 if !library.recents.isEmpty {
                     Button("Clear History") { clearHistory() }.buttonStyle(SettingsActionStyle())
@@ -57,7 +57,7 @@ struct RecentProjectsView: View {
                 }.frame(height: listHeight)
             }
         }
-        .frame(width: 340)
+        .frame(width: ChromeMetrics.popoverWidth)
         .focusable().focusEffectDisabled()
         .onKeyPress(.downArrow) { selection = min(selection + 1, max(0, library.recents.count - 1)); return .handled }
         .onKeyPress(.upArrow) { selection = max(0, selection - 1); return .handled }

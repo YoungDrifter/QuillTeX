@@ -123,27 +123,13 @@ private struct EditorHistoryButtons: View {
             action()
         } label: {
             Image(systemName: icon).font(.system(size: 13))
-                .frame(width: 26, height: 26).contentShape(Rectangle())
+                .frame(width: 26, height: 26).contentShape(Circle())
         }
-        .buttonStyle(EditorHistoryStyle()).disabled(!enabled)
+        .buttonStyle(ChromeButtonStyle())
+        .modifier(ChromeHoverFeedback()).disabled(!enabled)
         .help("\(title) (\(shortcut))").accessibilityLabel(title)
     }
 }
-private struct EditorHistoryStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        EditorHistoryLabel(label: configuration.label, pressed: configuration.isPressed)
-    }
-}
-private struct EditorHistoryLabel<Label: View>: View {
-    let label: Label
-    let pressed: Bool
-    @State private var hovered = false
-    var body: some View {
-        label.background(Capsule().fill(Palette.primaryInk.opacity(pressed ? Palette.pressedOpacity : (hovered ? Palette.chromeHoverOpacity : 0))))
-            .onHover { hovered = $0 }
-    }
-}
-
 /// TeXifier-style path breadcrumb: main file › folders › current file. Every segment
 /// opens the contents of its folder, so the whole project is one click away.
 private struct EditorBreadcrumb: View {
