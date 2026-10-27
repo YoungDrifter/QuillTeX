@@ -137,7 +137,7 @@ struct BuildPipelineTests {
 
         // The template-by-absolute-path warning is noise and must not reach the panel.
         let noisy = """
-        LaTeX Warning: You have requested package `/Users/someone/Templates/academic-ctexart/academic-ctexart.sty',
+        LaTeX Warning: You have requested package `/Users/someone/Templates/academic_ctexart/academic_ctexart.sty',
         but the package provides `academic-ctexart'.
         """
         check(!BuildLogParser.diagnostics(in: noisy, workingDirectory: directory).contains { $0.severity == .warning },

@@ -320,6 +320,9 @@ private final class WindowHook: NSView, NSWindowDelegate {
     private var observers: [NSObjectProtocol] = []
     /// The controls' frames as AppKit laid them out, captured before any alignment.
     private var standardControlFrames: [NSRect] = []
+    private weak var alignedTitlebar: NSView?
+    private var originalTitlebarFrame: NSRect?
+    private var adjustedTitlebarFrame: NSRect?
     private var isAligning = false
     private var systemFullScreenChrome = false
 
@@ -420,6 +423,11 @@ private final class WindowHook: NSView, NSWindowDelegate {
 
     private func restoreWindowControls() {
         guard let window else { return }
+        if let titlebar = alignedTitlebar, let originalTitlebarFrame, titlebar.frame == adjustedTitlebarFrame {
+            titlebar.frame = originalTitlebarFrame
+            titlebar.updateTrackingAreas()
+        }
+        originalTitlebarFrame = nil; adjustedTitlebarFrame = nil
         for (index, type) in controlTypes.enumerated() {
             guard let button = window.standardWindowButton(type), standardControlFrames.indices.contains(index) else { continue }
             isAligning = true
@@ -555,24 +563,36 @@ private final class WindowHook: NSView, NSWindowDelegate {
     }
 
     private func centreWindowControls(fromTop: CGFloat) {
-        guard let window, let top = contentTop() else { return }
+        guard let window, let top = contentTop(),
+              let close = window.standardWindowButton(.closeButton),
+              let buttonContainer = close.superview,
+              let titlebar = buttonContainer.superview, let parent = titlebar.superview else { return }
         isAligning = true
         defer { isAligning = false }
+        // Keep the widgets in AppKit's native local frames and move their titlebar
+        // container together, so native hover/tiling tracking follows the same bounds.
         for (index, type) in controlTypes.enumerated() {
-            guard let button = window.standardWindowButton(type), let container = button.superview else { continue }
-            var frame = button.frame
-            // Horizontal placement is absolute: this runs on every layout pass, so a
-            // relative nudge would walk the controls across the window.
-            if standardControlFrames.indices.contains(index) {
-                frame.origin.x = standardControlFrames[index].origin.x + ChromeMetrics.controlsHorizontalOffset
-            }
-            // Measure the button's centre from the content top, not from the container's
-            // own bounds, so the container's height never enters the calculation.
-            let current = top - container.convert(frame, to: nil).midY
-            let delta = fromTop - current
-            if abs(delta) < 0.1 { continue }
-            frame.origin.y += container.isFlipped ? delta : -delta
-            button.frame = frame
+            guard let button = window.standardWindowButton(type), standardControlFrames.indices.contains(index),
+                  button.frame != standardControlFrames[index] else { continue }
+            button.frame = standardControlFrames[index]
         }
+        let current = top - buttonContainer.convert(close.frame, to: nil).midY
+        let delta = fromTop - current
+        let horizontal = store.root == nil ? 0 : ChromeMetrics.controlsHorizontalOffset
+        let currentX = buttonContainer.convert(close.frame, to: nil).minX
+        let expectedX = (standardControlFrames.first?.minX ?? currentX) + horizontal
+        guard abs(delta) >= 0.1 || abs(expectedX - currentX) >= 0.1 else { return }
+        if titlebar.frame != adjustedTitlebarFrame {
+            originalTitlebarFrame = titlebar.frame
+        }
+        alignedTitlebar = titlebar
+        var frame = titlebar.frame
+        frame.origin.y += parent.isFlipped ? delta : -delta
+        frame.origin.x += expectedX - currentX
+        titlebar.frame = frame
+        adjustedTitlebarFrame = frame
+        titlebar.updateTrackingAreas()
+        buttonContainer.updateTrackingAreas()
+        controlTypes.compactMap { window.standardWindowButton($0) }.forEach { $0.updateTrackingAreas() }
     }
 }

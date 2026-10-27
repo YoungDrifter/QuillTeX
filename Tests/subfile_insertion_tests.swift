@@ -90,6 +90,24 @@ struct SubfileInsertionTests {
         check(surface.textView.subfileInsertionOffset != nil, "the source editor exposes an insertion-line preview")
         store.clearSubfileInsertionPreview()
         check(surface.textView.subfileInsertionOffset == nil, "ending or cancelling a drag removes its source preview")
+        let plugin = PluginManager.shared
+        let enabled = plugin.isEnabled(PluginManager.subfilesID)
+        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
+        defer {
+            plugin.setEnabled(enabled, for: PluginManager.subfilesID)
+            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
+        }
+        store.sidebarMode = .subfiles
+        surface.textView.subfileInsertionOffset = 0
+        let unchangedSource = doc.text
+        plugin.setEnabled(false, for: PluginManager.subfilesID)
+        check(store.sidebarMode == .folder && !store.subfilesEnabled, "disabling Subfiles exits the optional sidebar")
+        check(surface.textView.subfileInsertionOffset == nil, "disabling Subfiles removes an active drag preview")
+        do { try store.insertSubfile(c, at: .end); fatalError("disabled plugin inserted source") }
+        catch { check(doc.text == unchangedSource, "disabled Subfiles rejects insertion without changing source") }
+        plugin.setEnabled(true, for: PluginManager.subfilesID)
+        store.sidebarMode = .subfiles
+        check(store.sidebarMode == .subfiles && doc.text == unchangedSource, "re-enabling Subfiles restores access while retaining source")
         print("PASS: \(checks) subfile-insertion assertions")
     }
 }

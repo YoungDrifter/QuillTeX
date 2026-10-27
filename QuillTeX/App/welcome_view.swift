@@ -91,7 +91,7 @@ struct WelcomeView: View {
     private func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear the document history?"
-        alert.informativeText = "QuillTeX will forget the documents you opened and the per-project compile settings. Folders on the Desktop, in Documents or Downloads will ask for access again. Your files are not touched."
+        alert.informativeText = "Recent documents and compile preferences will be cleared. Folder access may be requested again; your files stay on disk."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Clear History")
@@ -182,8 +182,8 @@ struct TemplateChooser: View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Start From a Template").font(.system(size: 23, weight: .semibold))
-                    Text("Templates are stored on this Mac, and you can add your own .tex files.")
+                    Text("Choose a Template").font(.system(size: 23, weight: .semibold))
+                    Text("Choose a template or add a .tex file.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -243,7 +243,7 @@ struct TemplateChooser: View {
         guard let template = library.templates.first(where: { $0.id == selected }) else { return }
         let alert = NSAlert()
         alert.messageText = "Delete “\(template.displayTitle)”?"
-        alert.informativeText = "The template file is removed from your library. Documents you already created are not affected."
+        alert.informativeText = "Remove this template from the library? Existing documents are kept."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Delete")
         guard alert.runModal() == .alertSecondButtonReturn else { return }

@@ -1,5 +1,5 @@
 //
-//  RecentProjectsView.swift
+//  recent_projects_view.swift
 //  QuillTeX
 //
 //  The Recent Projects popover: the top bar's clock control opens this in the
@@ -32,7 +32,7 @@ struct RecentProjectsView: View {
                 }
             }
             if library.recents.isEmpty {
-                Text("No recently opened projects").foregroundStyle(.secondary)
+                Text("No recent projects").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             } else {
                 ScrollView {

@@ -57,7 +57,7 @@ struct BuildPreflight: Equatable {
     var isReady: Bool { hasSteps && missingTools.isEmpty }
     var message: String {
         if !hasSteps { return "Choose a compile strategy with at least one step." }
-        return "Missing TeX tools: \(missingTools.joined(separator: ", ")). Check the TeX path in Settings or choose an available engine and strategy."
+        return "Missing: \(missingTools.joined(separator: ", ")). Check the TeX path or compile strategy in Settings."
     }
 
     static func inspect(engine: BuildEngine, steps: [BuildStep], paths: [String: String]) -> BuildPreflight {

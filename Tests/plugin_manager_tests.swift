@@ -32,6 +32,12 @@ struct PluginManagerTests {
         precondition(!disabled.isEnabled("unknown") && defaults.object(forKey: "plugins.unknown.enabled") == nil)
         precondition(defaults.string(forKey: "sample.document") == "retained user data")
         precondition(PluginManager(plugins: [], defaults: defaults).plugins.isEmpty)
+        let shipped = AppPlugin(id: "subfiles", name: "Subfiles", summary: "", symbol: "doc.on.doc", defaultEnabled: true,
+                                activate: { starts += 1 }, deactivate: { stops += 1 })
+        let shippedManager = PluginManager(plugins: [shipped], defaults: defaults)
+        precondition(shippedManager.isEnabled("subfiles"))
+        shippedManager.setEnabled(false, for: "subfiles")
+        precondition(!PluginManager(plugins: [shipped], defaults: defaults).isEnabled("subfiles"))
         print("PluginManager: persistence, launch activation, stop, idempotence, independence and retained data passed")
     }
 }

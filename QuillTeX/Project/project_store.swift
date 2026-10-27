@@ -19,7 +19,10 @@ final class SourceDocument: ObservableObject, Identifiable {
     let undoManager = UndoManager()
     private var undoObservers: [NSObjectProtocol] = []
     var editorSurface: EditorSurface?
-    var isDirty: Bool { text != savedText }
+    var isDirty: Bool {
+        let current = text as NSString, saved = savedText as NSString
+        return current.length != saved.length || !current.isEqual(to: savedText)
+    }
     init(url: URL, text: String) {
         self.url = url; self.text = text; self.savedText = text; self.diskText = text
         for name in [Notification.Name.NSUndoManagerDidCloseUndoGroup, Notification.Name.NSUndoManagerDidUndoChange,
@@ -89,6 +92,14 @@ final class ProjectStore: ObservableObject {
             self?.observedPDFData = self?.build.pdfURL.flatMap { try? Data(contentsOf: $0) }
             self?.updateFileMonitoring()
         }.store(in: &buildObservers)
+        NotificationCenter.default.publisher(for: PluginManager.subfilesChanged).sink { [weak self] notification in
+            guard let self else { return }
+            if notification.object as? Bool == false {
+                self.clearSubfileInsertionPreview()
+                if self.sidebarMode == .subfiles { self.sidebarMode = .folder }
+            }
+            self.objectWillChange.send()
+        }.store(in: &buildObservers)
         BuildSettings.shared.$outputDirectory.dropFirst().sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateFileMonitoring()
@@ -106,7 +117,10 @@ final class ProjectStore: ObservableObject {
         }
     }
     @Published var index = ProjectIndex()
-    @Published var sidebarMode: SidebarMode = .structure
+    var subfilesEnabled: Bool { PluginManager.shared.isEnabled(PluginManager.subfilesID) }
+    @Published var sidebarMode: SidebarMode = .structure {
+        didSet { if sidebarMode == .subfiles && !subfilesEnabled { sidebarMode = .folder } }
+    }
     @Published var sidebarVisible = true
     /// A manual choice belongs to this workspace; nil follows the file count.
     @Published private var tabBarVisibilityOverride: Bool?
@@ -563,7 +577,7 @@ final class ProjectStore: ObservableObject {
 
     @discardableResult
     func insertSubfile(_ url: URL, moving referenceID: String? = nil, at placement: SubfilePlacement) throws -> Bool {
-        guard let root, let main = documents.first(where: { $0.url == root }), !main.hasMarkedText,
+        guard subfilesEnabled, let root, let main = documents.first(where: { $0.url == root }), !main.hasMarkedText,
               let base = sourceDirectory ?? directory, ProjectIndexer.isWithin(url, directory: base),
               url.resolvingSymlinksInPath().path != root.resolvingSymlinksInPath().path,
               url.pathExtension.lowercased() == "tex", FileManager.default.fileExists(atPath: url.path) else {
@@ -619,7 +633,7 @@ final class ProjectStore: ObservableObject {
     }
 
     func previewSubfileInsertion(atScreenPoint point: NSPoint) -> Int? {
-        guard let root, let doc = activeDocument, doc.url == root, !doc.hasMarkedText,
+        guard subfilesEnabled, let root, let doc = activeDocument, doc.url == root, !doc.hasMarkedText,
               let window, let surface = doc.editorSurface else { clearSubfileInsertionPreview(); return nil }
         let view = surface.textView
         let location = view.convert(window.convertPoint(fromScreen: point), from: nil)
@@ -741,7 +755,7 @@ final class ProjectStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = folder; panel.canChooseFiles = !folder
         panel.allowsMultipleSelection = false
-        panel.message = folder ? "Choose the project folder that contains your main file" : "Open any LaTeX file; its TeX root directive selects the main file"
+        panel.message = folder ? "Choose the project folder." : "Choose a LaTeX file."
         if !folder { panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText] }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if folder { openFolder(url) } else { openProject(url) }
@@ -756,7 +770,7 @@ final class ProjectStore: ObservableObject {
     private func chooseRoot(directory: URL) -> URL? {
         let panel = NSOpenPanel(); panel.directoryURL = directory
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
-        panel.message = "Choose the main .tex file to open this project"; panel.prompt = "Open Project"
+        panel.message = "Choose the main .tex file."; panel.prompt = "Open Project"
         return panel.runModal() == .OK ? panel.url : nil
     }
     // MARK: - Folder access
@@ -776,11 +790,8 @@ final class ProjectStore: ObservableObject {
     func promptForFolderAccess() {
         guard let directory else { return }
         let alert = NSAlert()
-        alert.messageText = "QuillTeX needs permission to read this project"
-        alert.informativeText = """
-        macOS is blocking access to \(directory.path). Grant access to the folder so every \
-        file in the project can be opened, indexed and saved.
-        """
+        alert.messageText = "Allow project access?"
+        alert.informativeText = "Allow access to “\(directory.lastPathComponent)” to open and save project files."
         alert.addButton(withTitle: "Grant Access…")
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Later")
@@ -800,7 +811,7 @@ final class ProjectStore: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = directory.deletingLastPathComponent()
-        panel.message = "Choose “\(directory.lastPathComponent)” to let QuillTeX read, index and save the whole project"
+        panel.message = "Choose “\(directory.lastPathComponent)” to grant project access."
         panel.prompt = "Grant Access"
         guard panel.runModal() == .OK else { return }
         accessPromptedFor = nil
@@ -1127,12 +1138,13 @@ final class ProjectStore: ObservableObject {
         editRevision += 1; previewIsOutdated = true
         scheduleSessionSave()
         objectWillChange.send()
-        window?.isDocumentEdited = documents.contains { $0.isDirty }
+        let dirty = documents.contains { $0.isDirty }
+        if window?.isDocumentEdited != dirty { window?.isDocumentEdited = dirty }
         refreshIndex()
         scheduleAutoCompile()
     }
     @discardableResult func save(_ doc: SourceDocument) -> Bool {
-        guard !doc.hasMarkedText else { showError("Finish Typing First", "Confirm the current input method candidate before saving."); return false }
+        guard !doc.hasMarkedText else { showError("Finish Typing First", "Confirm the current input before saving."); return false }
         do {
             let current = try? String(contentsOf: doc.url, encoding: .utf8)
             if let current, current != doc.diskText {
@@ -1144,7 +1156,7 @@ final class ProjectStore: ObservableObject {
                 }
             } else if current == nil {
                 let alert = NSAlert(); alert.messageText = "File Changed on Disk"
-                alert.informativeText = "\(doc.url.lastPathComponent) was changed or deleted outside QuillTeX. Overwrite it with the current editor contents?"
+                alert.informativeText = "“\(doc.url.lastPathComponent)” is missing or unreadable. Replace it with your edits?"
                 alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Overwrite")
                 guard alert.runModal() == .alertSecondButtonReturn else { return false }
             }
@@ -1372,10 +1384,7 @@ final class ProjectStore: ObservableObject {
             showError("Compile Tools Missing", preflight.message)
             return
         }
-        guard saveAll() else {
-            showError("Could not save", "The compile was cancelled because a file could not be saved.")
-            return
-        }
+        guard saveAll() else { return }
         let settings = BuildSettings.shared
         build.compile(BuildController.Request(mainFile: root,
                                               outputDirectory: buildOutputDirectory,
@@ -1469,7 +1478,7 @@ final class ProjectStore: ObservableObject {
             else {
                 let alert = NSAlert()
                 alert.messageText = "External Change Detected"
-                alert.informativeText = "\(doc.url.lastPathComponent) has changed outside QuillTeX and has unsaved edits here. Choose which version to keep. Keeping your edits leaves the external file unchanged until you save."
+                alert.informativeText = "“\(doc.url.lastPathComponent)” changed on disk. Using the external version replaces your unsaved edits; keeping your edits leaves the disk file unchanged until you save."
                 alert.addButton(withTitle: "Keep My Edits")
                 alert.addButton(withTitle: "Use External Version")
                 choice = alert.runModal() == .alertSecondButtonReturn ? .useExternal : .keepMine

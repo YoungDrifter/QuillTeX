@@ -69,6 +69,9 @@ struct ProjectIndexTests {
         cache.invalidateInventory()
         let refreshed = ProjectIndexer(root: root, overrides: [:], cache: cache).build()
         check(refreshed.texFiles.contains(newlyCreated), "file operations invalidate the cached tree")
+        let siblings = index.folders.first!.children
+        let firstFile = siblings.firstIndex { $0.kind != .folder } ?? siblings.count
+        check(siblings[..<firstFile].allSatisfy { $0.kind == .folder } && siblings[firstFile...].allSatisfy { $0.kind != .folder }, "folders precede every file in the sidebar")
         let headings = flat(index.structure).filter { $0.kind == .section }
         check(headings.map(\.title) == ["基础", "中文与 emoji 😀", "Conclusion"], "source order across includes, comments and verbatim")
         check(headings.first?.children.first?.title == "中文与 emoji 😀", "section hierarchy")

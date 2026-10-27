@@ -8,6 +8,7 @@ struct AppPlugin: Identifiable {
     let name: String
     let summary: String
     let symbol: String
+    var defaultEnabled: Bool = false
     let activate: () -> Void
     let deactivate: () -> Void
 }
@@ -15,7 +16,14 @@ struct AppPlugin: Identifiable {
 @MainActor
 final class PluginManager: ObservableObject {
     // Register shipped extensions here. Core document features stay outside this list.
-    static let shared = PluginManager(plugins: [])
+    static let subfilesID = "subfiles"
+    static let subfilesChanged = Notification.Name("QuillTeX.subfilesChanged")
+    static let shared = PluginManager(plugins: [
+        AppPlugin(id: subfilesID, name: "Subfiles", summary: "Browse and arrange included TeX files.",
+                  symbol: "doc.on.doc", defaultEnabled: true,
+                  activate: { NotificationCenter.default.post(name: subfilesChanged, object: true) },
+                  deactivate: { NotificationCenter.default.post(name: subfilesChanged, object: false) })
+    ])
     let plugins: [AppPlugin]
     private let defaults: UserDefaults
     @Published private var enabled: [String: Bool] = [:]
@@ -25,7 +33,7 @@ final class PluginManager: ObservableObject {
         self.plugins = plugins
         self.defaults = defaults
         for plugin in plugins {
-            let active = defaults.bool(forKey: Self.key(plugin.id))
+            let active = defaults.object(forKey: Self.key(plugin.id)) as? Bool ?? plugin.defaultEnabled
             enabled[plugin.id] = active
             if active { plugin.activate() }
         }

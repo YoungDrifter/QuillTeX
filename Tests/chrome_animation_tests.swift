@@ -14,7 +14,7 @@ private struct ObservedTitlebar: View {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("QuillTeX-chrome-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
         let store = ProjectStore(library: DocumentLibrary(directory: temp,
-            bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates")))
+            bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")))
         store.paneMode = .editor
         let root = NSHostingView(rootView: ObservedTitlebar(store: store))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 54),
@@ -74,6 +74,58 @@ private struct ObservedTitlebar: View {
         check(split.center > editor.center && split.center < preview.center, "middle pane has its own selection position")
         let returned = switchTo(.editor)
         check(abs(returned.center-editor.center) < 1, "selection slides back to the first pane")
+        let plugin = PluginManager.shared
+        let previousEnabled = plugin.isEnabled(PluginManager.subfilesID)
+        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
+        defer {
+            plugin.setEnabled(previousEnabled, for: PluginManager.subfilesID)
+            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
+        }
+        plugin.setEnabled(true, for: PluginManager.subfilesID)
+        store.sidebarMode = .structure
+        let sidebar = NSHostingView(rootView: SidebarModePicker(store: store)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.sidebarTop))
+        let sidebarWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 64),
+                                     styleMask: [.titled], backing: .buffered, defer: false)
+        sidebarWindow.isReleasedWhenClosed = false
+        sidebarWindow.contentView = sidebar; sidebarWindow.orderFront(nil)
+        defer { sidebarWindow.close() }
+        func sidebarSelection() -> (center: CGFloat, width: CGFloat) {
+            sidebar.layoutSubtreeIfNeeded()
+            let bitmap = sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds)!
+            sidebar.cacheDisplay(in: sidebar.bounds, to: bitmap)
+            let scale = CGFloat(bitmap.pixelsWide) / sidebar.bounds.width
+            let y = Int((sidebar.bounds.height / 2 + 11) * scale)
+            var best = (start: 0, length: 0), start: Int?
+            for x in 0..<bitmap.pixelsWide {
+                let color = bitmap.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+                if color.alphaComponent > 0.8 && max(color.redComponent, color.greenComponent, color.blueComponent) < 0.35 {
+                    if start == nil { start = x }
+                    if x - start! + 1 > best.length { best = (start!, x - start! + 1) }
+                } else { start = nil }
+            }
+            return ((CGFloat(best.start) + CGFloat(best.length) / 2) / scale, CGFloat(best.length) / scale)
+        }
+        settle(0.3)
+        let four = sidebarSelection()
+        plugin.setEnabled(false, for: PluginManager.subfilesID); settle(0.3)
+        let three = sidebarSelection()
+        check(three.center - four.center > 20, "three sidebar modes recenter inside a shorter capsule: four \(four), three \(three)")
+        check(abs(three.width - four.width) < 2, "removing a mode preserves each remaining target width")
+        store.sidebarMode = .folder; settle(0.3)
+        let middle = sidebarSelection()
+        store.sidebarMode = .result; settle(0.3)
+        let last = sidebarSelection()
+        check(abs(middle.center - 120) < 2, "the middle of three sidebar modes stays centered")
+        check(abs((middle.center - three.center) - (last.center - middle.center)) < 2,
+              "three sidebar controls keep equal spacing")
+        plugin.setEnabled(true, for: PluginManager.subfilesID); settle(0.3)
+        check(store.sidebarMode == .result && sidebarSelection().center > last.center + 20,
+              "restoring a fourth mode expands the capsule and preserves selection")
+        sidebarWindow.setContentSize(NSSize(width: 180, height: 64)); settle(0.3)
+        let narrow = sidebarSelection()
+        check(narrow.width > 12 && narrow.center + narrow.width / 2 < 180,
+              "four sidebar modes fit inside the minimum sidebar width")
         print("PASS: \(checks) chrome-animation assertions")
     }
 }

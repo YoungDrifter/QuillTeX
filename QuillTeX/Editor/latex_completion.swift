@@ -47,7 +47,8 @@ enum LaTeXCompletion {
             // Keys are not command words: punctuation and Unicode belong to the key.
             // Only the current comma-delimited argument is replaced.
             var brace = limit
-            while brace > 0 {
+            let lineStart = ns.lineRange(for: NSRange(location: limit, length: 0)).location
+            while brace > lineStart {
                 brace -= 1
                 let unit = ns.character(at: brace)
                 if unit == openBrace, !escaped(brace, in: ns) { break }
@@ -266,10 +267,17 @@ enum LaTeXCompletion {
 
     /// Single-key edits only. Paste, marked text and completion expansions bypass
     /// these rules, so authored source is never rewritten on insertion.
-    static func typingInsertion(_ typed: String, range: NSRange, in source: String) -> Insertion? {
+    static func typingInsertion(_ typed: String, range: NSRange, in source: String, expandPairs: Bool = true) -> Insertion? {
         guard typed.utf16.count == 1, "{}()[]\\".contains(typed), range.location >= 0,
               NSMaxRange(range) <= source.utf16.count else { return nil }
+        if !expandPairs, "{([".contains(typed) { return nil }
         let ns = source as NSString
+        if !expandPairs {
+            guard range.length == 0, range.location < ns.length else { return nil }
+            let tail = ns.substring(from: range.location)
+            guard tail.hasPrefix(typed) || tail.hasPrefix("\\right" + typed) ||
+                    tail.hasPrefix("\\right\\" + typed) else { return nil }
+        }
         let prefix = ns.substring(to: range.location)
         let excluded = LaTeXHighlighter.spans(in: prefix).filter { $0.token == .comment || $0.token == .verbatim }
         guard !excluded.contains(where: { NSMaxRange($0.range) == range.location }) else { return nil }
@@ -289,7 +297,7 @@ enum LaTeXCompletion {
             }
             return depth > 0 ? Insertion(range: range, text: "", finalOffset: 1) : nil
         }
-        if typed == "}", !isEscaped, range.length == 0,
+        if expandPairs, typed == "}", !isEscaped, range.length == 0,
            let match = prefix.range(of: #"\\begin\{([^{}\s]+)$"#, options: .regularExpression),
            !escaped(NSRange(match, in: prefix).location, in: ns) {
             let begin = String(prefix[match])
@@ -304,7 +312,7 @@ enum LaTeXCompletion {
             }
         }
         let pairs: [UInt16: UInt16] = [0x7B: 0x7D, 0x28: 0x29, 0x5B: 0x5D]
-        if let closing = pairs[unit] {
+        if expandPairs, let closing = pairs[unit] {
             let selected = ns.substring(with: range)
             let left = prefix.range(of: #"\\left\s*\\?$"#, options: .regularExpression)
             let needsRight = left.map { !escaped(NSRange($0, in: prefix).location, in: ns) } ?? false
@@ -330,6 +338,36 @@ enum LaTeXCompletion {
         }
         // Skip a closer that already belongs to an opening delimiter.
         return depth > 0 ? Insertion(range: range, text: "", finalOffset: max(1, rightLength)) : nil
+    }
+
+    /// Propose the last typed delimiter without modifying the buffer.
+    static func delimiterHint(in source: String, at offset: Int) -> Insertion? {
+        let ns = source as NSString
+        guard offset > 0, offset <= ns.length else { return nil }
+        let position = offset - 1
+        let typed = ns.substring(with: NSRange(location: position, length: 1))
+        guard "{([}".contains(typed),
+              let edit = typingInsertion(typed, range: NSRange(location: position, length: 0), in: source),
+              !edit.text.isEmpty else { return nil }
+        // A completed begin statement is replaced as a whole closing brace.
+        if typed == "}" { return edit }
+        let suffix = String(edit.text.dropFirst())
+        guard !ns.substring(from: offset).hasPrefix(suffix) else { return nil }
+        return Insertion(range: NSRange(location: position, length: 1), text: edit.text,
+                         finalOffset: edit.finalOffset)
+    }
+
+    static func delimiterPreview(for edit: Insertion, in source: String, at offset: Int) -> InlinePreview {
+        let ns = source as NSString
+        let line = ns.lineRange(for: NSRange(location: offset, length: 0))
+        let tail = ns.substring(with: NSRange(location: offset, length: NSMaxRange(line) - offset))
+        let newlineLength = tail.hasSuffix("\r\n") ? 2 : (tail.hasSuffix("\n") || tail.hasSuffix("\r") ? 1 : 0)
+        let end = NSMaxRange(line) - newlineLength
+        let suffix = String(edit.text.dropFirst()).replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: " ↵ ")
+        return InlinePreview(text: suffix, coveredBrace: nil,
+                             coveredTail: offset < end ? NSRange(location: offset, length: end - offset) : nil,
+                             trailingText: offset < end ? NSRange(location: offset, length: end - offset) : nil)
     }
 
     // MARK: - Inline hint

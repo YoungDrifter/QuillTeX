@@ -20,7 +20,7 @@ struct EditorBehaviorTests {
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
-        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates")), maintainsRootDirectives: false)
+        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")), maintainsRootDirectives: false)
         let visibility = ProjectStore(library: store.library, maintainsRootDirectives: false)
         visibility.documents = [SourceDocument(url: root, text: "")]
         check(!visibility.isTabBarVisible, "one file hides tabs by default")
@@ -106,7 +106,11 @@ struct EditorBehaviorTests {
         window.makeFirstResponder(surface.textView)
         let originalRange = (initial as NSString).range(of: "Original")
         surface.textView.setSelectedRange(originalRange)
+        var editNotifications = 0
+        let editObservation = store.objectWillChange.sink { editNotifications += 1 }
         surface.textView.insertText("中文 😀", replacementRange: originalRange)
+        check(editNotifications == 1, "one native edit publishes one project change")
+        editObservation.cancel()
         check(doc.text.contains("中文 😀"), "native insertion updates model")
         check(doc.isDirty, "native edit marks document dirty")
         check(surface.textView.undoManager === doc.undoManager, "editor and document share the menu undo manager")
@@ -159,6 +163,34 @@ struct EditorBehaviorTests {
         check((surface.verticalRulerView as? LineNumberRuler)?.currentLine == 1, "ruler follows the caret up")
         check(surface.lineNumber(atCharacter: lineStart(3)) == 3, "caret offset resolves to its line number")
         check(surface.lineNumber(atCharacter: lineStart(3) + 3) == 3, "mid-line offset resolves to its own line")
+        var indexedText = "one\r\n中文😀\nlast\r" as NSString
+        var lineCache = SourceLineIndex()
+        lineCache.reset(indexedText)
+        var seed: UInt64 = 12345
+        func nextRandom(_ limit: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1
+            return Int((seed >> 32) % UInt64(max(1, limit)))
+        }
+        let replacements = ["x", "\n", "\r", "\r\n", "中文😀", "", "\u{2028}", "\u{2029}", "  "]
+        for _ in 0..<300 {
+            let start = nextRandom(indexedText.length + 1)
+            let removed = nextRandom(min(5, indexedText.length - start) + 1)
+            let replacement = replacements[nextRandom(replacements.count)]
+            let changed = NSMutableString(string: indexedText)
+            changed.replaceCharacters(in: NSRange(location: start, length: removed), with: replacement)
+            indexedText = changed.copy() as! NSString
+            lineCache.update(indexedText, editedRange: NSRange(location: start, length: replacement.utf16.count),
+                             delta: replacement.utf16.count - removed)
+            let sourceText = indexedText as String
+            check((0...indexedText.length).allSatisfy {
+                lineCache.lineNumber(at: $0) == EditorSurface.lineNumber(atCharacter: $0, in: sourceText)
+            }, "incremental line numbers match Foundation after Unicode and newline edits")
+        }
+        let newlineView = SourceTextView()
+        newlineView.string = "  first\r\n"; newlineView.setSelectedRange(NSRange(location: 7, length: 0))
+        newlineView.insertNewline(nil)
+        check(newlineView.string == "  first\r\n  \r\n" && newlineView.selectedRange().location == 11,
+              "Return carries indentation and preserves CRLF")
         // Output defaults to the main file's own folder, and a relative value nests.
         check(store.buildOutputDirectory.standardizedFileURL == directory.standardizedFileURL, "output defaults to the project folder")
         check(store.expectedPDF?.lastPathComponent == "main.pdf", "expected PDF sits next to the main file")
@@ -307,19 +339,29 @@ struct EditorBehaviorTests {
             pairView.documentUndoManager.endUndoGrouping()
         }
         pairView.string = ""; typeIntoPair("{")
-        check(pairView.string == "{}" && pairView.selectedRange().location == 1, "typing an opener inserts its pair with the caret inside")
+        check(pairView.string == "{" && pairView.selectedRange().location == 1, "typing an opener only writes the opener")
+        check(LaTeXCompletion.delimiterHint(in: pairView.string, at: 1)?.text == "{}", "a closing delimiter is proposed without changing source")
+        pairView.documentUndoManager.beginUndoGrouping()
+        check(pairView.acceptInlineHint(), "Tab accepts the proposed delimiter")
+        pairView.documentUndoManager.endUndoGrouping()
+        check(pairView.string == "{}" && pairView.selectedRange().location == 1, "accepted delimiter leaves the caret inside")
         pairView.documentUndoManager.beginUndoGrouping()
         pairView.deleteBackward(nil)
         pairView.documentUndoManager.endUndoGrouping()
         check(pairView.string.isEmpty, "backspace removes an empty automatic pair together")
         typeIntoPair("{")
+        _ = pairView.acceptInlineHint()
         typeIntoPair("中文😀"); typeIntoPair("}")
         check(pairView.string == "{中文😀}" && pairView.selectedRange().location == 6, "typing an existing closer advances past it without duplicating Unicode text")
         pairView.string = "selected"; pairView.setSelectedRange(NSRange(location: 0, length: 8))
         typeIntoPair("(")
-        check(pairView.string == "(selected)" && pairView.selectedRange() == NSRange(location: 1, length: 8), "pair typing wraps and preserves selected source")
+        check(pairView.string == "(" && pairView.selectedRange() == NSRange(location: 1, length: 0), "typing an opener replaces selection without inserting a closer")
         pairView.string = "\\begin{proof}"; pairView.setSelectedRange(NSRange(location: 12, length: 0))
         pairView.documentUndoManager.removeAllActions(); typeIntoPair("}")
+        check(pairView.string == "\\begin{proof}", "finishing begin does not automatically insert end")
+        pairView.documentUndoManager.beginUndoGrouping()
+        check(pairView.acceptInlineHint(), "Tab accepts the environment closing hint")
+        pairView.documentUndoManager.endUndoGrouping()
         check(pairView.string == "\\begin{proof}\n  \n\\end{proof}" && pairView.selectedRange().location == 16, "manually finishing begin creates end and parks the caret in the body")
         pairView.documentUndoManager.undo()
         check(pairView.string == "\\begin{proof}", "the automatic closing environment is a single undoable edit")
@@ -329,10 +371,10 @@ struct EditorBehaviorTests {
         pairView.string = ""; pairView.setSelectedRange(NSRange(location: 0, length: 0)); typeIntoPair("\\ref{eq}")
         check(pairView.string == "\\ref{eq}", "pasted source bypasses single-key pairing")
         pairView.string = "\\"; pairView.setSelectedRange(NSRange(location: 1, length: 0))
-        typeIntoPair("["); typeIntoPair("x"); typeIntoPair("\\"); typeIntoPair("]")
+        typeIntoPair("["); _ = pairView.acceptInlineHint(); typeIntoPair("x"); typeIntoPair("\\"); typeIntoPair("]")
         check(pairView.string == "\\[x\\]" && pairView.selectedRange().location == 5, "display-math delimiter pairs can be typed through without duplicate slashes")
         pairView.string = "\\left"; pairView.setSelectedRange(NSRange(location: 5, length: 0))
-        typeIntoPair("("); typeIntoPair("x"); typeIntoPair(")")
+        typeIntoPair("("); _ = pairView.acceptInlineHint(); typeIntoPair("x"); typeIntoPair(")")
         check(pairView.string == "\\left(x\\right)" && pairView.selectedRange().location == 14, "left delimiters get a matching right command and can be typed through")
         pairView.string = ""; pairView.setSelectedRange(NSRange(location: 0, length: 0))
         pairView.documentUndoManager.beginUndoGrouping()
@@ -498,6 +540,28 @@ struct EditorBehaviorTests {
         check(!inlineView.acceptInlineHint() && inlineView.string == occupiedTail,
               "Tab never accepts an invisible suggestion over existing prose")
         inlineWindow.close()
+
+        let longSource = String(repeating: "\\section{Heading}\nPlain text\n", count: 2000)
+        let longDocument = SourceDocument(url: directory.appendingPathComponent("long.tex"), text: longSource)
+        let longSurface = EditorSurface(document: longDocument, store: store)
+        let longWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 400),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+        longWindow.isReleasedWhenClosed = false
+        longWindow.contentView = longSurface; longWindow.orderFront(nil)
+        let longLayout = longSurface.textView.layoutManager!
+        longSurface.layoutSubtreeIfNeeded()
+        longSurface.textView.scrollRangeToVisible(NSRange(location: 0, length: 1))
+        let colorDeadline = Date().addingTimeInterval(2)
+        while longLayout.temporaryAttribute(.foregroundColor, atCharacterIndex: 0, effectiveRange: nil) == nil,
+              Date() < colorDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        check(longLayout.temporaryAttribute(.foregroundColor, atCharacterIndex: 0, effectiveRange: nil) != nil,
+              "visible source receives syntax colors")
+        let lastHeading = (longSource as NSString).range(of: "\\section", options: .backwards).location
+        longSurface.textView.scrollRangeToVisible(NSRange(location: lastHeading, length: 1))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        check(longLayout.temporaryAttribute(.foregroundColor, atCharacterIndex: lastHeading, effectiveRange: nil) != nil,
+              "scrolling to a distant source region paints its syntax colors")
+        longWindow.close()
 
         // Citation keys come out of .bib files.
         check(ProjectIndexer.citationKeys(in: "@article{knuth84,\n  title={Literate Programming}\n}\n@book{lamport94}") == ["knuth84", "lamport94"],

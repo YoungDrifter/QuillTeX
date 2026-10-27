@@ -15,7 +15,7 @@ struct WorkspaceSessionTests {
         try "Original child".write(to: child, atomically: true, encoding: .utf8)
         try "Removed child".write(to: missing, atomically: true, encoding: .utf8)
         let library = DocumentLibrary(directory: directory.appendingPathComponent("Library"),
-                                      bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates"))
+                                      bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates"))
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             guard condition() else { fatalError("FAILED: \(message)") }

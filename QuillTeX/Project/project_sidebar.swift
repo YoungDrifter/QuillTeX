@@ -6,7 +6,7 @@ struct ProjectSidebar: View {
     @State private var nameBounds: CGRect?
     var body: some View {
         VStack(spacing: 0) {
-            sidebarModes.padding(.top, 12).padding(.bottom, 12)
+            SidebarModePicker(store: store).padding(.top, 12).padding(.bottom, 12)
             if store.sidebarMode != .result {
                 HStack {
                     Text(store.sidebarMode.rawValue).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -29,10 +29,12 @@ struct ProjectSidebar: View {
             if store.needsFolderAccess { accessNotice }
             ZStack {
                 tree(store.index.structure, mode: .structure)
+                if store.subfilesEnabled {
                 SubfilesList(store: store)
                     .opacity(store.sidebarMode == .subfiles ? 1 : 0)
                     .allowsHitTesting(store.sidebarMode == .subfiles)
                     .accessibilityHidden(store.sidebarMode != .subfiles)
+                }
                 tree(store.index.folders, mode: .folder)
                 ResultPanel(store: store)
                     .opacity(store.sidebarMode == .result ? 1 : 0)
@@ -63,16 +65,6 @@ struct ProjectSidebar: View {
         .background(RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius).fill(Palette.controlSurface))
         .overlay(RoundedRectangle(cornerRadius: ChromeMetrics.panelCornerRadius).strokeBorder(Palette.hairline))
         .padding(.horizontal, 12).padding(.bottom, 10)
-    }
-    private var sidebarModes: some View {
-        ChromeSegmentedGroup(selection: store.sidebarMode) { modeSelection in
-            ForEach(SidebarMode.allCases) { mode in
-                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode, selectionNamespace: modeSelection) {
-                    store.sidebarMode = mode
-                }
-            }
-        }.padding(3).quillCapsule()
-            .frame(maxWidth: 220).padding(.horizontal, 10).frame(maxWidth: .infinity)
     }
     private func tree(_ nodes: [NavigationNode], mode: SidebarMode) -> some View {
         ScrollViewReader { proxy in
@@ -488,7 +480,6 @@ private struct SidebarTrashForm: View {
             QuillPopoverTitle("Move to Trash")
             Text(url.lastPathComponent).font(.system(size: 11)).foregroundStyle(.secondary)
                 .lineLimit(2).truncationMode(.middle)
-            Text("The file will be moved to the Trash.").font(.system(size: 12)).foregroundStyle(.secondary)
             if let error { Text(error).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 Spacer()
@@ -619,6 +610,29 @@ private final class SidebarSecondaryClickView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func rightMouseDown(with event: NSEvent) { onOpen?() }
     override func mouseDown(with event: NSEvent) { onOpen?() }
+}
+
+struct SidebarModePicker: View {
+    @ObservedObject var store: ProjectStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var modes: [SidebarMode] { SidebarMode.allCases.filter { $0 != .subfiles || store.subfilesEnabled } }
+    private var maximumWidth: CGFloat {
+        CGFloat(modes.count) * ChromeMetrics.sidebarModeSlotWidth
+            + CGFloat(max(0, modes.count - 1)) * ChromeMetrics.chromeSpacing + 6
+    }
+    var body: some View {
+        ChromeSegmentedGroup(selection: store.sidebarMode) { namespace in
+            ForEach(modes) { mode in
+                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode, selectionNamespace: namespace) {
+                    store.sidebarMode = mode
+                }
+            }
+        }
+        .padding(3).quillCapsule()
+        .frame(maxWidth: maximumWidth)
+        .animation(reduceMotion ? nil : ChromeMotion.feedback, value: modes.count)
+        .padding(.horizontal, 10).frame(maxWidth: .infinity)
+    }
 }
 
 private struct SidebarModeButton: View {

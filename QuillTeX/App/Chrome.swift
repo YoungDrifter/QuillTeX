@@ -49,6 +49,7 @@ enum ChromeMetrics {
     static let popoverWidth: CGFloat = 320
     static let popoverLabelWidth: CGFloat = 54
     static let popoverControlHeight: CGFloat = 34
+    static let sidebarModeSlotWidth: CGFloat = 52
     static let sidebarIconWidth: CGFloat = 18
     static let sidebarRowHeight: CGFloat = 30
     static let sidebarDisclosureWidth: CGFloat = 18
@@ -57,8 +58,8 @@ enum ChromeMetrics {
     /// sit on one line and their bottom rules line up.
     static let paneHeaderHeight: CGFloat = 36
     static let previewControlHeight: CGFloat = 28
-    static let previewActionWidth: CGFloat = 36
-    static let zoomInputWidth: CGFloat = 72
+    static let previewActionWidth: CGFloat = 30
+    static let zoomInputWidth: CGFloat = 60
     /// The window controls draw their coloured circles about a point above the centre
     /// of their frames (the frames carry a shadow margin). Measured from screenshots,
     /// so the circles land on the top bar's centre line rather than a hair above it.

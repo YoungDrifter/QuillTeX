@@ -61,7 +61,7 @@ codesign --verify --deep --strict "$STAGING/mounted/$APP_NAME.app"
 /usr/sbin/mtree -p "$STAGING/mounted/$APP_NAME.app" -f "$STAGING/app.manifest"
 hdiutil detach "$STAGING/mounted" -quiet
 DMG_MOUNTED=0
-python3 "$REPO_ROOT/Scripts/create-appcast.py" "$VERSION" "$STAGING/archive"
+python3 "$REPO_ROOT/Scripts/create_appcast.py" "$VERSION" "$STAGING/archive"
 (cd "$STAGING/archive" && shasum -a 256 "$DMG_NAME" appcast.xml > SHA256SUMS.txt)
 
 # mkdir exclusively claims this new version, including against concurrent builds.

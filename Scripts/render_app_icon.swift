@@ -2,7 +2,7 @@
 // Resize the generated feather-and-TeX master into all application assets.
 import AppKit
 let root = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : FileManager.default.currentDirectoryPath)
-let master = NSImage(contentsOf: root.appendingPathComponent("docs/icon/quilltex-master.png"))!
+let master = NSImage(contentsOf: root.appendingPathComponent("docs/icon/quilltex_master.png"))!
 func png(_ size: Int) -> Data {
     let b = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: b)

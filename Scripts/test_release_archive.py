@@ -58,7 +58,7 @@ def run_case(failure):
         script = root / SCRIPT
         script.parent.mkdir()
         shutil.copy2(ROOT / SCRIPT, script)
-        (script.parent / 'create-appcast.py').write_text("import os,sys\nfrom pathlib import Path\nif os.environ.get('ARCHIVE_TEST_FAIL') == 'appcast': sys.exit(1)\n(Path(sys.argv[2])/'appcast.xml').write_text('signed fixture feed')\n")
+        (script.parent / 'create_appcast.py').write_text("import os,sys\nfrom pathlib import Path\nif os.environ.get('ARCHIVE_TEST_FAIL') == 'appcast': sys.exit(1)\n(Path(sys.argv[2])/'appcast.xml').write_text('signed fixture feed')\n")
         (root / f'{NAME}.xcodeproj').mkdir()
         older = root / 'release/1.0.0'
         older.mkdir(parents=True)

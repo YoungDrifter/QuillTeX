@@ -16,7 +16,7 @@ struct SourceEditor: NSViewRepresentable {
 }
 
 @MainActor
-final class EditorSurface: NSScrollView, NSTextViewDelegate {
+final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NSTextStorageDelegate {
     let textView = SourceTextView()
     weak var source: SourceDocument?
     weak var store: ProjectStore?
@@ -25,19 +25,23 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
     private var highlightGeneration = 0
     private var initialPositionRestorePending = true
     private var changingAttributes = false
+    private var lineIndex = SourceLineIndex()
+    private var textRevision = 0
+    private var committedRevision = 0
     /// The ruler draws the caret's line darker, so the eye keeps its place.
     func updateCurrentLine() {
         setCurrentLine(lineNumber(atCharacter: textView.selectedRange().location))
     }
     /// One-based number of the line holding a UTF-16 character offset.
     func lineNumber(atCharacter index: Int) -> Int {
-        Self.lineNumber(atCharacter: index, in: textView.string)
+        lineIndex.lineNumber(at: index)
     }
 
     static func lineNumber(atCharacter index: Int, in string: String) -> Int {
         let text = string as NSString
         var line = 1, position = 0
-        let limit = min(max(0, index), text.length)
+        let offset = min(max(0, index), text.length)
+        let limit = text.lineRange(for: NSRange(location: offset, length: 0)).location
         while position < limit {
             let next = NSMaxRange(text.lineRange(for: NSRange(location: position, length: 0)))
             // Stop at the line that contains the offset instead of stepping past it.
@@ -110,6 +114,8 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         textView.setAccessibilityIdentifier("sourceEditor")
         textView.setAccessibilityLabel("LaTeX source editor")
         documentView = textView
+        lineIndex.reset(textView.string as NSString)
+        textView.textStorage?.delegate = self
         textView.delegate = self
         textView.compositionEnded = { [weak self] in self?.compositionDidEnd() }
         textView.commandClickLine = { [weak self] line in self?.store?.syncSourceToPDF(line: line) }
@@ -117,7 +123,9 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         textView.completionCitations = { [weak self] in self?.store?.index.citations ?? [] }
         textView.completionCommands = { [weak self] in self?.store?.index.commands ?? [] }
         textView.completionEnvironments = { [weak self] in self?.store?.index.environments ?? [] }
-        verticalRulerView = LineNumberRuler(textView: textView)
+        let ruler = LineNumberRuler(textView: textView)
+        ruler.lineNumber = { [weak self] in self?.lineNumber(atCharacter: $0) ?? 1 }
+        verticalRulerView = ruler
         hasVerticalRuler = true; rulersVisible = true
         contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: contentView)
@@ -155,6 +163,19 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         verticalRulerView?.needsDisplay = true
         store?.scheduleSessionSave()
     }
+    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions,
+                     range editedRange: NSRange, changeInLength delta: Int) {
+        guard editedMask.contains(.editedCharacters) else { return }
+        lineIndex.update(textStorage.string as NSString, editedRange: editedRange, delta: delta)
+        textRevision += 1
+        textView.sourceTextDidChange()
+    }
+    private func commitEditIfNeeded() {
+        guard source?.hasMarkedText == false, textRevision != committedRevision, let source else { return }
+        committedRevision = textRevision
+        store?.edited(source)
+        scheduleHighlight()
+    }
     func textDidChange(_ notification: Notification) {
         guard !changingAttributes, let source else { return }
         textView.clearSourceLineHighlight()
@@ -162,22 +183,23 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         source.hasMarkedText = textView.hasMarkedText()
         refreshGutter()
         updateCurrentLine()
-        textView.refreshInlineHint()
-        if !source.hasMarkedText { store?.edited(source); scheduleHighlight() }
+        textView.refreshInlineHint(force: false)
+        commitEditIfNeeded()
     }
     func textViewDidChangeSelection(_ notification: Notification) {
         source?.selection = textView.selectedRange()
         source?.hasMarkedText = textView.hasMarkedText()
         updateCurrentLine()
         textView.validateSnippetSelection()
-        textView.refreshInlineHint()
+        textView.refreshInlineHint(force: false)
         store?.scheduleSessionSave()
     }
     private func compositionDidEnd() {
         guard let source else { return }
         source.hasMarkedText = textView.hasMarkedText()
-        if !source.hasMarkedText {
-            source.text = textView.string; store?.edited(source); scheduleHighlight()
+        if !source.hasMarkedText, textRevision != committedRevision {
+            source.text = textView.string
+            commitEditIfNeeded()
         }
     }
     func navigate(to range: NSRange) {
@@ -205,7 +227,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
     /// Line numbers are as wide as the document needs, so a short file gets a narrow
     /// gutter instead of a fixed one with a lopsided margin.
     private func refreshGutter() {
-        (verticalRulerView as? LineNumberRuler)?.updateThickness(for: textView.string)
+        (verticalRulerView as? LineNumberRuler)?.updateThickness(lineCount: lineIndex.count)
         verticalRulerView?.needsDisplay = true
     }
     private func scheduleHighlight() {
@@ -215,7 +237,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
         highlighting?.cancel(); highlightScan?.cancel(); highlightGeneration += 1
         guard !textView.hasMarkedText() else { return }
         let text = textView.string
-        let generation = highlightGeneration
+        let generation = highlightGeneration, revision = textRevision
         highlighting = Task { [weak self] in
             do { if delay != .zero { try await Task.sleep(for: delay) } }
             catch { return }
@@ -224,7 +246,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
             self.highlightScan = scan
             let spans = await scan.value
             guard !Task.isCancelled, self.highlightGeneration == generation,
-                  self.textView.string == text, !self.textView.hasMarkedText(),
+                  self.textRevision == revision, !self.textView.hasMarkedText(),
                   let layout = self.textView.layoutManager else { return }
             // Only painting touches AppKit. Scanning does not block typing or alter undo.
             let whole = NSRange(location: 0, length: text.utf16.count)
@@ -234,6 +256,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate {
             }
         }
     }
+
 }
 
 final class SourceTextView: NSTextView {
@@ -258,6 +281,7 @@ final class SourceTextView: NSTextView {
         sourceLineHighlightRemoval = nil
         guard sourceLineHighlightRange != nil else { return }
         sourceLineHighlightRange = nil
+        drawsBackground = true
         needsDisplay = true
         updateInsertionPointStateAndRestartTimer(true)
     }
@@ -287,11 +311,15 @@ final class SourceTextView: NSTextView {
     var completionEnvironments: () -> [String] = { [] }
     /// Faint hint drawn after the caret; Tab writes it, anything else replaces it.
     private var inlineHint: LaTeXCompletion.Inline?
+    private var delimiterHint: LaTeXCompletion.Insertion?
     private var inlinePreview: LaTeXCompletion.InlinePreview?
     private var completionWork: Task<Void, Never>?
     private var completionScan: Task<CompletionResult, Never>?
     private var completionGeneration = 0
+    private var completionRequest: (revision: Int, length: Int, caret: NSRange)?
+    private var contentRevision = 0
     private struct CompletionResult: Sendable {
+        var delimiter: LaTeXCompletion.Insertion?
         var inline: LaTeXCompletion.Inline?
         var preview: LaTeXCompletion.InlinePreview?
     }
@@ -362,45 +390,63 @@ final class SourceTextView: NSTextView {
     // MARK: - Inline completion
 
     /// Recomputes the ghost text for wherever the caret is now.
-    func refreshInlineHint() {
+    func refreshInlineHint(force: Bool = true) {
+        if force { completionRequest = nil }
         scheduleCompletions()
+    }
+    func sourceTextDidChange() {
+        contentRevision += 1
+        dismissCompletions()
+    }
+    override func didChangeText() {
+        contentRevision += 1
+        super.didChangeText()
     }
 
     private func scheduleCompletions() {
-        completionWork?.cancel(); completionScan?.cancel(); completionGeneration += 1
         guard !hasMarkedText(), selectedRange().length == 0, window?.firstResponder === self else {
             dismissCompletions()
             return
         }
-        let text = string, caret = selectedRange(), generation = completionGeneration
+        let text = string, caret = selectedRange()
+        if let previous = completionRequest, previous.caret == caret, previous.revision == contentRevision, previous.length == (text as NSString).length { return }
+        completionWork?.cancel(); completionScan?.cancel(); completionGeneration += 1
+        completionRequest = (contentRevision, (text as NSString).length, caret)
+        let generation = completionGeneration, revision = contentRevision
         let labels = completionLabels(), citations = completionCitations()
         let commands = completionCommands(), environments = completionEnvironments()
-        if inlineHint != nil || inlinePreview != nil { inlineHint = nil; inlinePreview = nil; needsDisplay = true }
+        if inlineHint != nil || inlinePreview != nil || delimiterHint != nil { inlineHint = nil; delimiterHint = nil; inlinePreview = nil; needsDisplay = true }
         completionWork = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(65)) } catch { return }
             guard !Task.isCancelled, let self else { return }
             let scan = Task.detached(priority: .userInitiated) {
-                guard let suggestion = LaTeXCompletion.suggestion(in: text, at: caret.location), !Task.isCancelled else {
-                    return CompletionResult()
+                guard !Task.isCancelled else { return CompletionResult() }
+                if let suggestion = LaTeXCompletion.suggestion(in: text, at: caret.location),
+                   let hint = LaTeXCompletion.inline(for: suggestion, labels: labels, citations: citations,
+                       projectCommands: commands, projectEnvironments: environments),
+                   let preview = LaTeXCompletion.inlinePreview(for: hint, in: text, at: caret.location) {
+                    return CompletionResult(inline: hint, preview: preview)
                 }
-                let hint = LaTeXCompletion.inline(for: suggestion, labels: labels, citations: citations,
-                    projectCommands: commands, projectEnvironments: environments)
-                return CompletionResult(inline: hint,
-                    preview: hint.flatMap { LaTeXCompletion.inlinePreview(for: $0, in: text, at: caret.location) })
+                guard let edit = LaTeXCompletion.delimiterHint(in: text, at: caret.location) else { return CompletionResult() }
+                return CompletionResult(delimiter: edit,
+                    preview: LaTeXCompletion.delimiterPreview(for: edit, in: text, at: caret.location))
             }
             self.completionScan = scan
             let result = await scan.value
             guard !Task.isCancelled, generation == self.completionGeneration,
-                  self.string == text, self.selectedRange() == caret, !self.hasMarkedText(),
+                  self.contentRevision == revision, self.selectedRange() == caret, !self.hasMarkedText(),
                   self.window?.firstResponder === self else { return }
             let preview = result.preview.flatMap { self.inlineTailFits($0) ? $0 : nil }
+            self.delimiterHint = preview == nil ? nil : result.delimiter
             self.inlineHint = preview == nil ? nil : result.inline
             self.inlinePreview = preview; self.needsDisplay = true
         }
     }
 
     private func dismissCompletions() {
+        completionRequest = nil
         completionWork?.cancel(); completionScan?.cancel(); completionGeneration += 1
-        if inlineHint != nil || inlinePreview != nil { inlineHint = nil; inlinePreview = nil; needsDisplay = true }
+        if inlineHint != nil || inlinePreview != nil || delimiterHint != nil { inlineHint = nil; delimiterHint = nil; inlinePreview = nil; needsDisplay = true }
     }
 
     private var inlineHintAttributes: [NSAttributedString.Key: Any] {
@@ -476,7 +522,16 @@ final class SourceTextView: NSTextView {
 
     @discardableResult
     func acceptInlineHint() -> Bool {
-        guard let hint = inlineHint else { return false }
+        guard let hint = inlineHint else {
+            guard !hasMarkedText(), selectedRange().length == 0,
+                  let edit = delimiterHint ?? LaTeXCompletion.delimiterHint(in: string, at: selectedRange().location) else { return false }
+            dismissCompletions(); endSnippet()
+            insertingCompletion = true
+            insertText(edit.text, replacementRange: edit.range)
+            insertingCompletion = false
+            setSelectedRange(NSRange(location: edit.range.location + edit.finalOffset, length: 0))
+            return true
+        }
         inlineHint = nil
         completionWork?.cancel(); completionScan?.cancel()
         return insert(candidate: hint.full, in: hint.range, context: hint.context)
@@ -522,6 +577,16 @@ final class SourceTextView: NSTextView {
                       y: box.minY, width: 2, height: max(14, fragment.height))
     }
 
+    override func insertNewline(_ sender: Any?) {
+        guard !hasMarkedText() else { super.insertNewline(sender); return }
+        let ns = string as NSString
+        let selection = selectedRange()
+        let line = ns.lineRange(for: NSRange(location: selection.location, length: 0))
+        let prefix = ns.substring(with: NSRange(location: line.location, length: selection.location - line.location))
+        let indent = String(prefix.prefix { $0 == " " || $0 == "\t" })
+        insertText((string.contains("\r\n") ? "\r\n" : "\n") + indent, replacementRange: selection)
+    }
+
     override func insertTab(_ sender: Any?) {
         if acceptInlineHint() { return }
         if advanceSnippet() { return }
@@ -534,7 +599,7 @@ final class SourceTextView: NSTextView {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if snippet != nil || inlineHint != nil {
+        if snippet != nil || inlineHint != nil || delimiterHint != nil {
             endSnippet(); dismissCompletions()
             return
         }
@@ -544,8 +609,7 @@ final class SourceTextView: NSTextView {
     /// The hint is painted over the text view: nothing is written into the text
     /// storage, so undo, offsets and SyncTeX stay untouched.
     override func draw(_ dirtyRect: NSRect) {
-        backgroundColor.setFill()
-        dirtyRect.fill()
+        if !drawsBackground { backgroundColor.setFill(); dirtyRect.fill() }
         if let rect = sourceLineHighlightRect, rect.intersects(dirtyRect) {
             NSColor.black.withAlphaComponent(0.08).setFill()
             rect.intersection(dirtyRect).fill()
@@ -561,8 +625,9 @@ final class SourceTextView: NSTextView {
             NSRect(x: textContainerOrigin.x + container.lineFragmentPadding, y: y,
                    width: max(0, container.size.width - container.lineFragmentPadding * 2), height: 2).fill()
         }
-        guard let hint = inlineHint, let preview = inlinePreview,
-              NSMaxRange(hint.range) == selectedRange().location, sourceLineHighlightRange == nil else { return }
+        guard let preview = inlinePreview,
+              let hintRange = inlineHint?.range ?? delimiterHint?.range,
+              NSMaxRange(hintRange) == selectedRange().location, sourceLineHighlightRange == nil else { return }
         let caret = caretRectInView()
         if let brace = preview.coveredTail ?? preview.coveredBrace, let layout = layoutManager, let container = textContainer {
             let glyphs = layout.glyphRange(forCharacterRange: brace, actualCharacterRange: nil)
@@ -585,7 +650,7 @@ final class SourceTextView: NSTextView {
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let range = replacementRange.location == NSNotFound ? selectedRange() : replacementRange
         if !insertingCompletion, !hasMarkedText(), let text = insertString as? String,
-           let edit = LaTeXCompletion.typingInsertion(text, range: range, in: string) {
+           let edit = LaTeXCompletion.typingInsertion(text, range: range, in: string, expandPairs: false), edit.text.isEmpty {
             if !edit.text.isEmpty { super.insertText(edit.text, replacementRange: edit.range) }
             let selection = edit.placeholders.first.map { NSRange(location: edit.range.location + $0.location, length: $0.length) }
                 ?? NSRange(location: edit.range.location + edit.finalOffset, length: 0)
@@ -618,6 +683,7 @@ final class SourceTextView: NSTextView {
 final class LineNumberRuler: NSRulerView {
     weak var textView: NSTextView?
     /// Line holding the insertion point, drawn darker than the rest.
+    var lineNumber: ((Int) -> Int)?
     var currentLine: Int?
     var diagnosticLines: [Int: BuildDiagnostic.Severity] = [:] {
         didSet {
@@ -648,10 +714,8 @@ final class LineNumberRuler: NSRulerView {
 
     /// Keeps the gutter in step with the document; only touches the layout when the
     /// number of digits actually changes.
-    func updateThickness(for text: String) {
-        var lines = 1
-        for scalar in text.unicodeScalars where scalar == "\n" { lines += 1 }
-        let wanted = Self.thickness(forLineCount: lines)
+    func updateThickness(lineCount: Int) {
+        let wanted = Self.thickness(forLineCount: lineCount)
         guard abs(wanted - ruleThickness) > 0.5 else { return }
         ruleThickness = wanted
         enclosingScrollView?.tile()
@@ -669,8 +733,7 @@ final class LineNumberRuler: NSRulerView {
         let glyphs = layout.glyphRange(forBoundingRect: visible.offsetBy(dx: -view.textContainerOrigin.x, dy: -view.textContainerOrigin.y), in: container)
         let chars = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         var position = text.lineRange(for: NSRange(location: min(chars.location, text.length), length: 0)).location
-        let prefix = text.substring(to: position)
-        var number = prefix.utf16.reduce(1) { $1 == 10 ? $0 + 1 : $0 }
+        var number = lineNumber?(position) ?? EditorSurface.lineNumber(atCharacter: position, in: view.string)
         while position <= text.length {
             var origin: NSPoint
             if position == text.length {
@@ -696,5 +759,53 @@ final class LineNumberRuler: NSRulerView {
             if next <= position { break }
             position = next; number += 1
         }
+    }
+}
+
+/// UTF-16 line starts shared by caret navigation and gutter drawing.
+struct SourceLineIndex {
+    private(set) var starts = [0]
+    private var length = 0
+    var count: Int { starts.count }
+
+    private func upperBound(_ offset: Int) -> Int {
+        var low = 0, high = starts.count
+        while low < high {
+            let middle = (low + high) / 2
+            if starts[middle] <= offset { low = middle + 1 } else { high = middle }
+        }
+        return low
+    }
+    func lineNumber(at offset: Int) -> Int { max(1, upperBound(min(max(0, offset), length))) }
+
+    mutating func reset(_ text: NSString) {
+        length = text.length
+        starts = scannedStarts(text, from: 0, to: length)
+        if text.lineRange(for: NSRange(location: length, length: 0)).location == length { starts.append(length) }
+        if starts.isEmpty { starts = [0] }
+    }
+    mutating func update(_ text: NSString, editedRange: NSRange, delta: Int) {
+        let removedLength = editedRange.length - delta
+        guard text.length == length + delta, removedLength >= 0,
+              editedRange.location <= length, editedRange.location + removedLength <= length else { reset(text); return }
+        // Include a line on each side, so edits splitting/joining CRLF stay correct.
+        let first = max(0, upperBound(editedRange.location) - 2)
+        let resume = min(starts.count, upperBound(editedRange.location + removedLength) + 1)
+        let end = (resume < starts.count ? starts[resume] : length) + delta
+        var updated = Array(starts[..<first]) + scannedStarts(text, from: starts[first], to: end)
+        if resume < starts.count { updated += starts[resume...].map { $0 + delta } }
+        else if text.lineRange(for: NSRange(location: text.length, length: 0)).location == text.length { updated.append(text.length) }
+        starts = updated.isEmpty ? [0] : updated
+        length = text.length
+    }
+    private func scannedStarts(_ text: NSString, from start: Int, to end: Int) -> [Int] {
+        var result: [Int] = [], position = start
+        while position < end {
+            result.append(position)
+            let next = NSMaxRange(text.lineRange(for: NSRange(location: position, length: 0)))
+            guard next > position else { break }
+            position = next
+        }
+        return result
     }
 }

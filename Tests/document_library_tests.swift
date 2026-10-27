@@ -5,7 +5,7 @@ struct DocumentLibraryTests {
     @MainActor static func main() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("QuillTeX-library-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: base) }
-        let bundled = URL(fileURLWithPath: "QuillTeX/Project/BundledTemplates", isDirectory: true)
+        let bundled = URL(fileURLWithPath: "QuillTeX/Project/bundled_templates", isDirectory: true)
         let library = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -13,7 +13,21 @@ struct DocumentLibraryTests {
         }
         check(library.storageError == nil, "library initializes")
         check(library.templates.count == 6, "five portable templates plus blank")
-        check(library.templates.contains { $0.title == "空白文稿" }, "blank template selectable")
+        check(library.templates.contains { $0.title == "blank" }, "blank template selectable")
+        let blank = library.templates.first { $0.title == "blank" }!
+        let blankBytes = try Data(contentsOf: blank.url)
+        check(blankBytes.isEmpty, "blank template contains zero bytes")
+        let legacyBlank = "\\documentclass[UTF8]{ctexart}\n\\begin{document}\n\n\\end{document}\n"
+        try legacyBlank.write(to: blank.url, atomically: true, encoding: .utf8)
+        let updatedBlankLibrary = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
+        let updatedBlankSource = try updatedBlankLibrary.source(for: blank)
+        check(updatedBlankSource.isEmpty, "the previous shipped blank becomes empty on restart")
+        let customBlank = "% My own starting point\n"
+        try customBlank.write(to: blank.url, atomically: true, encoding: .utf8)
+        let customBlankLibrary = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
+        let retainedBlankSource = try customBlankLibrary.source(for: blank)
+        check(retainedBlankSource == customBlank, "a customized blank template is retained")
+        try Data().write(to: blank.url, options: .atomic)
         for template in library.templates {
             let actual = try Data(contentsOf: template.url)
             let original = try Data(contentsOf: bundled.appendingPathComponent(template.url.lastPathComponent))
@@ -24,6 +38,23 @@ struct DocumentLibraryTests {
             let source = try library.source(for: template)
             check(!source.contains("/Users/"), "bundled templates have no personal absolute paths")
         }
+        let legacyDirectory = base.appendingPathComponent("LegacyNames")
+        let legacyTemplates = legacyDirectory.appendingPathComponent("Templates")
+        try FileManager.default.createDirectory(at: legacyTemplates, withIntermediateDirectories: true)
+        try "Current article".write(to: legacyTemplates.appendingPathComponent("article.tex"), atomically: true, encoding: .utf8)
+        try "Customized old article".write(to: legacyTemplates.appendingPathComponent("basic_article.tex"), atomically: true, encoding: .utf8)
+        try "Earlier old article".write(to: legacyTemplates.appendingPathComponent("basic-article.tex"), atomically: true, encoding: .utf8)
+        try legacyBlank.write(to: legacyTemplates.appendingPathComponent("空白文稿.tex"), atomically: true, encoding: .utf8)
+        let migrated = DocumentLibrary(directory: legacyDirectory, bundledTemplatesDirectory: bundled)
+        check(migrated.storageError == nil, "legacy filenames migrate successfully")
+        check(!migrated.templates.contains { $0.title.hasPrefix("basic") || $0.title == "空白文稿" }, "previous built-in names become plain English names")
+        let articleSources = try migrated.templates.filter { $0.title.hasPrefix("article") }.map { try migrated.source(for: $0) }
+        check(Set(articleSources) == ["Current article", "Customized old article", "Earlier old article"], "filename migration retains every customized copy and resolves collisions")
+        let migratedBlank = migrated.templates.first { $0.title == "blank" }!
+        let migratedBlankSource = try migrated.source(for: migratedBlank)
+        check(migratedBlankSource.isEmpty, "renamed stock blank remains empty")
+        let migrationRestart = DocumentLibrary(directory: legacyDirectory, bundledTemplatesDirectory: bundled)
+        check(migrationRestart.templates.count == migrated.templates.count, "filename migration does not duplicate templates on restart")
         // Recovery is isolated from the ordinary chooser/import count checks.
         let recovery = base.appendingPathComponent("Recovery")
         let archived = recovery.appendingPathComponent("RetiredTemplates")

@@ -17,27 +17,27 @@ struct DocumentTemplate: Identifiable {
     /// Built-in templates get readable names; imported templates keep their names.
     var displayTitle: String {
         switch title {
-        case "basic-article": "Article"
-        case "basic-report": "Report"
-        case "basic-book": "Book"
-        case "basic-letter": "Letter"
-        case "basic-beamer": "Slides"
+        case "article": "Article"
+        case "report": "Report"
+        case "book": "Book"
+        case "letter": "Letter"
+        case "beamer": "Slides"
         case "数学笔记": "Math Notes"
         case "演示文稿": "Presentation"
-        case "空白文稿": "Blank Document"
+        case "blank": "Blank Document"
         default: title
         }
     }
     var summary: String {
         switch title {
-        case "basic-article": "A short article to start from"
-        case "basic-report": "Report with chapters and sections"
-        case "basic-book": "Book and long-form writing"
-        case "basic-letter": "A formal letter"
-        case "basic-beamer": "Simple presentation slides"
+        case "article": "A short article to start from"
+        case "report": "Report with chapters and sections"
+        case "book": "Book and long-form writing"
+        case "letter": "A formal letter"
+        case "beamer": "Simple presentation slides"
         case "数学笔记": "Definitions, theorems and formulas"
         case "演示文稿": "Minimal Beamer slides"
-        case "空白文稿": "Start from the simplest document"
+        case "blank": "Empty file"
         default: "Custom local template"
         }
     }
@@ -59,11 +59,19 @@ final class DocumentLibrary: ObservableObject {
         self.directory = directory ?? isolatedDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("QuillTeX", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: templatesDirectory, withIntermediateDirectories: true)
-            guard let bundled = bundledTemplatesDirectory ?? Bundle.main.url(forResource: "BundledTemplates", withExtension: nil) else { throw CocoaError(.fileNoSuchFile) }
+            guard let bundled = bundledTemplatesDirectory ?? Bundle.main.url(forResource: "bundled_templates", withExtension: nil) else { throw CocoaError(.fileNoSuchFile) }
+            try migrateTemplateNames()
             let defaults = try FileManager.default.contentsOfDirectory(at: bundled, includingPropertiesForKeys: nil).filter { $0.pathExtension == "tex" }
             for source in defaults {
                 let destination = templatesDirectory.appendingPathComponent(source.lastPathComponent)
-                if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.copyItem(at: source, to: destination) }
+                if !FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.copyItem(at: source, to: destination)
+                } else if source.lastPathComponent == "blank.tex",
+                          try Data(contentsOf: source).isEmpty,
+                          try Data(contentsOf: destination) == Data("\\documentclass[UTF8]{ctexart}\n\\begin{document}\n\n\\end{document}\n".utf8) {
+                    // Update only the previous shipped blank, preserving customized templates.
+                    try Data().write(to: destination, options: .atomic)
+                }
             }
             do { try restoreRetiredTemplates() }
             catch { storageError = error.localizedDescription }
@@ -74,6 +82,21 @@ final class DocumentLibrary: ObservableObject {
             }
         } catch { storageError = error.localizedDescription }
     }
+    /// Rename previous built-ins without overwriting a customized template.
+    private func migrateTemplateNames() throws {
+        let names = [("basic_article", "article"), ("basic_report", "report"),
+                     ("basic_book", "book"), ("basic_letter", "letter"),
+                     ("basic_beamer", "beamer"), ("空白文稿", "blank")]
+        for (oldName, name) in names {
+            let aliases = oldName.hasPrefix("basic_") ? [oldName, oldName.replacingOccurrences(of: "_", with: "-")] : [oldName]
+            for alias in aliases {
+                let source = templatesDirectory.appendingPathComponent(alias + ".tex")
+                guard FileManager.default.fileExists(atPath: source.path) else { continue }
+                try FileManager.default.moveItem(at: source, to: availableTemplateURL(named: name))
+            }
+        }
+    }
+
     /// Earlier versions could mistake an explicitly imported template for a retired
     /// default. Bring those files back once, preserving every same-name copy.
     private func restoreRetiredTemplates() throws {

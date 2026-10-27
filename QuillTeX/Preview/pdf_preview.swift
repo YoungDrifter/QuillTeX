@@ -501,10 +501,23 @@ struct PreviewPane: View {
         .padding(.horizontal, 10)
         .frame(width: ChromeMetrics.zoomInputWidth, height: ChromeMetrics.previewControlHeight)
         .foregroundStyle(Palette.primaryInk).tint(Palette.primaryInk)
-        .modifier(PreviewControlSurface(focused: zoomFocused))
         .contentShape(Capsule())
         .onTapGesture { if controls.hasDocument { zoomFocused = true } }
         .help("Enter a zoom percentage")
+    }
+
+    private var zoomDivider: some View {
+        Rectangle().fill(Palette.hairline).frame(width: 1, height: 12).padding(.horizontal, 2)
+    }
+
+    private func zoomButton(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {
+        Button { performZoom(action); zoomFocused = false } label: {
+            Image(systemName: symbol).font(.system(size: 13, weight: .medium))
+                .frame(width: ChromeMetrics.previewActionWidth, height: ChromeMetrics.previewControlHeight - 2)
+                .contentShape(Circle())
+        }
+        .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback())
+        .help(title).accessibilityLabel(title)
     }
 
     init(store: ProjectStore) {
@@ -514,22 +527,30 @@ struct PreviewPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("PDF Preview").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 4) {
+            HStack(spacing: 10) {
+                Label("PDF", systemImage: "doc.richtext")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
+                    .fixedSize()
+                Text(build.lastSummary).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .help(build.lastSummary)
+                HStack(spacing: 0) {
                     zoomInput
-                    PreviewZoomButton(icon: "1.square", label: "Actual Size (100%)") { performZoom(controls.actualSize) }
-                    PreviewZoomButton(icon: "arrow.left.and.right", label: "Fit Width") { performZoom(controls.fitWidth) }
+                    zoomDivider
+                    zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
+                    zoomDivider
+                    zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
                 }
-                .fixedSize()
-                .disabled(build.pdfURL == nil)
-                Text(build.lastSummary).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 2)
+                .frame(height: ChromeMetrics.previewControlHeight)
+                .modifier(PreviewControlSurface(focused: zoomFocused))
+                .fixedSize().disabled(build.pdfURL == nil)
+                .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
             }
-            .padding(.horizontal, 18).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.previewHeader)
+            .padding(.horizontal, 12).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.previewHeader)
             Divider()
-            if let message = store.syncStatusMessage ?? store.previewStatusText {
+            if let message = store.syncStatusMessage {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "info.circle")
                     Text(message).frame(maxWidth: .infinity, alignment: .leading)
@@ -537,7 +558,6 @@ struct PreviewPane: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .padding(.horizontal, 18).padding(.vertical, 7)
                 .background(Palette.subtleSurface)
-                .help(message)
                 Divider()
             }
             ZStack {
@@ -557,7 +577,7 @@ struct PreviewPane: View {
     }
 }
 
-/// One surface language for all three PDF controls, including the editable value.
+/// One capsule contains all PDF zoom controls.
 private struct PreviewControlSurface: ViewModifier {
     var focused = false
     var pressed = false
@@ -582,30 +602,5 @@ private struct PreviewControlSurface: ViewModifier {
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: hovered)
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: focused)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
-    }
-}
-
-private struct PreviewControlButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(Palette.primaryInk)
-            .modifier(PreviewControlSurface(pressed: configuration.isPressed))
-            .contentShape(Capsule())
-    }
-}
-
-private struct PreviewZoomButton: View {
-    let icon: String
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: ChromeMetrics.previewActionWidth, height: ChromeMetrics.previewControlHeight)
-        }
-        .buttonStyle(PreviewControlButtonStyle())
-        .help(label).accessibilityLabel(label)
     }
 }
