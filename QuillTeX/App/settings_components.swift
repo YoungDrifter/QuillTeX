@@ -168,7 +168,7 @@ private struct SettingsActionFeedback: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content.modifier(ChromeHoverFeedback())
-            .scaleEffect(pressed && !reduceMotion ? 0.97 : 1)
+            .scaleEffect(pressed && !reduceMotion ? ChromeMotion.pressedScale : 1)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
     }
 }

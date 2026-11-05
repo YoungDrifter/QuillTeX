@@ -72,7 +72,7 @@ struct ChromeButtonStyle: ButtonStyle {
                 }
             }
             .contentShape(Capsule())
-            .scaleEffect(pressed && !reduceMotion ? 0.94 : 1)
+            .scaleEffect(pressed && !reduceMotion ? ChromeMotion.pressedScale : 1)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: configuration.isPressed)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: selected)
             .anchorPreference(key: ChromeSelectionBoundsKey.self, value: .bounds) { bounds in

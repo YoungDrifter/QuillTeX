@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @main
 @MainActor
@@ -38,6 +39,29 @@ struct PluginManagerTests {
         precondition(shippedManager.isEnabled("subfiles"))
         shippedManager.setEnabled(false, for: "subfiles")
         precondition(!PluginManager(plugins: [shipped], defaults: defaults).isEnabled("subfiles"))
+        let configurable = AppPlugin(id: "configured", name: "Configured", summary: "", symbol: "gearshape",
+            options: [PluginOption(id: "details", title: "Details", defaultValue: false)], activate: {}, deactivate: {})
+        let options = PluginManager(plugins: [configurable], defaults: defaults)
+        precondition(!options.option("details", for: "configured"))
+        options.setOption(true, id: "details", for: "configured")
+        precondition(!options.isEnabled("configured"))
+        precondition(PluginManager(plugins: [configurable], defaults: defaults).option("details", for: "configured"))
+        let custom = CompletionShortcut(key: "j", modifiers: NSEvent.ModifierFlags.control.union(.option).rawValue)
+        options.setCompletionShortcut(custom)
+        precondition(PluginManager(plugins: [configurable], defaults: defaults).completionShortcut == custom)
+        precondition(custom.display == "⌃⌥J")
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.control, .option], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38)!
+        precondition(custom.matches(event))
+        precondition(!CompletionShortcut(key: "j", modifiers: 0).isValid)
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Existing Action", action: nil, keyEquivalent: "j")
+        item.keyEquivalentModifierMask = [.control, .option]; menu.addItem(item)
+        precondition(custom.conflict(in: menu) == "Existing Action")
+        options.setCompletionShortcut(.standard)
+        precondition(options.completionShortcut == .standard)
+        options.setStringPreference("invalid", name: "shortcut", for: PluginManager.completionID)
+        precondition(options.completionShortcut == .standard)
         print("PluginManager: persistence, launch activation, stop, idempotence, independence and retained data passed")
     }
 }

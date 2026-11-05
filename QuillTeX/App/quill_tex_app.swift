@@ -26,6 +26,7 @@ struct QuillTeXApp: App {
 }
 
 struct ProjectCommands: Commands {
+    @ObservedObject private var plugins = PluginManager.shared
     @ObservedObject private var updater = AppUpdater.shared
     @FocusedObject private var store: ProjectStore?
     @FocusedValue(\.pdfPreviewControls) private var pdfControls
@@ -45,6 +46,13 @@ struct ProjectCommands: Commands {
                 .keyboardShortcut("z").disabled(editUndoManager?.canUndo != true)
             Button("Redo") { editUndoManager?.redo() }
                 .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(editUndoManager?.canRedo != true)
+        }
+        CommandGroup(after: .textEditing) {
+            if plugins.isEnabled(PluginManager.completionID) {
+                Button("Show Completions") { (NSApp.keyWindow?.firstResponder as? SourceTextView)?.complete(nil) }
+                    .keyboardShortcut(plugins.completionShortcut.equivalent, modifiers: plugins.completionShortcut.swiftModifiers)
+                    .disabled(store?.activeDocument == nil)
+            }
         }
         CommandGroup(after: .appSettings) {
             Button("Check for Updates…") { updater.checkForUpdates() }

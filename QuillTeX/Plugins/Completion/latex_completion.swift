@@ -10,6 +10,7 @@ enum LaTeXCompletion {
         case command        // \sec…
         case environment    // \begin{it…
         case endEnvironment // \end{it… only completes the name
+        case documentClass, texPath, imagePath
         case package        // \usepackage{am…
         case label          // \ref{… \eqref{… \cref{…
         case citation       // \cite{… \cite[p. 3]{…
@@ -24,6 +25,29 @@ enum LaTeXCompletion {
         var prefix: String
         var openEnvironments: [String] = []
         var inMath = false
+    }
+
+    struct Candidate: Sendable {
+        var value: String
+        var category: String
+        var detail: String
+        var insertion: Insertion
+    }
+    static func candidate(_ value: String, suggestion: Suggestion, source: String) -> Candidate {
+        let edit = insertion(for: value, suggestion: suggestion, in: source)
+        let detail: String
+        switch suggestion.context {
+        case .command: detail = edit.placeholders.isEmpty ? "Command" : "Command · \(edit.placeholders.count) \(edit.placeholders.count == 1 ? "argument" : "arguments")"
+        case .environment: detail = "Environment"
+        case .endEnvironment: detail = "Close environment"
+        case .package: detail = "Package"
+        case .documentClass: detail = "Document class"
+        case .label: detail = "Label"
+        case .citation: detail = "Citation"
+        case .texPath: detail = "TeX file"
+        case .imagePath: detail = "Image file"
+        }
+        return Candidate(value: value, category: suggestion.context.category, detail: detail, insertion: edit)
     }
 
     // MARK: - Deciding what is being typed
@@ -60,7 +84,10 @@ enum LaTeXCompletion {
             switch name {
             case "begin": context = .environment
             case "end": context = .endEnvironment
-            case "usepackage", "documentclass": context = .package
+            case "usepackage": context = .package
+            case "documentclass": context = .documentClass
+            case "input", "include", "subfile": context = .texPath
+            case "includegraphics": context = .imagePath
             case "ref", "eqref", "pageref", "autoref", "cref", "Cref", "label": context = .label
             case "cite", "citep", "citet", "citealp", "parencite", "textcite", "autocite", "footcite", "nocite": context = .citation
             default: return nil
@@ -69,11 +96,11 @@ enum LaTeXCompletion {
             for position in start..<limit where ns.character(at: position) == 0x2C { start = position + 1 }
             while start < limit, isWhitespace(ns.character(at: start)) { start += 1 }
             let prefix = ns.substring(with: NSRange(location: start, length: limit - start))
-            guard !prefix.unicodeScalars.contains(where: CharacterSet.whitespacesAndNewlines.contains) else { return nil }
+            guard context == .texPath || context == .imagePath || !prefix.unicodeScalars.contains(where: CharacterSet.whitespacesAndNewlines.contains) else { return nil }
             var end = limit
             while end < ns.length {
                 let unit = ns.character(at: end)
-                if unit == 0x2C || unit == 0x7D || unit == openBrace || unit == backslash || isWhitespace(unit) { break }
+                if unit == 0x2C || unit == 0x7D || unit == openBrace || unit == backslash || (isWhitespace(unit) && context != .texPath && context != .imagePath) { break }
                 end += 1
             }
             result = Suggestion(context: context, range: NSRange(location: start, length: end - start), prefix: prefix)
@@ -96,13 +123,15 @@ enum LaTeXCompletion {
     // MARK: - Candidates
 
     static func candidates(for suggestion: Suggestion, labels: [String], citations: [String],
-                           projectCommands: [String] = [], projectEnvironments: [String] = []) -> [String] {
+                           projectCommands: [String] = [], projectEnvironments: [String] = [], paths: [String] = []) -> [String] {
         let pool: [String]
         switch suggestion.context {
         case .command: pool = commands + projectCommands
         case .environment: pool = environments + projectEnvironments
         case .endEnvironment: pool = suggestion.openEnvironments + environments + projectEnvironments
         case .package: pool = packages
+        case .documentClass: pool = ["article", "report", "book", "letter", "beamer", "ctexart", "ctexrep", "ctexbook", "memoir", "standalone"]
+        case .texPath, .imagePath: pool = paths
         case .label: pool = labels
         case .citation: pool = citations
         }
@@ -150,18 +179,6 @@ enum LaTeXCompletion {
         if suggestion.context == .environment || suggestion.context == .endEnvironment {
             if hasBrace { range.length += 1 }
             text += "}"
-            if suggestion.context == .environment {
-                let closing = "\\end{\(candidate)}"
-                let tail = ns.substring(from: NSMaxRange(range))
-                // Complete an existing environment without creating a second closing pair.
-                if !hasClosingEnvironment(candidate, in: tail) {
-                    let newline = source.contains("\r\n") ? "\r\n" : "\n"
-                    let indent = indentation(in: source, at: range.location)
-                    text += newline + indent + "  "
-                    placeholders = [NSRange(location: text.utf16.count, length: 0)]
-                    text += newline + indent + closing
-                }
-            }
         } else if suggestion.context == .command {
             var cursor = next
             // Reuse existing optional/required groups, including their contents.
@@ -195,7 +212,7 @@ enum LaTeXCompletion {
                 text = expanded as String
                 placeholders = []
             }
-        } else if suggestion.context == .label || suggestion.context == .citation || suggestion.context == .package {
+        } else if suggestion.context == .label || suggestion.context == .citation || suggestion.context == .package || suggestion.context == .documentClass || suggestion.context == .texPath || suggestion.context == .imagePath {
             if hasBrace { range.length += 1 }
             // A comma continues this argument; a closing brace completes it.
             if hasBrace || next == ns.length || ns.character(at: next) != 0x2C { text += "}" }
@@ -268,7 +285,7 @@ enum LaTeXCompletion {
     /// Single-key edits only. Paste, marked text and completion expansions bypass
     /// these rules, so authored source is never rewritten on insertion.
     static func typingInsertion(_ typed: String, range: NSRange, in source: String, expandPairs: Bool = true) -> Insertion? {
-        guard typed.utf16.count == 1, "{}()[]\\".contains(typed), range.location >= 0,
+        guard typed.utf16.count == 1, "{}()[]$\\".contains(typed), range.location >= 0,
               NSMaxRange(range) <= source.utf16.count else { return nil }
         if !expandPairs, "{([".contains(typed) { return nil }
         let ns = source as NSString
@@ -283,6 +300,14 @@ enum LaTeXCompletion {
         guard !excluded.contains(where: { NSMaxRange($0.range) == range.location }) else { return nil }
         let unit = typed.utf16.first!
         let isEscaped = escaped(range.location, in: ns)
+        if typed == "$" {
+            guard !isEscaped else { return nil }
+            if !expandPairs, range.length == 0, range.location < ns.length,
+               ns.character(at: range.location) == 0x24, openDollarWidth(in: prefix) > 0 {
+                return Insertion(range: range, text: "", finalOffset: 1)
+            }
+            return nil
+        }
         if typed == "\\" {
             // Reuse the slash in an automatically paired \), \] or \}.
             guard !isEscaped, range.length == 0, range.location + 1 < ns.length,
@@ -340,11 +365,39 @@ enum LaTeXCompletion {
         return depth > 0 ? Insertion(range: range, text: "", finalOffset: max(1, rightLength)) : nil
     }
 
+    private static func openDollarWidth(in source: String) -> Int {
+        let ns = source as NSString
+        let excluded = LaTeXHighlighter.spans(in: source).filter { $0.token == .comment || $0.token == .verbatim }
+        var index = 0, open = 0
+        while index < ns.length {
+            if ns.character(at: index) == 0x24, !escaped(index, in: ns),
+               !excluded.contains(where: { NSLocationInRange(index, $0.range) }) {
+                let width = index + 1 < ns.length && ns.character(at: index + 1) == 0x24 ? 2 : 1
+                if open == 0 { open = width } else if open == width { open = 0 }
+                index += width
+            } else { index += 1 }
+        }
+        return open
+    }
+
     /// Propose the last typed delimiter without modifying the buffer.
     static func delimiterHint(in source: String, at offset: Int) -> Insertion? {
         let ns = source as NSString
         guard offset > 0, offset <= ns.length else { return nil }
         let position = offset - 1
+        if ns.character(at: position) == 0x24, !escaped(position, in: ns) {
+            let prefix = ns.substring(to: offset)
+            let excluded = LaTeXHighlighter.spans(in: prefix).filter { $0.token == .comment || $0.token == .verbatim }
+            guard !excluded.contains(where: { NSLocationInRange(position, $0.range) }) else { return nil }
+            var start = position
+            while start > 0, ns.character(at: start - 1) == 0x24, !escaped(start - 1, in: ns) { start -= 1 }
+            let count = offset - start
+            guard count <= 2 else { return nil }
+            guard openDollarWidth(in: ns.substring(to: start)) == 0,
+                  offset == ns.length || ns.character(at: offset) != 0x24 else { return nil }
+            let pair = String(repeating: "$", count: count)
+            return Insertion(range: NSRange(location: start, length: count), text: pair + pair, finalOffset: count)
+        }
         let typed = ns.substring(with: NSRange(location: position, length: 1))
         guard "{([}".contains(typed),
               let edit = typingInsertion(typed, range: NSRange(location: position, length: 0), in: source),
@@ -363,8 +416,8 @@ enum LaTeXCompletion {
         let tail = ns.substring(with: NSRange(location: offset, length: NSMaxRange(line) - offset))
         let newlineLength = tail.hasSuffix("\r\n") ? 2 : (tail.hasSuffix("\n") || tail.hasSuffix("\r") ? 1 : 0)
         let end = NSMaxRange(line) - newlineLength
-        let suffix = String(edit.text.dropFirst()).replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\n", with: " ↵ ")
+        let suffix = String(edit.text.dropFirst(max(1, offset - edit.range.location))).replacingOccurrences(of: "\r\n", with: "\n")
+
         return InlinePreview(text: suffix, coveredBrace: nil,
                              coveredTail: offset < end ? NSRange(location: offset, length: end - offset) : nil,
                              trailingText: offset < end ? NSRange(location: offset, length: end - offset) : nil)
@@ -428,19 +481,20 @@ enum LaTeXCompletion {
     /// candidate, so the ghost text never guesses. Very short command prefixes are
     /// skipped: after a lone `\` every command matches and a hint would be noise.
     static func inline(in text: String, at offset: Int, labels: [String], citations: [String],
-                       projectCommands: [String] = [], projectEnvironments: [String] = []) -> Inline? {
+                       projectCommands: [String] = [], projectEnvironments: [String] = [], paths: [String] = []) -> Inline? {
         guard let suggestion = suggestion(in: text, at: offset) else { return nil }
         return inline(for: suggestion, labels: labels, citations: citations,
-                      projectCommands: projectCommands, projectEnvironments: projectEnvironments)
+                      projectCommands: projectCommands, projectEnvironments: projectEnvironments, paths: paths)
     }
 
     static func inline(for suggestion: Suggestion, labels: [String], citations: [String],
-                       projectCommands: [String] = [], projectEnvironments: [String] = []) -> Inline? {
+                       projectCommands: [String] = [], projectEnvironments: [String] = [], paths: [String] = []) -> Inline? {
         let typed = suggestion.prefix.hasPrefix("\\") ? String(suggestion.prefix.dropFirst()) : suggestion.prefix
         if suggestion.context == .command, typed.count < 2 { return nil }
         guard let best = candidates(for: suggestion, labels: labels, citations: citations,
-                                    projectCommands: projectCommands, projectEnvironments: projectEnvironments).first else { return nil }
+                                    projectCommands: projectCommands, projectEnvironments: projectEnvironments, paths: paths).first else { return nil }
         let candidate = best.hasPrefix("\\") ? String(best.dropFirst()) : best
+        if (suggestion.context == .environment || suggestion.context == .endEnvironment), candidate == typed { return nil }
         let hasArguments = suggestion.context == .command && (commandArguments[best] ?? 0) > 0
         guard candidate.lowercased().hasPrefix(typed.lowercased()),
               candidate.count > typed.count || hasArguments else { return nil }
@@ -472,7 +526,7 @@ enum LaTeXCompletion {
         "\\title": 1, "\\author": 1, "\\date": 1, "\\caption": 1, "\\footnote": 1,
         "\\label": 1, "\\ref": 1, "\\eqref": 1, "\\pageref": 1, "\\autoref": 1,
         "\\cref": 1, "\\Cref": 1, "\\cite": 1, "\\citep": 1, "\\citet": 1,
-        "\\parencite": 1, "\\textcite": 1, "\\input": 1, "\\include": 1,
+        "\\parencite": 1, "\\textcite": 1, "\\input": 1, "\\include": 1, "\\subfile": 1,
         "\\includegraphics": 1, "\\emph": 1, "\\textbf": 1, "\\textit": 1, "\\texttt": 1,
         "\\frac": 2, "\\dfrac": 2, "\\tfrac": 2, "\\sqrt": 1,
         "\\mathbb": 1, "\\mathcal": 1, "\\mathbf": 1, "\\mathrm": 1, "\\mathit": 1,
@@ -529,7 +583,7 @@ enum LaTeXCompletion {
         "\\tableofcontents", "\\section", "\\section*", "\\subsection", "\\subsection*", "\\subsubsection",
         "\\paragraph", "\\chapter", "\\part", "\\appendix", "\\label", "\\ref", "\\eqref", "\\pageref",
         "\\autoref", "\\cref", "\\Cref", "\\cite", "\\citep", "\\citet", "\\parencite", "\\textcite",
-        "\\bibliography", "\\bibliographystyle", "\\addbibresource", "\\printbibliography", "\\input", "\\include",
+        "\\bibliography", "\\bibliographystyle", "\\addbibresource", "\\printbibliography", "\\input", "\\include", "\\subfile",
         "\\includegraphics", "\\caption", "\\captionof", "\\centering", "\\item", "\\footnote", "\\marginpar",
         "\\emph", "\\textit", "\\textbf", "\\texttt", "\\textsf", "\\textsc", "\\underline", "\\textsuperscript",
         "\\textsubscript", "\\verb", "\\lstinline", "\\newpage", "\\clearpage", "\\linebreak", "\\newline",

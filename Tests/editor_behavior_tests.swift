@@ -272,7 +272,7 @@ struct EditorBehaviorTests {
               "labels come from the project")
         let environmentSuggestion = suggestion("\\begin{ite")!
         let expansion = LaTeXCompletion.insertion(for: "itemize", suggestion: environmentSuggestion, in: "\\begin{ite")
-        check(expansion.text == "itemize}\n  \n\\end{itemize}", "an environment closes itself")
+        check(expansion.text == "itemize}", "an environment name completes without inserting its ending")
         check(LaTeXCompletion.candidates(for: suggestion("\\my")!, labels: [], citations: [],
               projectCommands: ["\\myNorm", "\\myNorm"]).filter { $0 == "\\myNorm" }.count == 1,
               "project macros join completion without duplicate rows")
@@ -283,7 +283,7 @@ struct EditorBehaviorTests {
         let closedEnvironmentInsertion = LaTeXCompletion.insertion(for: "itemize", suggestion: closedEnvironmentSuggestion, in: closedEnvironmentSource)
         let environmentResult = NSMutableString(string: closedEnvironmentSource)
         environmentResult.replaceCharacters(in: closedEnvironmentInsertion.range, with: closedEnvironmentInsertion.text)
-        check(environmentResult as String == "\\begin{itemize}\n  \n\\end{itemize}", "an existing closing brace is consumed exactly once")
+        check(environmentResult as String == "\\begin{itemize}", "an existing closing brace is consumed exactly once")
         let endSource = "\\end{ali}"
         let endInsertion = LaTeXCompletion.insertion(for: "align", suggestion: LaTeXCompletion.suggestion(in: endSource, at: 8)!, in: endSource)
         check(endInsertion.text == "align}" && endInsertion.placeholders.isEmpty, "end completion never inserts an extra end block")
@@ -329,7 +329,7 @@ struct EditorBehaviorTests {
         check(innerExpansion.text == "itemize}", "an existing closer can finish the current nested environment")
         let futureNested = "\\begin{ite}\n\\begin{itemize}\n\\end{itemize}"
         let futureExpansion = LaTeXCompletion.insertion(for: "itemize", suggestion: LaTeXCompletion.suggestion(in: futureNested, at: 10)!, in: futureNested)
-        check(futureExpansion.text.contains("\n  \n\\end{itemize}"), "a closer belonging to a later nested block does not suppress the current closing pair")
+        check(futureExpansion.text == "itemize}", "the name stage leaves later nested blocks unchanged")
         let pairView = SourceTextView()
         pairView.isRichText = false; pairView.allowsUndo = true
         pairView.documentUndoManager.groupsByEvent = false
@@ -386,6 +386,118 @@ struct EditorBehaviorTests {
         let crlfCaret = crlfBegin.utf16.count - 1
         let crlfEnd = LaTeXCompletion.typingInsertion("}", range: NSRange(location: crlfCaret, length: 0), in: crlfBegin)
         check(crlfEnd?.text == "}\r\n    \r\n  \\end{proof}", "automatic environments preserve CRLF and current indentation")
+
+
+        // Independent stages each form one undoable edit.
+        let staged = SourceTextView()
+        staged.isRichText = false; staged.allowsUndo = true
+        staged.documentUndoManager.groupsByEvent = false
+        staged.string = "\\begi"; staged.setSelectedRange(NSRange(location: 5, length: 0))
+        check(staged.insert(candidate: "\\begin", in: NSRange(location: 0, length: 5), context: .command), "begin stage accepts")
+        check(staged.string == "\\begin{}" && staged.selectedRange().location == 7, "begin stage selects environment argument")
+        staged.documentUndoManager.beginUndoGrouping()
+        staged.insertText("the", replacementRange: staged.selectedRange())
+        staged.documentUndoManager.endUndoGrouping()
+        let theSuggestion = LaTeXCompletion.suggestion(in: staged.string, at: staged.selectedRange().location)!
+        check(LaTeXCompletion.candidates(for: theSuggestion, labels: [], citations: []).contains("theorem"), "manual environment prefix offers theorem")
+        check(staged.insert(candidate: "theorem", in: theSuggestion.range, context: theSuggestion.context), "environment stage accepts")
+        check(staged.string == "\\begin{theorem}" && staged.selectedRange().location == staged.string.utf16.count, "environment stage ends after closing brace")
+        staged.documentUndoManager.beginUndoGrouping()
+        check(staged.acceptInlineHint(), "end stage accepts separately")
+        staged.documentUndoManager.endUndoGrouping()
+        check(staged.string == "\\begin{theorem}\n  \n\\end{theorem}", "end stage creates body and matching end")
+        staged.documentUndoManager.undo()
+        check(staged.string == "\\begin{theorem}", "undo end retains completed begin")
+        let classes = suggestion("\\documentclass{ct")!
+        check(classes.context == .documentClass && LaTeXCompletion.candidates(for: classes, labels: [], citations: []).contains("ctexart"), "document classes use their own pool")
+        let pathRoot = directory.appendingPathComponent("paths")
+        try FileManager.default.createDirectory(at: pathRoot.appendingPathComponent("章节"), withIntermediateDirectories: true)
+        try "".write(to: pathRoot.appendingPathComponent("main.tex"), atomically: true, encoding: .utf8)
+        try "".write(to: pathRoot.appendingPathComponent("章节/第一 节.tex"), atomically: true, encoding: .utf8)
+        try Data().write(to: pathRoot.appendingPathComponent("图.png"))
+        try FileManager.default.createSymbolicLink(at: pathRoot.appendingPathComponent("outside.tex"), withDestinationURL: directory.appendingPathComponent("main.tex"))
+        let pathValues = CompletionPaths.candidates(root: pathRoot.appendingPathComponent("main.tex"), images: false)
+        check(pathValues.contains("章节/第一 节.tex") && !pathValues.contains("图.png") && !pathValues.contains("outside.tex"), "paths include Unicode and exclude wrong types and outside symlinks")
+        check(CompletionPaths.candidates(root: pathRoot.appendingPathComponent("main.tex"), images: true) == ["图.png"], "image paths filter independently")
+        let pathSuggestion = suggestion("\\input{章节/第")!
+        check(pathSuggestion.context == .texPath && LaTeXCompletion.candidates(for: pathSuggestion, labels: [], citations: [], paths: pathValues) == ["章节/第一 节.tex"], "path prefixes preserve nested Unicode directories")
+        check(!CompletionOptions(disabledCategories: ["commands"]).allows(.command), "disabled category is excluded")
+        let manager = PluginManager.shared
+        let wasEnabled = manager.isEnabled(PluginManager.completionID)
+        manager.setEnabled(false, for: PluginManager.completionID)
+        staged.string = "{"; staged.setSelectedRange(NSRange(location: 1, length: 0))
+        check(!staged.acceptInlineHint() && !staged.advanceSnippet(), "disabled plugin cannot accept hints or jump snippets")
+        manager.setEnabled(wasEnabled, for: PluginManager.completionID)
+
+        check(LaTeXCompletion.delimiterHint(in: "$", at: 1)?.text == "$$", "inline dollar delimiter hint")
+        check(LaTeXCompletion.delimiterHint(in: "$$", at: 2)?.text == "$$$$", "display dollar delimiter hint")
+        check(LaTeXCompletion.delimiterHint(in: "$x$", at: 3) == nil, "closed inline math does not propose another pair")
+        check(LaTeXCompletion.delimiterHint(in: "% $", at: 3) == nil, "dollar hint ignores comments")
+        let popup = CompletionPopup()
+        let popupWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                                   styleMask: [.titled], backing: .buffered, defer: false)
+        let screenBounds = NSScreen.main!.visibleFrame
+        let choices = (0..<40).map { LaTeXCompletion.candidate("theorem" + String($0), suggestion: theSuggestion, source: "\\begin{the}") }
+        popup.show(choices, anchor: NSRect(x: screenBounds.maxX - 2, y: screenBounds.minY + 2, width: 1, height: 16), owner: popupWindow)
+        check(popup.frame.width <= 440 && popup.frame.height <= 300 && screenBounds.contains(popup.frame), "candidate panel is bounded at screen edge")
+        popup.move(39)
+        check(popup.selected == "theorem39", "candidate navigation reaches scrolled rows")
+        popup.close()
+        check(!popup.isVisible, "candidate popup closes immediately")
+        popupWindow.orderOut(nil)
+
+        let multilineSource = "  \\begin{abstract}"
+        let multilineEdit = LaTeXCompletion.delimiterHint(in: multilineSource, at: multilineSource.utf16.count)!
+        let multilinePreview = LaTeXCompletion.delimiterPreview(for: multilineEdit, in: multilineSource, at: multilineSource.utf16.count)
+        check(multilinePreview.text == "\n    \n  \\end{abstract}", "environment preview keeps a blank body line and actual line breaks")
+        check(!multilinePreview.text.contains("↵"), "environment preview does not display return glyphs")
+        let crlfPreview = LaTeXCompletion.delimiterPreview(for: crlfEnd!, in: crlfBegin, at: crlfBegin.utf16.count)
+        check(crlfPreview.text == "\n    \n  \\end{proof}", "CRLF environment preview uses the same blank-line layout")
+
+        let multilineView = SourceTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 160))
+        multilineView.isRichText = false
+        multilineView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        let multilineParagraph = NSMutableParagraphStyle(); multilineParagraph.lineSpacing = 5
+        multilineView.typingAttributes = [.font: multilineView.font!, .paragraphStyle: multilineParagraph]
+        multilineView.string = multilineSource + "\n\n\n"
+        multilineView.setSelectedRange(NSRange(location: multilineSource.utf16.count, length: 0))
+        multilineView.layoutManager!.ensureLayout(for: multilineView.textContainer!)
+        let multilineCaret = multilineView.caretRectInView()
+        let ghostLines = multilineView.multilineHintLines(multilinePreview, caret: multilineCaret)
+        check(ghostLines.last?.text == "  \\end{abstract}" && ghostLines.last!.origin.x < multilineCaret.minX,
+              "end preview is drawn at the source line origin after a blank line")
+        check(ghostLines.last!.origin.y > multilineCaret.minY + multilineCaret.height,
+              "multiline preview leaves the body row blank")
+        if let output = ProcessInfo.processInfo.environment["QUILLTEX_NEWLINE_QA"] {
+            multilineView.inlinePreview = multilinePreview; multilineView.delimiterHint = multilineEdit
+            let bitmap = multilineView.bitmapImageRepForCachingDisplay(in: multilineView.bounds)!
+            multilineView.cacheDisplay(in: multilineView.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
+        }
+        multilineView.inlinePreview = nil
+        multilineView.string = multilineSource + "\nbody\nexisting source"
+        multilineView.setSelectedRange(NSRange(location: multilineSource.utf16.count, length: 0))
+        let multilineLayout = multilineView.layoutManager!
+        multilineLayout.ensureLayout(for: multilineView.textContainer!)
+        let nextGlyph = multilineLayout.glyphIndexForCharacter(at: multilineSource.utf16.count + 1)
+        let beforeSpacing = multilineLayout.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: nil).minY
+        let beforeText = multilineView.string
+        multilineView.inlinePreview = multilinePreview
+        multilineLayout.ensureLayout(for: multilineView.textContainer!)
+        let afterSpacing = multilineLayout.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: nil).minY
+        check(afterSpacing > beforeSpacing + multilineCaret.height, "gray environment preview reserves visual space before following source")
+        let visibleGhost = multilineView.multilineHintLines(multilinePreview, caret: multilineView.caretRectInView())
+        check(visibleGhost.last?.text == "  \\end{abstract}", "gray end remains visible when following source exists")
+        check(multilineView.string == beforeText && !multilineView.documentUndoManager.canUndo, "preview spacing never edits source or undo history")
+        if let output = ProcessInfo.processInfo.environment["QUILLTEX_NEWLINE_QA"] {
+            let bitmap = multilineView.bitmapImageRepForCachingDisplay(in: multilineView.bounds)!
+            multilineView.cacheDisplay(in: multilineView.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output))
+        }
+        multilineView.inlinePreview = nil
+        multilineLayout.ensureLayout(for: multilineView.textContainer!)
+        check(abs(multilineLayout.lineFragmentRect(forGlyphAt: nextGlyph, effectiveRange: nil).minY - beforeSpacing) < 0.1,
+              "dismissing the gray hint restores original source layout")
 
         let snippetView = SourceTextView()
         snippetView.isRichText = false; snippetView.allowsUndo = true; snippetView.string = "\\fra"
@@ -517,8 +629,8 @@ struct EditorBehaviorTests {
         check(inlineView.string == emptyEnvironment && !inlineView.documentUndoManager.canUndo,
               "a visible preview never enters source text or undo history")
         check(inlineView.acceptInlineHint(), "Tab can accept the inline preview without a candidate list")
-        check(inlineView.string == "\\begin{abstract}\n  \n\\end{abstract}" && inlineView.selectedRange().location == 19,
-              "accepting the complete preview inserts one closing brace and enters the environment body")
+        check(inlineView.string == "\\begin{abstract}" && inlineView.selectedRange().location == 16,
+              "accepting the environment preview only completes the name")
         inlineView.string = "\\beg"; inlineView.endSnippet()
         inlineView.setSelectedRange(NSRange(location: 4, length: 0))
         inlineView.refreshInlineHint()
@@ -531,15 +643,71 @@ struct EditorBehaviorTests {
             windowNumber: inlineWindow.windowNumber, context: nil, characters: "\t",
             charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48)!
         inlineView.keyDown(with: inlineTab)
+        check(inlineView.string == "\\begin{abstract}" && inlineView.selectedRange().location == 16,
+              "Tab accepts the environment name before advancing out of the command snippet")
+        inlineView.keyDown(with: inlineTab)
         check(inlineView.string == "\\begin{abstract}\n  \n\\end{abstract}" && inlineView.selectedRange().location == 19,
-              "Tab accepts the environment hint before advancing out of the command snippet")
+              "the next Tab accepts the independent closing environment stage")
         inlineView.string = occupiedTail; inlineView.endSnippet()
         inlineView.setSelectedRange(NSRange(location: 8, length: 0))
         inlineView.refreshInlineHint()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         check(!inlineView.acceptInlineHint() && inlineView.string == occupiedTail,
               "Tab never accepts an invisible suggestion over existing prose")
+        inlineView.string = "\\begin{the}"; inlineView.setSelectedRange(NSRange(location: 10, length: 0))
+        inlineView.complete(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(inlineView.completionPopup?.isVisible == true && inlineView.completionPopup?.values.contains("theorem") == true,
+              "explicit completion offers matching environments")
+        inlineView.completionPopup?.move(inlineView.completionPopup!.values.firstIndex(of: "theorem")!)
+        check(inlineWindow.firstResponder === inlineView, "candidate window preserves source input focus")
+        check(inlineView.acceptCandidate() && inlineView.string == "\\begin{theorem}", "candidate acceptance uses the same name-only stage")
+        inlineView.string = "\\al"; inlineView.setSelectedRange(NSRange(location: 3, length: 0)); inlineView.complete(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(inlineView.completionPopup?.values.contains("\\alpha") == true, "math commands appear in the manual list")
+        if let output = ProcessInfo.processInfo.environment["QUILLTEX_QA_OUTPUT"],
+           let panel = NSApp.windows.first(where: { $0 is NSPanel && $0.isVisible }), let view = panel.contentView,
+           let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: output))
+        }
+        manager.setEnabled(false, for: PluginManager.completionID)
+        check(inlineView.completionPopup?.isVisible != true && inlineView.completionWork?.isCancelled != false && inlineView.activeSnippetRange == nil,
+              "disabling completion dismisses the live popup and cancels pending work")
+        manager.setEnabled(wasEnabled, for: PluginManager.completionID)
         inlineWindow.close()
+
+        let liveCompletionDocument = SourceDocument(url: directory.appendingPathComponent("completion.tex"), text: "\\begin{t}")
+        let liveCompletionSurface = EditorSurface(document: liveCompletionDocument, store: store)
+        let liveCompletionWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        liveCompletionWindow.isReleasedWhenClosed = false
+        liveCompletionWindow.contentView = liveCompletionSurface; liveCompletionWindow.orderFront(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let liveCompletionView = liveCompletionSurface.textView
+        liveCompletionWindow.makeFirstResponder(liveCompletionView)
+        liveCompletionView.setSelectedRange(NSRange(location: 8, length: 0))
+        liveCompletionView.complete(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(liveCompletionView.completionPopup?.isVisible == true, "real editor opens candidates")
+        liveCompletionView.documentUndoManager.beginUndoGrouping()
+        liveCompletionView.insertText("he", replacementRange: liveCompletionView.selectedRange())
+        liveCompletionView.documentUndoManager.endUndoGrouping()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(liveCompletionView.completionPopup?.isVisible == true && liveCompletionView.completionPopup!.values.allSatisfy { $0.hasPrefix("the") },
+              "typing filters candidates through the real text-storage delegate")
+        liveCompletionView.closeCandidates()
+        liveCompletionView.string = "\\begin{abstract}\nbody"
+        liveCompletionView.setSelectedRange(NSRange(location: 16, length: 0))
+        liveCompletionView.refreshInlineHint()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(liveCompletionView.completionSession.previewSpacing != nil && liveCompletionView.inlinePreview != nil,
+              "real editor preserves gray multiline preview before existing body text")
+        liveCompletionView.documentUndoManager.beginUndoGrouping()
+        liveCompletionView.insertText("x", replacementRange: liveCompletionView.selectedRange())
+        liveCompletionView.documentUndoManager.endUndoGrouping()
+        check(liveCompletionView.completionSession.previewSpacing == nil && liveCompletionView.string == "\\begin{abstract}x\nbody",
+              "typing through the real storage delegate removes visual spacing without editing the body")
+        liveCompletionWindow.close()
 
         let longSource = String(repeating: "\\section{Heading}\nPlain text\n", count: 2000)
         let longDocument = SourceDocument(url: directory.appendingPathComponent("long.tex"), text: longSource)

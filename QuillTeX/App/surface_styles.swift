@@ -3,7 +3,7 @@ import SwiftUI
 /// Shared feedback for list rows and compact controls outside the titlebar.
 struct QuillRowButtonStyle: ButtonStyle {
     var selected = false
-    var cornerRadius: CGFloat = 8
+    var cornerRadius: CGFloat = ChromeMetrics.popupRowCornerRadius
     func makeBody(configuration: Configuration) -> some View {
         QuillRowFeedback(label: configuration.label, pressed: configuration.isPressed,
                          selected: selected, cornerRadius: cornerRadius)
@@ -23,8 +23,8 @@ private struct QuillRowFeedback<Label: View>: View {
             .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Palette.primaryInk.opacity(isEnabled && pressed ? Palette.pressedOpacity :
                     (selected ? Palette.selectedOpacity : (isEnabled && hovered ? Palette.chromeHoverOpacity : 0)))))
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .scaleEffect(isEnabled && pressed && !reduceMotion ? 0.985 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .scaleEffect(isEnabled && pressed && !reduceMotion ? ChromeMotion.pressedScale : 1)
             .onHover { hovered = $0 }
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: hovered)
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: selected)
@@ -103,7 +103,19 @@ extension View {
     /// One row inside an app-owned popup list: the same quiet wash everywhere, so
     /// recent projects, project files and the other popups read alike.
     func quillPopupRow(active: Bool) -> some View {
-        background(RoundedRectangle(cornerRadius: 8).fill(Palette.primaryInk.opacity(active ? Palette.selectedOpacity : 0)))
+        modifier(QuillPopupRowFeedback(active: active))
+    }
+}
+
+private struct QuillPopupRowFeedback: ViewModifier {
+    let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content.background {
+            RoundedRectangle(cornerRadius: ChromeMetrics.popupRowCornerRadius, style: .continuous)
+                .fill(Palette.primaryInk.opacity(active ? Palette.selectedOpacity : 0))
+                .animation(reduceMotion ? nil : ChromeMotion.feedback, value: active)
+        }
     }
 }
 

@@ -45,6 +45,7 @@ enum ChromeMetrics {
     static let buttonSurfaceInset: CGFloat = 3
     /// Shared radius and padding for app-owned floating panels.
     static let panelCornerRadius: CGFloat = 12
+    static let popupRowCornerRadius: CGFloat = 8
     static let panelPadding: CGFloat = 16
     static let popoverWidth: CGFloat = 320
     static let popoverLabelWidth: CGFloat = 54
@@ -83,6 +84,7 @@ enum ChromeMetrics {
 }
 
 enum ChromeMotion {
+    static let pressedScale: CGFloat = 0.98
     static let feedback = Animation.easeOut(duration: 0.14)
     static let press = Animation.spring(response: 0.24, dampingFraction: 0.82)
     static let transition = Animation.smooth(duration: 0.24)

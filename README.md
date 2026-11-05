@@ -6,19 +6,19 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.1.1** · macOS 14+ · Apple Silicon
+**Version 1.1.2** · macOS 14+ · Apple Silicon
 
-[下载 1.1.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.1)
+[下载 1.1.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.2)
 
 ![QuillTeX 1.1.0 · 写作与预览](docs/versions/1.1.0/images/writing.png)
 
-界面素材来自 1.1.0，1.1.1 沿用该版本演示。
+界面素材来自 1.1.0，1.1.2 沿用该版本演示。
 
 ## 功能
 
 - 本地文稿库、最近打开与模板，支持多标签编辑和多文件工程。
 - 章节、标签和图表导航，帮助定位长篇文稿与子文件。
-- LaTeX 语法高亮及随输入更新的行内补全，按 Tab 接受命令、括号与结束环境提示，优先匹配工程自定义命令与环境，支持数学参数跳转。
+- LaTeX 语法高亮与可独立配置的 Completion 插件，按 Tab 接受行内提示，默认 Option–Esc 打开分类候选，快捷键可在插件设置中自定义，支持分阶段环境补全、工程路径和数学参数跳转。
 - 使用 XeLaTeX、pdfLaTeX 或 LuaLaTeX 本地编译，点击诊断跳转到对应源码。
 - 可折叠的警告／错误列表与排版校对，帮助检查错误、溢出行和未解析引用。
 - 源码与 PDF 并排显示，支持手势缩放、Actual Size、适应宽度和实时缩放比例，以及 ⌘-点击双向定位。
@@ -33,7 +33,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.1) 下载 `QuillTeX-1.1.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.2) 下载 `QuillTeX-1.1.2.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -76,6 +76,12 @@
 空白模板为零内容，内置模板文件统一英文命名；改善连续输入、长文稿光标定位与缩进体验，括号和结束环境按 Tab 接受；Subfiles 可独立开关，侧栏胶囊随模式数量重新排列；统一 PDF 缩放组合按钮，精简弹窗说明，并修正窗口按钮悬停区域与文件夹排序。
 
 [更新说明](docs/versions/1.1.1/README.md) · [下载 1.1.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.1)
+
+### 1.1.2 · 插件设置与补全优化
+
+插件提供独立设置页，补全可分类配置；Option–Esc 打开候选列表，支持工程内文件路径，环境按命令、名称与结束部分逐步确认，各步可单独撤销。
+
+[更新说明](docs/versions/1.1.2/README.md) · [下载 1.1.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.2)
 
 ## 本地构建
 
