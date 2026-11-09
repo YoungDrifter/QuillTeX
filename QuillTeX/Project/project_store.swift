@@ -61,7 +61,7 @@ final class ProjectStore: ObservableObject {
     private var syncTask: Task<Void, Never>?
     private var editRevision = 0
     private var buildRevision = 0
-    private var previewIsOutdated = false
+    private(set) var previewIsOutdated = false
     private let maintainsRootDirectives: Bool
     private var maintainingRootDirectives = false
     private var pendingRootDirectives: Set<URL> = []
@@ -212,7 +212,7 @@ final class ProjectStore: ObservableObject {
                 diskText: hasDraft ? document.diskText : nil)
         }, activePath: activeDocument?.url.path, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
             paneMode: paneMode.rawValue, expandedNodes: Array(expandedNodes),
-            sidebarWidth: sidebarWidth, editorFraction: editorFraction, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated,
+            sidebarWidth: sidebarWidth, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated,
             sourceDirectoryPath: sourceDirectory?.path)
         let retiring = Array(retiredSessionRoots.filter { $0 != root })
         sessionStore.save(state, retiringRoots: retiring) { [weak self] error in
@@ -264,7 +264,10 @@ final class ProjectStore: ObservableObject {
         paneMode = PaneMode(rawValue: state.paneMode) ?? .split
         expandedNodes = Set(state.expandedNodes)
         sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 248
-        editorFraction = state.editorFraction.isFinite ? min(0.85, max(0.15, state.editorFraction)) : 0.5
+        // Every project opens with the editor and preview equal. A ratio the user
+        // drags during this session stays for the session, but reopening the
+        // project starts clean instead of restoring a drifted split.
+        editorFraction = 0.5
         pdfReadingState = state.pdf
         previewIsOutdated = state.pdfIsOutdated == true || restored.contains { $0.isDirty } || sourcesAreNewerThanPDF(restored.map(\.url))
         if restored.contains(where: { $0.isDirty }) { recoveryMessage = "Recovered unsaved edits. Save when you are ready." }
@@ -807,6 +810,7 @@ final class ProjectStore: ObservableObject {
                 recoveryMessage = nil
                 documents = []; history = []; historyPosition = -1
                 documents = [SourceDocument(url: main, text: mainText)]
+                editorFraction = 0.5
                 try selectMainFile(main)
                 history = [EditorLocation(url: main, offset: 0)]; historyPosition = 0
                 restoreSession(savedSession)
@@ -1048,8 +1052,12 @@ final class ProjectStore: ObservableObject {
         let oldURL = doc.url
         try updateDocumentFile(from: oldURL, to: destination, tags: tags)
         doc.url = destination
+        if root == oldURL {
+            root = destination
+            try? library.record(destination)
+            renameBuildArtifacts(from: oldURL, to: destination)
+        }
         updateFileMonitoring()
-        if root == oldURL { root = destination; try? library.record(destination) }
         history = history.map { $0.url == oldURL ? EditorLocation(url: destination, offset: $0.offset) : $0 }
         indexCache.invalidateInventory()
         if selectedFolder == oldURL.deletingLastPathComponent() { selectedFolder = destination.deletingLastPathComponent() }
@@ -1058,6 +1066,36 @@ final class ProjectStore: ObservableObject {
         updateProjectReferences(from: oldURL, to: destination, files: previousProjectFiles.filter { $0 != oldURL } + [destination])
         if root == destination { maintainProjectRootDirectives(replacingExisting: true, additionalFiles: previousProjectFiles.filter { $0 != oldURL } + [destination]) }
         persistSession(force: true); sessionStore.flush()
+    }
+
+    /// LaTeX writes its outputs beside the main document with the same base name.
+    /// Renaming the main file carries the compiled PDF and auxiliary files along,
+    /// so the preview, SyncTeX and next compile keep using one set of outputs.
+    private static let buildArtifactExtensions = [
+        "pdf", "aux", "log", "out", "toc", "lof", "lot", "nav", "snm", "vrb",
+        "synctex", "synctex.gz", "fls", "fdb_latexmk", "xdv", "dvi", "ps",
+        "bbl", "blg", "bcf", "run.xml", "idx", "ind", "ilg", "glo", "gls", "glg",
+        "acn", "acr", "alg", "loa"
+    ]
+
+    private func renameBuildArtifacts(from oldMain: URL, to newMain: URL) {
+        let oldBase = oldMain.deletingPathExtension().lastPathComponent
+        let newBase = newMain.deletingPathExtension().lastPathComponent
+        guard !oldBase.isEmpty, !newBase.isEmpty, oldBase != newBase else { return }
+        let output = buildOutputDirectory.standardizedFileURL
+        let fileManager = FileManager.default
+        var renamedPDF: URL?
+        for suffix in Self.buildArtifactExtensions {
+            let source = output.appendingPathComponent(oldBase + "." + suffix)
+            let destination = output.appendingPathComponent(newBase + "." + suffix)
+            guard fileManager.fileExists(atPath: source.path),
+                  !fileManager.fileExists(atPath: destination.path) else { continue }
+            do {
+                try fileManager.moveItem(at: source, to: destination)
+                if suffix == "pdf" { renamedPDF = destination }
+            } catch {}
+        }
+        if let renamedPDF { build.followRenamedPDF(renamedPDF) }
     }
 
     @discardableResult
@@ -1083,6 +1121,7 @@ final class ProjectStore: ObservableObject {
             root = destination
             try? library.record(destination)
             window?.representedURL = destination
+            renameBuildArtifacts(from: url, to: destination)
         }
         history = history.map { $0.url == url ? EditorLocation(url: destination, offset: $0.offset) : $0 }
         selectedNodes[.folder] = "file:" + destination.path

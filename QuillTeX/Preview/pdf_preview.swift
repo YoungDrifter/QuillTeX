@@ -564,6 +564,23 @@ struct PreviewPane: View {
         .help(title).accessibilityLabel(title)
     }
 
+    /// Short build state for the preview capsule. Transient SyncTeX notes and
+    /// "showing the previous PDF" messages take precedence so the capsule always
+    /// explains what the reader is currently looking at.
+    private var paneStatus: String {
+        if let message = store.syncStatusMessage, !message.isEmpty { return message }
+        if let message = store.previewStatusText { return message }
+        return build.lastSummary
+    }
+
+    /// The capsule hugs its message; only a long status is capped and truncated so
+    /// it cannot crowd the zoom controls out of the header.
+    private var paneStatusWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let textWidth = (paneStatus as NSString).size(withAttributes: [.font: font]).width
+        return min(ceil(textWidth) + 21, 300)
+    }
+
     init(store: ProjectStore) {
         self.store = store
         self.build = store.build
@@ -585,21 +602,17 @@ struct PreviewPane: View {
             }
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    // The preview names the file it renders with the same breadcrumb
-                    // as the editor, so clicking a segment reveals that folder path.
-                    Group {
-                        if store.root != nil {
-                            EditorBreadcrumb(store: store, focus: store.root, leadingIcon: "doc.richtext")
-                        } else {
-                            Label("PDF", systemImage: "doc.richtext")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Palette.primaryInk)
-                        }
-                    }
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .quillFloatingCapsule()
+                    // The preview capsule carries the build state that used to live
+                    // in a separate middle capsule: compiled, compiling, awaiting, failed.
+                    Label(paneStatus, systemImage: "doc.richtext")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.primaryInk)
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(width: paneStatusWidth, alignment: .leading)
+                        .help(paneStatus)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .quillFloatingCapsule()
                     Spacer(minLength: 10)
                     HStack(spacing: 0) {
                         zoomInput

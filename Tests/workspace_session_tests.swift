@@ -57,7 +57,7 @@ struct WorkspaceSessionTests {
         check(recovered.activeDocument?.scrollOrigin.y == 350, "restore editor scroll position")
         check(!recovered.sidebarVisible && recovered.sidebarMode == .folder && recovered.paneMode == .editor, "restore pane modes")
         check(recovered.expandedNodes == original.expandedNodes, "restore expanded branches")
-        check(recovered.sidebarWidth == 315 && recovered.editorFraction == 0.64, "restore independent divider positions")
+        check(recovered.sidebarWidth == 315 && recovered.editorFraction == 0.5, "restore the sidebar width and open the editor/preview split equal")
         check(recovered.pdfReadingState == original.pdfReadingState, "restore PDF position and manual zoom")
         check(recovered.recoveryMessage != nil, "make recovered edits visible")
         recovered.activeDocument!.hasMarkedText = true
@@ -79,14 +79,13 @@ struct WorkspaceSessionTests {
         check(reopened.sessionStore.load(root: root) == nil, "unsupported sessions do not change document opening")
         var bounded = session
         bounded.sidebarWidth = 1_000_000
-        bounded.editorFraction = -5
         bounded.documents[0].selectionLocation = Int.max
         bounded.documents[0].selectionLength = Int.max
         reopened.sessionStore.save(bounded)
         reopened.sessionStore.flush()
         let clamped = ProjectStore(library: library, maintainsRootDirectives: false)
         clamped.openProject(root, explicitRoot: true)
-        check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.15, "clamp saved geometry")
+        check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.5, "clamp the sidebar width and open the split equal")
         let main = clamped.documents.first!
         check(main.selection.location == (main.text as NSString).length && main.selection.length == 0, "clamp restored selection to current file")
         main.text += "\nUnsaved main draft"
@@ -150,6 +149,24 @@ struct WorkspaceSessionTests {
         revisionStore.index.structure = [label]
         let duplicate = BuildDiagnostic(severity: .warning, message: "Label eq:duplicate multiply defined.", file: nil, line: nil, category: .references, relatedKey: "eq:duplicate")
         check(revisionStore.resolvedDiagnostic(duplicate)?.file == first, "duplicate labels without log locations can use the structure index")
+        // Renaming the main document carries the compiled outputs with it so the
+        // preview and SyncTeX keep pointing at the same build.
+        let renameRoot = directory.appendingPathComponent("rename-main.tex")
+        try "\\documentclass{article}".write(to: renameRoot, atomically: true, encoding: .utf8)
+        try Data("pdf".utf8).write(to: directory.appendingPathComponent("rename-main.pdf"))
+        try Data("aux".utf8).write(to: directory.appendingPathComponent("rename-main.aux"))
+        try Data("sync".utf8).write(to: directory.appendingPathComponent("rename-main.synctex.gz"))
+        let renameStore = ProjectStore(library: library, maintainsRootDirectives: false)
+        renameStore.openProject(renameRoot, explicitRoot: true)
+        let renamedMain = directory.appendingPathComponent("renamed-main.tex")
+        try renameStore.updateActiveFile(renamedMain, tags: [])
+        let renamedPDF = directory.appendingPathComponent("renamed-main.pdf")
+        check(renameStore.root == renamedMain, "renaming the main document updates the project root")
+        check(FileManager.default.fileExists(atPath: renamedPDF.path), "main rename carries the compiled PDF")
+        check(FileManager.default.fileExists(atPath: directory.appendingPathComponent("renamed-main.aux").path), "main rename carries the auxiliary file")
+        check(FileManager.default.fileExists(atPath: directory.appendingPathComponent("renamed-main.synctex.gz").path), "main rename carries the SyncTeX file")
+        check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("rename-main.pdf").path), "the old PDF name is gone after rename")
+        check(renameStore.build.pdfURL?.standardizedFileURL == renamedPDF.standardizedFileURL, "the preview follows the renamed PDF")
         print("WorkspaceSessionTests: \(checks) assertions passed")
     }
 }

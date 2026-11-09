@@ -88,10 +88,14 @@ private struct EditorPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 8) {
-                EditorBreadcrumb(store: store)
+                Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
+                      systemImage: "square.and.pencil")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
+                    .fixedSize()
                     .padding(.horizontal, 10)
                     .frame(height: 30)
                     .quillFloatingCapsule()
+                    .help(store.activeDocument?.isDirty == true ? "Unsaved changes" : "All changes saved")
                 Spacer(minLength: 8)
                 if let document = store.activeDocument { EditorHistoryButtons(document: document) }
             }.quillPaneRow()

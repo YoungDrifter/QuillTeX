@@ -59,10 +59,16 @@ final class WorkspaceDividerView: NSSplitView {
         return self
     }
 
+    /// True while AppKit is running a divider's tracking loop. Window resizes use
+    /// this to tell a user-chosen ratio apart from AppKit reallocating width.
+    private(set) var isDraggingDivider = false
+
     override func mouseDown(with event: NSEvent) {
         // Recheck at mouse-down: an overlay scrollbar may appear after hover.
         guard !(0..<max(0, subviews.count - 1)).contains(where: isDividerDragBlocked) else { return }
+        isDraggingDivider = true
         super.mouseDown(with: event)
+        isDraggingDivider = false
     }
 
     override func resetCursorRects() {
@@ -174,11 +180,17 @@ class WorkspacePaneSplitController: NSSplitViewController {
 final class WorkspaceContentSplitController: WorkspacePaneSplitController {
     private var mode = PaneMode.split
     private var balancePending = true
-    var restoredFraction: Double?
+    /// Ratio the user chose. Re-applied whenever the split gets a new width, so a
+    /// window that grows after the workspace opens keeps the same proportions
+    /// instead of handing the extra width to both panes equally.
+    private var targetFraction: Double = 0.5
+    private var lastLayoutWidth: CGFloat = 0
     var onLayoutChange: (() -> Void)?
 
     init(editor: NSViewController, preview: NSViewController) {
         super.init()
+        // With the editor's scrollbar on screen, the divider pauses; its own grab
+        // band would otherwise capture the scrollbar's edge.
         (splitView as? WorkspaceDividerView)?.blocksDraggingWhileLeadingScrollerVisible = true
         for controller in [editor, preview] {
             let item = NSSplitViewItem(viewController: controller)
@@ -192,27 +204,48 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        balanceIfNeeded()
+        let width = splitView.bounds.width
+        if balancePending {
+            balanceIfNeeded()
+            lastLayoutWidth = width
+            return
+        }
+        if mode == .split, width > 520,
+           abs(width - lastLayoutWidth) > 0.5,
+           (splitView as? WorkspaceDividerView)?.isDraggingDivider != true {
+            setPosition(for: targetFraction)
+        }
+        lastLayoutWidth = width
+    }
+
+    private func setPosition(for fraction: Double) {
+        guard mode == .split, splitView.bounds.width > 520 else { return }
+        let available = splitView.bounds.width - splitView.dividerThickness
+        splitView.setPosition(available * fraction, ofDividerAt: 0)
     }
 
     private func balanceIfNeeded() {
-        if balancePending, mode == .split, splitView.bounds.width > 520 {
-            balancePending = false
-            let fraction = restoredFraction ?? 0.5
-            restoredFraction = nil
-            splitView.setPosition((splitView.bounds.width - splitView.dividerThickness) * fraction, ofDividerAt: 0)
-        }
+        guard balancePending, mode == .split, splitView.bounds.width > 520 else { return }
+        balancePending = false
+        setPosition(for: targetFraction)
     }
     var editorFraction: Double {
         let width = splitView.bounds.width - splitView.dividerThickness
-        guard mode == .split, width > 0 else { return 0.5 }
+        guard mode == .split, width > 0 else { return targetFraction }
         return splitViewItems[0].viewController.view.frame.width / width
     }
-    @objc private func splitResized() { if !balancePending, mode == .split { onLayoutChange?() } }
+    @objc private func splitResized() {
+        guard !balancePending, mode == .split else { return }
+        if (splitView as? WorkspaceDividerView)?.isDraggingDivider == true {
+            targetFraction = editorFraction
+        }
+        onLayoutChange?()
+    }
     func restoreFraction(_ fraction: Double) {
-        restoredFraction = fraction
+        targetFraction = fraction.isFinite ? min(0.85, max(0.15, fraction)) : 0.5
         balancePending = true
         balanceIfNeeded()
+        lastLayoutWidth = splitView.bounds.width
     }
 
     func update(mode newMode: PaneMode, equalize: Bool) {
@@ -224,11 +257,12 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
         mode = newMode
         splitView.adjustSubviews()
         if newMode == .split {
-            if equalize { restoredFraction = nil }
+            if equalize { targetFraction = 0.5 }
             balancePending = true
             view.layoutSubtreeIfNeeded()
             balanceIfNeeded()
         }
+        lastLayoutWidth = splitView.bounds.width
     }
 }
 
@@ -251,6 +285,8 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
          topBarHeight: CGFloat) {
         content = WorkspaceContentSplitController(editor: editor, preview: preview)
         super.init()
+        // Both middle dividers pause while the pane beside them shows a scrollbar.
+        (splitView as? WorkspaceDividerView)?.blocksDraggingWhileLeadingScrollerVisible = true
         let sidebarItem = NSSplitViewItem(viewController: sidebar)
         sidebarItem.minimumThickness = 180
         sidebarItem.maximumThickness = 400

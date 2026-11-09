@@ -135,6 +135,13 @@ final class BuildController: ObservableObject {
     }
 
     /// A new main file must not inherit the previous project's PDF or diagnostics.
+    /// Keeps the preview attached to a PDF whose file name follows the main
+    /// document after that document is renamed.
+    func followRenamedPDF(_ url: URL) {
+        pdfURL = FileManager.default.fileExists(atPath: url.path) ? url : nil
+        pdfVersion += 1
+    }
+
     func resetProject() {
         cancel()
         status = .idle; diagnostics = []; log = ""; highlight = nil; selectedDiagnosticID = nil

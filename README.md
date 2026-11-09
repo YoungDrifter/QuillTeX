@@ -6,9 +6,9 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.2.0** · macOS 14+ · Apple Silicon
+**Version 1.2.1** · macOS 14+ · Apple Silicon
 
-[下载 1.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0)
+[下载 1.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1)
 
 ![QuillTeX 1.2.0 · 写作工作区](docs/icon/screenshot.png)
 
@@ -30,7 +30,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0) 下载 `QuillTeX-1.2.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1) 下载 `QuillTeX-1.2.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -91,6 +91,12 @@ TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主�
 集中发布重做后的写作工作区：TeX Project 按 Main、Sub、Others 管理工程文件并支持拖动增删主文件注释，关闭插件后当前 TeX 文件直接成为编译目标；移除标签栏，侧栏贯穿窗口全高并使用浅灰实色；内容顶栏收紧为 46 pt，编辑与预览改为内容自适应的悬浮胶囊，预览区 PDF 胶囊与编辑区一致使用可点击的面包屑路径并以图标区分，编辑区顶部白色留白随正文滚走，PDF 预览默认与面板顶部齐平、向上拉动才弹性露出留白；PDF 预览移除固定白条和中间编译状态胶囊；默认窗口 1280 × 820 且编辑与预览等宽；编译步骤增加超时保护，顶栏空白支持系统双击缩放，编辑区滚动条显示时暂停中间分隔线拖动。
 
 [更新说明](docs/versions/1.2.0/README.md) · [下载 1.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0)
+
+### 1.2.1 · 分栏与输出文件修复
+
+打开工程时编辑区与预览区恢复等宽，分栏比例不再随窗口缩放漂移；侧栏/编辑与编辑/预览两条中间分隔线在滚动条显示时暂停拖动，滚动条淡出后恢复。编辑区胶囊显示保存状态（Saved / Unsaved），顶栏文件名去掉未保存圆点；PDF 胶囊显示编译状态与临时提示（Not built yet / Compiling · showing the previous PDF / Build succeeded / Awaiting compilation / Build failed / SyncTeX was not found…，均为英文），胶囊宽度随文字自适应；重命名主 TeX 文件时 PDF 与 aux、log、synctex 等辅助文件同步改名。
+
+[更新说明](docs/versions/1.2.1/README.md) · [下载 1.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1)
 
 ## 本地构建
 

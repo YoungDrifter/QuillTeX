@@ -182,6 +182,75 @@ struct WorkspaceLayoutTests {
         editorScroll.hasVerticalScroller = false
         settle()
         check(!contentDivider.effectiveDividerRects.isEmpty, "removing the scrollbar restores content resizing")
+
+        // Both middle dividers pause while the pane beside them shows a scrollbar.
+        let sidebarScroll = NSScrollView()
+        sidebarScroll.hasVerticalScroller = true
+        sidebarScroll.autohidesScrollers = true
+        sidebarScroll.scrollerStyle = .overlay
+        let sidebarText = NSTextView(frame: NSRect(x: 0, y: 0, width: 240, height: 4000))
+        sidebarText.string = String(repeating: "Section\n", count: 400)
+        sidebarScroll.documentView = sidebarText
+        let both = WorkspaceSplitController(sidebar: pane(sidebarScroll), topBar: pane(), editor: pane(NSTextView()), preview: pane(), topBarHeight: 46)
+        window.contentViewController = both
+        window.setContentSize(NSSize(width: 1280, height: 800))
+        both.view.frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
+        settle()
+        let bothSidebarDivider = both.splitView as! WorkspaceDividerView
+        let bothContentDivider = both.content.splitView as! WorkspaceDividerView
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        check(!bothSidebarDivider.effectiveDividerRects.isEmpty, "faded sidebar scroller permits resizing")
+        sidebarScroll.flashScrollers()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        check(bothSidebarDivider.isDividerDragBlocked(at: 0), "visible sidebar scrollbar blocks the sidebar divider")
+        check(bothSidebarDivider.effectiveDividerRects.isEmpty, "visible sidebar scroller removes the divider grab region")
+        let sidebarLine = NSRect(x: bothSidebarDivider.subviews[0].frame.maxX, y: 0, width: 1, height: bothSidebarDivider.bounds.height)
+        check(both.splitView(bothSidebarDivider, effectiveRect: sidebarLine, forDrawnRect: sidebarLine, ofDividerAt: 0).isEmpty,
+              "native sidebar split dragging is disabled while its scrollbar is visible")
+        check(!bothContentDivider.effectiveDividerRects.isEmpty, "the sidebar scrollbar does not disable the content divider")
+        let sidebarOriginalWidth = bothSidebarDivider.subviews[0].frame.width
+        let sidebarClick = NSEvent.mouseEvent(with: .leftMouseDown,
+                                             location: bothSidebarDivider.convert(NSPoint(x: sidebarLine.midX + 8, y: 100), to: nil),
+                                             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                             eventNumber: 0, clickCount: 1, pressure: 1)!
+        bothSidebarDivider.mouseDown(with: sidebarClick)
+        check(bothSidebarDivider.subviews[0].frame.width == sidebarOriginalWidth,
+              "a click on the sidebar divider cannot begin dragging while its scrollbar is visible")
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        check(!bothSidebarDivider.effectiveDividerRects.isEmpty, "sidebar resizing resumes after the scroller fades")
+
+        // A chosen editor/PDF ratio must survive window resizes instead of drifting
+        // when AppKit hands new width to both panes equally.
+        both.restoreLayout(sidebarWidth: 248, editorFraction: 0.62)
+        settle()
+        check(abs(both.content.editorFraction - 0.62) < 0.01, "restored content ratio is applied")
+        window.setContentSize(NSSize(width: 1100, height: 800))
+        settle()
+        check(abs(both.content.editorFraction - 0.62) < 0.02, "content ratio survives shrinking the window")
+        window.setContentSize(NSSize(width: 1440, height: 800))
+        settle()
+        check(abs(both.content.editorFraction - 0.62) < 0.02, "content ratio survives growing the window")
+
+        // A project opened from the launcher creates its split before the workspace
+        // window reaches its editing size; the stored ratio must still win.
+        let reopened = WorkspaceSplitController(sidebar: pane(), topBar: pane(), editor: pane(NSTextView()), preview: pane(PDFView()), topBarHeight: 46)
+        let reopenedWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700),
+                                      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        reopenedWindow.contentViewController = reopened
+        reopenedWindow.setFrameOrigin(NSPoint(x: -20000, y: -10000))
+        reopenedWindow.orderFront(nil)
+        reopened.restoreLayout(sidebarWidth: 248, editorFraction: 0.35)
+        reopenedWindow.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        reopenedWindow.contentView?.layoutSubtreeIfNeeded()
+        reopenedWindow.setContentSize(NSSize(width: 1280, height: 800))
+        reopenedWindow.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        reopenedWindow.contentView?.layoutSubtreeIfNeeded()
+        check(abs(reopened.content.editorFraction - 0.35) < 0.02,
+              "reopened workspace keeps its stored ratio after the window grows to editing size")
+        reopenedWindow.close()
+
         print("PASS: \(checks) workspace-layout assertions")
     }
 }

@@ -22,7 +22,6 @@ struct WorkspaceSession: Codable {
     var paneMode: Int
     var expandedNodes: [String]
     var sidebarWidth: Double
-    var editorFraction: Double
     var pdf: PDFReadingState?
     var pdfIsOutdated: Bool? = nil
     var sourceDirectoryPath: String? = nil
