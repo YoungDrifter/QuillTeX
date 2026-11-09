@@ -23,7 +23,7 @@ struct PreviewPlaceholder: View {
                     .accessibilityHidden(true)
                 VStack(spacing: 7) {
                     Text("Ready When You Are").font(.system(size: 14, weight: .regular, design: .serif)).foregroundStyle(.secondary)
-                    Text("Press ⌘T to typeset the main file").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Text("Press ⌘T to typeset the document").font(.system(size: 11)).foregroundStyle(.tertiary)
                 }
                 Spacer()
             }.frame(maxWidth: .infinity, maxHeight: .infinity)

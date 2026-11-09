@@ -17,7 +17,7 @@ private struct ObservedTitlebar: View {
             bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")))
         store.paneMode = .editor
         let root = NSHostingView(rootView: ObservedTitlebar(store: store))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 54),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: ChromeMetrics.topBarHeight),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = root
         window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -35,7 +35,7 @@ private struct ObservedTitlebar: View {
             root.cacheDisplay(in: root.bounds, to: bitmap)
             let scale = CGFloat(bitmap.pixelsWide) / root.bounds.width
             // Scan the pill's lower edge, below the glyphs, in the pane controls.
-            let y = Int(40 * scale)
+            let y = Int((ChromeMetrics.topBarHeight / 2 + 9) * scale)
             var best = (start: 0, length: 0), start = 0
             for x in Int((root.bounds.width - 290) * scale)..<Int((root.bounds.width - 100) * scale) {
                 let color = bitmap.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
@@ -75,13 +75,13 @@ private struct ObservedTitlebar: View {
         let returned = switchTo(.editor)
         check(abs(returned.center-editor.center) < 1, "selection slides back to the first pane")
         let plugin = PluginManager.shared
-        let previousEnabled = plugin.isEnabled(PluginManager.subfilesID)
+        let previousEnabled = plugin.isEnabled(PluginManager.texProjectID)
         let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
         defer {
-            plugin.setEnabled(previousEnabled, for: PluginManager.subfilesID)
+            plugin.setEnabled(previousEnabled, for: PluginManager.texProjectID)
             if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
         }
-        plugin.setEnabled(true, for: PluginManager.subfilesID)
+        plugin.setEnabled(true, for: PluginManager.texProjectID)
         store.sidebarMode = .structure
         let sidebar = NSHostingView(rootView: SidebarModePicker(store: store)
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.sidebarTop))
@@ -108,7 +108,7 @@ private struct ObservedTitlebar: View {
         }
         settle(0.3)
         let four = sidebarSelection()
-        plugin.setEnabled(false, for: PluginManager.subfilesID); settle(0.3)
+        plugin.setEnabled(false, for: PluginManager.texProjectID); settle(0.3)
         let three = sidebarSelection()
         check(three.center - four.center > 20, "three sidebar modes recenter inside a shorter capsule: four \(four), three \(three)")
         check(abs(three.width - four.width) < 2, "removing a mode preserves each remaining target width")
@@ -119,7 +119,7 @@ private struct ObservedTitlebar: View {
         check(abs(middle.center - 120) < 2, "the middle of three sidebar modes stays centered")
         check(abs((middle.center - three.center) - (last.center - middle.center)) < 2,
               "three sidebar controls keep equal spacing")
-        plugin.setEnabled(true, for: PluginManager.subfilesID); settle(0.3)
+        plugin.setEnabled(true, for: PluginManager.texProjectID); settle(0.3)
         check(store.sidebarMode == .result && sidebarSelection().center > last.center + 20,
               "restoring a fourth mode expands the capsule and preserves selection")
         sidebarWindow.setContentSize(NSSize(width: 180, height: 64)); settle(0.3)

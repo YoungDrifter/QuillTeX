@@ -28,6 +28,12 @@ if name=='xcodebuild':
         out.mkdir(parents=True)
         with (out/'Info.plist').open('wb') as f:
             plistlib.dump({'CFBundleShortVersionString':'1.2.0' if fail=='version' else '1.1.0'},f)
+        if fail != 'executable':
+            macos = out/'MacOS'
+            macos.mkdir()
+            executable = macos/app
+            executable.write_bytes(b'fixture executable')
+            executable.chmod(0o755)
 elif name=='codesign':
     if fail=='sign':sys.exit(1)
 elif name=='hdiutil':
@@ -103,5 +109,5 @@ def run_case(failure):
 
 
 if __name__ == '__main__':
-    for case in ['', 'existing', 'build', 'version', 'sign', 'create', 'verify', 'attach', 'appcast', 'concurrent']:
+    for case in ['', 'existing', 'build', 'version', 'sign', 'executable', 'create', 'verify', 'attach', 'appcast', 'concurrent']:
         run_case(case)

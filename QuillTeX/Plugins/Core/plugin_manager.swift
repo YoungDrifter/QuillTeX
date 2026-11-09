@@ -28,17 +28,17 @@ final class PluginManager: ObservableObject {
     // Register shipped extensions here. Core document features stay outside this list.
     static let completionID = "completion"
     static let settingsChanged = Notification.Name("QuillTeX.pluginSettingsChanged")
-    static let subfilesID = "subfiles"
-    static let subfilesChanged = Notification.Name("QuillTeX.subfilesChanged")
+    /// Keep the persisted identifier so existing users retain their enabled state.
+    static let texProjectID = "subfiles"
+    static let texProjectChanged = Notification.Name("QuillTeX.texProjectChanged")
     static let shared = PluginManager(plugins: [
-        AppPlugin(id: subfilesID, name: "Subfiles", summary: "Browse and arrange included TeX files.",
+        AppPlugin(id: texProjectID, name: "TeX Project", summary: "Organize the main file and its related TeX sources.",
                   symbol: "doc.on.doc", defaultEnabled: true,
-                  options: [PluginOption(id: "extensions", title: "Show file extensions", defaultValue: false, explanation: "Show the .tex suffix in the Subfiles list."),
-                            PluginOption(id: "unlinked", title: "Show files not in the main file", explanation: "Include the Not in Main File group without changing file references.")],
-                  introduction: "Subfiles brings the TeX files of a multi-file project into one sidebar. In Main File follows the order of input and include references; Not in Main File shows other TeX files available in the project.",
-                  usage: "Click a file to edit it. Drag an existing reference to reorder it, or drag another TeX file between references or into the main source to insert it. These actions update the main document and can be undone. Disabling Subfiles removes its sidebar entry and cancels drag previews without deleting files or references.",
-                  activate: { NotificationCenter.default.post(name: subfilesChanged, object: true) },
-                  deactivate: { NotificationCenter.default.post(name: subfilesChanged, object: false) }),
+                  options: [PluginOption(id: "extensions", title: "Show file extensions", defaultValue: false, explanation: "Show the .tex suffix in the TeX sidebar.")],
+                  introduction: "TeX Project groups the current project into Main, Sub and Others. Sub files declare the Main file with a TeX root comment; Others have no relationship with the current Main file.",
+                  usage: "Click a file to edit it. Drag a file to Main to make it the project entry, to Sub to add or update its TeX root comment, or to Others to remove that comment. Disabling TeX Project removes main-file management: an opened TeX file becomes the compile target unless its own root comment points to another file.",
+                  activate: { NotificationCenter.default.post(name: texProjectChanged, object: true) },
+                  deactivate: { NotificationCenter.default.post(name: texProjectChanged, object: false) }),
         AppPlugin(id: completionID, name: "Completion", summary: "Complete LaTeX commands, environments and references.",
                   symbol: "text.cursor", defaultEnabled: true,
                   options: [PluginOption(id: "automatic", title: "Automatic inline hints", explanation: "Show gray suggestions as you type; turning this off keeps the manual candidate list available."),

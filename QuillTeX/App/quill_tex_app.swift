@@ -5,9 +5,8 @@ import AppKit
 struct QuillTeXApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     init() {
-        // QuillTeX draws its own file tabs in the top bar, so AppKit's window tab bar
-        // is meaningless here: this also removes "Show Tab Bar" / "Show All Tabs" from
-        // the View menu, which do nothing for this window.
+        // Each window owns one writing workspace, so system window tabbing is not part
+        // of the document workflow and its automatic View-menu commands stay hidden.
         NSWindow.allowsAutomaticWindowTabbing = false
         _ = PluginManager.shared
         AppUpdater.shared.start()
@@ -74,12 +73,9 @@ struct ProjectCommands: Commands {
         CommandGroup(replacing: .saveItem) {
             Button("Save") { store?.saveActive() }.keyboardShortcut("s").disabled(store?.activeDocument == nil)
             Button("Save All") { store?.saveAllFromCommand() }.keyboardShortcut("s", modifiers: [.command, .option]).disabled(store?.root == nil)
-            Button("Close Current Subfile") {
-                if let document = store?.activeDocument { store?.close(document) }
-            }.keyboardShortcut("w", modifiers: [.command, .shift]).disabled(store?.activeDocument == nil || store?.activeDocument?.url == store?.root)
         }
         CommandMenu("Compile") {
-            Button("Compile Main File") { store?.buildNow() }
+            Button("Compile Document") { store?.buildNow() }
                 .keyboardShortcut("t")
                 .disabled(store?.root == nil)
             Button("Compile Settings…") { store?.showBuildSettings = true }
@@ -89,8 +85,6 @@ struct ProjectCommands: Commands {
         CommandMenu("Navigate") {
             Button("Back") { store?.moveHistory(-1) }.keyboardShortcut("[", modifiers: [.command]).disabled(store?.canGoBack != true)
             Button("Forward") { store?.moveHistory(1) }.keyboardShortcut("]", modifiers: [.command]).disabled(store?.canGoForward != true)
-            Button("Open File in Project…") { store?.showFilePicker = true }.keyboardShortcut("p").disabled(store?.root == nil)
-            Divider()
             Button("Previous Problem") { store?.navigateDiagnostic(-1) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .control])
                 .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
@@ -100,8 +94,6 @@ struct ProjectCommands: Commands {
         }
         CommandGroup(after: .sidebar) {
             Button("Show or Hide Sidebar") { store?.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
-            Toggle("Show Tab Bar", isOn: Binding(get: { store?.isTabBarVisible ?? false }, set: { store?.setTabBarVisible($0) }))
-                .disabled(store?.root == nil)
             Button("Editor Only") { store?.paneMode = .editor }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Editor and PDF") { store?.showEditorAndPDF() }.keyboardShortcut("2", modifiers: [.command, .option])
             Button("PDF Only") { store?.paneMode = .preview }.keyboardShortcut("3", modifiers: [.command, .option])

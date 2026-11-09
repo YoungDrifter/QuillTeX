@@ -36,7 +36,16 @@ final class ProjectIndexCache: @unchecked Sendable {
     private var citations: [URL: (text: String, keys: [String])] = [:]
     private var cachedInventory: Inventory?
     private var analysisScans = 0
+    /// A long editing session touches many files; keep the caches useful but
+    /// bounded. Re-reading or re-analysing an evicted file is cheap.
+    private static let maximumCachedFiles = 512
     var scanCount: Int { lock.lock(); defer { lock.unlock() }; return analysisScans }
+
+    private func trim<T>(_ cache: inout [URL: T]) {
+        while cache.count > Self.maximumCachedFiles, let key = cache.keys.first {
+            cache.removeValue(forKey: key)
+        }
+    }
     func text(at url: URL) throws -> String {
         let url = url.standardizedFileURL
         let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
@@ -45,21 +54,21 @@ final class ProjectIndexCache: @unchecked Sendable {
         lock.unlock()
         if let previous, previous.modified == values.contentModificationDate, previous.size == values.fileSize { return previous.text }
         let text = try String(contentsOf: url, encoding: .utf8)
-        lock.lock(); disk[url] = DiskText(modified: values.contentModificationDate, size: values.fileSize, text: text); lock.unlock()
+        lock.lock(); disk[url] = DiskText(modified: values.contentModificationDate, size: values.fileSize, text: text); trim(&disk); lock.unlock()
         return text
     }
     func analysis(text: String, file: URL) -> Analysis {
         lock.lock(); let previous = analyses[file]; lock.unlock()
         if let previous, previous.text == text { return previous }
         let result = Analysis(text: text, file: file)
-        lock.lock(); analyses[file] = result; analysisScans += 1; lock.unlock()
+        lock.lock(); analyses[file] = result; analysisScans += 1; trim(&analyses); lock.unlock()
         return result
     }
     func citationKeys(text: String, file: URL) -> [String] {
         lock.lock(); let previous = citations[file]; lock.unlock()
         if let previous, previous.text == text { return previous.keys }
         let keys = ProjectIndexer.citationKeys(in: text)
-        lock.lock(); citations[file] = (text, keys); lock.unlock()
+        lock.lock(); citations[file] = (text, keys); trim(&citations); lock.unlock()
         return keys
     }
     func inventory(for directory: URL) -> Inventory? {

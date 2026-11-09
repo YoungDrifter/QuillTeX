@@ -76,6 +76,9 @@ struct PDFPreview: NSViewRepresentable {
     var highlight: PDFHighlight?
     var readingState: PDFReadingState? = nil
     var onReadingStateChanged: ((PDFReadingState) -> Void)? = nil
+    /// Space reserved above the page for the floating pane header. It keeps the
+    /// page top from sitting under the capsules.
+    var topContentInset: CGFloat = 0
     var onCommandClick: (Int, CGPoint) -> Void
 
     func makeNSView(context: Context) -> SyncPDFView {
@@ -83,6 +86,7 @@ struct PDFPreview: NSViewRepresentable {
         view.autoScales = false
         view.scaleFactor = 1
         view.displayMode = .singlePageContinuous
+        view.topContentInset = topContentInset
         view.displayDirection = .vertical
         view.displaysPageBreaks = true
         view.pageBreakMargins = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
@@ -98,6 +102,7 @@ struct PDFPreview: NSViewRepresentable {
 
     func updateNSView(_ view: SyncPDFView, context: Context) {
         controls.attach(view)
+        view.topContentInset = topContentInset
         view.onCommandClick = onCommandClick
         view.onReadingStateChanged = onReadingStateChanged
         if let pdfURL { context.coordinator.load(pdfURL, into: view, version: version, readingState: readingState) }
@@ -156,6 +161,14 @@ struct PDFPreview: NSViewRepresentable {
 final class SyncPDFView: PDFView {
     var onCommandClick: ((Int, CGPoint) -> Void)?
     var onReadingStateChanged: ((PDFReadingState) -> Void)?
+    /// Scrollable space before the first page, beneath the floating header.
+    /// Once scrolled away, page content can fill the space between the controls.
+    var topContentInset: CGFloat = 0 {
+        didSet {
+            guard topContentInset != oldValue else { return }
+            configureHorizontalScrolling()
+        }
+    }
     typealias ZoomMode = PDFZoomMode
     var zoomMode = ZoomMode.width
     private weak var observedClip: NSClipView?
@@ -310,6 +323,16 @@ final class SyncPDFView: PDFView {
     private func configureHorizontalScrolling() {
         guard let scroll = documentView?.enclosingScrollView else { return }
         if zoomMode != .manual { scroll.scrollerStyle = .overlay }
+        // The inset band must match the page/pane, not the window material.
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: topContentInset, left: 0, bottom: 0, right: 0)
+        // Content insets also pull the vertical scroller down with the content.
+        // Negative scroller insets cancel that, so the track still starts at the
+        // pane's top edge while the page itself starts below the floating header.
+        scroll.scrollerInsets = NSEdgeInsets(top: -topContentInset, left: 0, bottom: 0, right: 0)
+        scroll.verticalScrollElasticity = .allowed
         scroll.horizontalScrollElasticity = zoomMode == .manual ? .automatic : .none
         scroll.hasHorizontalScroller = zoomMode == .manual
         let clip = scroll.contentView
@@ -388,6 +411,17 @@ final class SyncPDFView: PDFView {
         configureHorizontalScrolling()
         layoutDocumentView()
         go(to: PDFDestination(page: page, at: point))
+        // PDFKit aligns destinations below contentInsets, but reading states
+        // describe the actual viewport top. Remove that offset in clip coordinates
+        // so rebuilding/restoring does not move the reader by the header height.
+        if topContentInset > 0, let scroll = documentView?.enclosingScrollView {
+            let clip = scroll.contentView
+            let target = clip.convert(convert(point, from: page), from: self)
+            let viewportTop = clip.convert(NSPoint(x: bounds.minX, y: bounds.maxY), from: self)
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x,
+                                    y: clip.bounds.origin.y + target.y - viewportTop.y))
+            scroll.reflectScrolledClipView(clip)
+        }
         scheduleReadingStateReport()
     }
 
@@ -438,7 +472,10 @@ final class SyncPDFView: PDFView {
     func scheduleReadingStateReport() {
         readingStateReport?.cancel()
         let report = DispatchWorkItem { [weak self] in
-            guard let self, let state = self.readerPosition(), state != self.lastReportedState else { return }
+            // A collapsed pane leaves the window; its temporary clip bounds would
+            // otherwise overwrite the reading position with a default top state.
+            guard let self, self.window != nil,
+                  let state = self.readerPosition(), state != self.lastReportedState else { return }
             self.lastReportedState = state
             self.onReadingStateChanged?(state)
         }
@@ -526,49 +563,54 @@ struct PreviewPane: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Label("PDF", systemImage: "doc.richtext")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
-                    .fixedSize()
-                Text(build.lastSummary).font(.system(size: 11)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .help(build.lastSummary)
-                HStack(spacing: 0) {
-                    zoomInput
-                    zoomDivider
-                    zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
-                    zoomDivider
-                    zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
-                }
-                .padding(.horizontal, 2)
-                .frame(height: ChromeMetrics.previewControlHeight)
-                .modifier(PreviewControlSurface(focused: zoomFocused))
-                .fixedSize().disabled(build.pdfURL == nil)
-                .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
-            }
-            .padding(.horizontal, 12).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.previewHeader)
-            Divider()
-            if let message = store.syncStatusMessage {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "info.circle")
-                    Text(message).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 18).padding(.vertical, 7)
-                .background(Palette.subtleSurface)
-                Divider()
-            }
+        ZStack(alignment: .top) {
             ZStack {
                 PDFPreview(pdfURL: build.pdfURL, version: build.pdfVersion, controls: controls, highlight: build.highlight,
-                           readingState: store.pdfReadingState, onReadingStateChanged: store.updatePDFReadingState) { page, point in
+                           readingState: store.pdfReadingState, onReadingStateChanged: store.updatePDFReadingState,
+                           topContentInset: ChromeMetrics.paneHeaderHeight) { page, point in
                     store.syncPDFToSource(page: page, point: point)
                 }
                 // The empty state sits on top while there is nothing to show, so the
                 // AppKit view below is never inserted or removed.
                 if build.pdfURL == nil {
                     PreviewPlaceholder().background(Palette.previewCanvas)
+                }
+            }
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Label("PDF", systemImage: "doc.richtext")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
+                        .fixedSize()
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .quillFloatingCapsule()
+                    Spacer(minLength: 10)
+                    HStack(spacing: 0) {
+                        zoomInput
+                        zoomDivider
+                        zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
+                        zoomDivider
+                        zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
+                    }
+                    .padding(.horizontal, 2)
+                    .frame(height: ChromeMetrics.previewControlHeight)
+                    .modifier(PreviewControlSurface(focused: zoomFocused))
+                    .fixedSize().disabled(build.pdfURL == nil)
+                    .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
+                }
+                .quillPaneRow()
+                if let message = store.syncStatusMessage {
+                    HStack(alignment: .center, spacing: 6) {
+                        Image(systemName: "info.circle")
+                        Text(message).lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
+                    .frame(height: ChromeMetrics.syncBannerHeight)
+                    .background(Palette.subtleSurface)
+                    .help(message)
+                    Divider()
                 }
             }
         }
@@ -580,7 +622,6 @@ struct PreviewPane: View {
 /// One capsule contains all PDF zoom controls.
 private struct PreviewControlSurface: ViewModifier {
     var focused = false
-    var pressed = false
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
@@ -589,18 +630,17 @@ private struct PreviewControlSurface: ViewModifier {
         content
             .background {
                 Capsule().fill(LinearGradient(
-                    colors: [pressed ? Palette.subtleSurface : .white,
-                             focused ? .white : Palette.subtleSurface],
+                    colors: [.white, focused ? .white : Palette.subtleSurface],
                     startPoint: .top, endPoint: .bottom))
+                    .shadow(color: .black.opacity(0.08), radius: 5, x: 0, y: 2)
             }
             .overlay {
-                Capsule().strokeBorder(Palette.primaryInk.opacity(focused ? 0.6 : (hovered || pressed ? 0.34 : 0.22)),
+                Capsule().strokeBorder(Palette.primaryInk.opacity(focused ? 0.6 : (hovered ? 0.34 : 0.22)),
                     lineWidth: focused ? 1.2 : 0.8).allowsHitTesting(false)
             }
             .opacity(isEnabled ? 1 : 0.4)
             .onHover { hovered = $0 && isEnabled }
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: hovered)
             .animation(reduceMotion ? nil : ChromeMotion.feedback, value: focused)
-            .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
     }
 }

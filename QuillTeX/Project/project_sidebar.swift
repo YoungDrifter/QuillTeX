@@ -6,7 +6,8 @@ struct ProjectSidebar: View {
     @State private var nameBounds: CGRect?
     var body: some View {
         VStack(spacing: 0) {
-            SidebarModePicker(store: store).padding(.top, 12).padding(.bottom, 12)
+            SidebarNavigationHeader(store: store)
+            SidebarModePicker(store: store).padding(.top, 6).padding(.bottom, 12)
             if store.sidebarMode != .result {
                 HStack {
                     Text(store.sidebarMode.rawValue).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -29,11 +30,11 @@ struct ProjectSidebar: View {
             if store.needsFolderAccess { accessNotice }
             ZStack {
                 tree(store.index.structure, mode: .structure)
-                if store.subfilesEnabled {
-                SubfilesList(store: store)
-                    .opacity(store.sidebarMode == .subfiles ? 1 : 0)
-                    .allowsHitTesting(store.sidebarMode == .subfiles)
-                    .accessibilityHidden(store.sidebarMode != .subfiles)
+                if store.texProjectEnabled {
+                TeXProjectList(store: store)
+                    .opacity(store.sidebarMode == .tex ? 1 : 0)
+                    .allowsHitTesting(store.sidebarMode == .tex)
+                    .accessibilityHidden(store.sidebarMode != .tex)
                 }
                 tree(store.index.folders, mode: .folder)
                 ResultPanel(store: store)
@@ -43,7 +44,7 @@ struct ProjectSidebar: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
 
         }
-        .background(LinearGradient(colors: [Palette.sidebarTop, Palette.sidebarBottom], startPoint: .topLeading, endPoint: .bottomTrailing))
+        .background(SidebarBackdrop())
         .onChange(of: store.sidebarMode) { _, mode in
             if mode != .folder && !store.commitSidebarNameEdit() { store.sidebarMode = .folder }
         }
@@ -73,7 +74,7 @@ struct ProjectSidebar: View {
                 if store.root == nil {
                     Text("Open a project to browse its navigation").font(.system(size: 12)).foregroundStyle(.tertiary).padding(16)
                 } else if nodes.isEmpty {
-                    Text(mode == .subfiles ? "No included subfiles" : "Nothing here yet")
+                    Text(mode == .tex ? "No TeX files" : "Nothing here yet")
                         .font(.system(size: 12)).foregroundStyle(.tertiary).padding(16)
                 } else {
                     ForEach(nodes) { node in OutlineRow(node: node, depth: 0, mode: mode, store: store).id(node.id) }
@@ -95,6 +96,24 @@ struct ProjectSidebar: View {
         }
         .opacity(store.sidebarMode == mode ? 1 : 0)
         .allowsHitTesting(store.sidebarMode == mode).accessibilityHidden(store.sidebarMode != mode)
+    }
+}
+
+private struct SidebarNavigationHeader: View {
+    @ObservedObject var store: ProjectStore
+    var body: some View {
+        HStack(spacing: ChromeMetrics.chromeSpacing) {
+            Color.clear.frame(width: store.isFullScreen ? ChromeMetrics.controlsInsetFullScreen : ChromeMetrics.controlsInset)
+            ChromeButton(icon: "sidebar.left", label: "Hide Sidebar") { store.sidebarVisible = false }
+            Spacer(minLength: 0)
+            ChromeButton(icon: "chevron.left", label: "Back") { store.moveHistory(-1) }
+                .disabled(!store.canGoBack)
+            ChromeButton(icon: "chevron.right", label: "Forward") { store.moveHistory(1) }
+                .disabled(!store.canGoForward)
+        }
+        .padding(.trailing, 8)
+        .frame(height: ChromeMetrics.topBarHeight)
+        .contentShape(Rectangle())
     }
 }
 
@@ -448,7 +467,7 @@ private final class SidebarSecondaryClickView: NSView {
 struct SidebarModePicker: View {
     @ObservedObject var store: ProjectStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var modes: [SidebarMode] { SidebarMode.allCases.filter { $0 != .subfiles || store.subfilesEnabled } }
+    private var modes: [SidebarMode] { SidebarMode.allCases.filter { $0 != .tex || store.texProjectEnabled } }
     private var maximumWidth: CGFloat {
         CGFloat(modes.count) * ChromeMetrics.sidebarModeSlotWidth
             + CGFloat(max(0, modes.count - 1)) * ChromeMetrics.chromeSpacing + 6

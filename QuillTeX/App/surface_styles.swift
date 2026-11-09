@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Shared feedback for list rows and compact controls outside the titlebar.
 struct QuillRowButtonStyle: ButtonStyle {
@@ -200,4 +201,40 @@ private struct QuillBranchLayout: Layout {
         child.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(size))
     }
 
+}
+
+/// Blurred behind-window material for the workspace sidebar and launcher left
+/// column. The veil keeps the background as a soft tint; the material's own blur
+/// prevents the desktop text from becoming readable.
+struct SidebarBackdrop: View {
+    var opaque = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var body: some View {
+        if opaque || reduceTransparency {
+            Palette.sidebarSurface
+        } else {
+            ZStack {
+                VisualEffectBackdrop()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Palette.sidebarVeil
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct VisualEffectBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = false
+        return view
+    }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .active
+    }
 }

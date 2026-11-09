@@ -23,24 +23,8 @@ struct WorkspaceSessionTests {
         }
         let original = ProjectStore(library: library, maintainsRootDirectives: false)
         original.openProject(root, explicitRoot: true)
-        original.setTabBarVisible(false)
         original.openSource(child)
-        check(original.isTabBarVisible, "opening a new tab reveals a manually hidden tab bar")
         original.openSource(missing)
-        original.setTabBarVisible(false)
-        original.activate(original.documents.first { $0.url == child }!)
-        check(original.isTabBarVisible, "switching existing tabs reveals a manually hidden tab bar")
-        original.activate(original.documents.first { $0.url == missing }!)
-        let childID = original.documents.first { $0.url == child }!.id
-        let mainID = original.documents.first!.id
-        original.moveTab(childID, to: 2)
-        check(original.documents.map(\.url) == [root, missing, child], "subfiles move across the tab strip")
-        original.moveTab(mainID, to: 2)
-        check(original.documents.first!.url == root, "the main tab cannot be moved")
-        original.moveTab(childID, to: 0)
-        check(original.documents.map(\.url) == [root, child, missing], "subfiles cannot move before the pinned main tab")
-        original.moveTab(childID, to: 2)
-        check(original.activeDocument?.url == missing, "dragging preserves the active document")
         let deleted = original.activeDocument!
         deleted.text += " unsaved"
         original.activate(original.documents.first { $0.url == child }!)
@@ -51,7 +35,6 @@ struct WorkspaceSessionTests {
         original.sidebarVisible = false
         original.sidebarMode = .folder
         original.paneMode = .editor
-        original.setTabBarVisible(false)
         original.expandedNodes = ["contents", "folder:example"]
         original.sidebarWidth = 315
         original.editorFraction = 0.64
@@ -62,7 +45,7 @@ struct WorkspaceSessionTests {
         try FileManager.default.removeItem(at: missing)
         let recovered = ProjectStore(library: library, maintainsRootDirectives: false)
         recovered.openProject(root, explicitRoot: true)
-        check(recovered.documents.map(\.url) == [root, missing, child], "restore ordered tabs and recover a deleted dirty file")
+        check(recovered.documents.map(\.url) == [root, child, missing], "restore opened documents and recover a deleted dirty file")
         check(recovered.activeDocument?.url == child, "restore active file")
         check(recovered.activeDocument?.text == draft.text, "recover unsaved Unicode draft")
         check(recovered.activeDocument?.isDirty == true, "recovery does not pretend the draft was saved")
@@ -73,7 +56,7 @@ struct WorkspaceSessionTests {
         check(recovered.activeDocument?.selection == draft.selection, "restore complete selection")
         check(recovered.activeDocument?.scrollOrigin.y == 350, "restore editor scroll position")
         check(!recovered.sidebarVisible && recovered.sidebarMode == .folder && recovered.paneMode == .editor, "restore pane modes")
-        check(!recovered.isTabBarVisible && recovered.expandedNodes == original.expandedNodes, "restore tabs visibility and expanded branches")
+        check(recovered.expandedNodes == original.expandedNodes, "restore expanded branches")
         check(recovered.sidebarWidth == 315 && recovered.editorFraction == 0.64, "restore independent divider positions")
         check(recovered.pdfReadingState == original.pdfReadingState, "restore PDF position and manual zoom")
         check(recovered.recoveryMessage != nil, "make recovered edits visible")

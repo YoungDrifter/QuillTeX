@@ -12,8 +12,7 @@ struct WorkspaceLayoutTests {
             controller.view = view
             return controller
         }
-        let tabs = pane()
-        let controller = WorkspaceSplitController(sidebar: pane(), editor: pane(NSTextView()), preview: pane(PDFView()), tabBar: tabs)
+        let controller = WorkspaceSplitController(sidebar: pane(), topBar: pane(), editor: pane(NSTextView()), preview: pane(PDFView()), topBarHeight: 46)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentViewController = controller
@@ -42,7 +41,7 @@ struct WorkspaceLayoutTests {
         check(abs(grab.width - 25) < 1, "sidebar resize cursor is limited to the divider")
         check(!grab.contains(CGPoint(x: 100, y: 100)), "sidebar content is outside divider hover area")
         let sidebar = sidebarWidth()
-        check(abs(sidebar - 240) < 1, "initial sidebar width")
+        check(abs(sidebar - 248) < 1, "initial sidebar width")
         controller.content.splitView.setPosition(350, ofDividerAt: 0)
         settle()
         check(abs(sidebarWidth() - sidebar) < 1, "editor/PDF resizing keeps sidebar width")
@@ -77,16 +76,6 @@ struct WorkspaceLayoutTests {
         controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 3)
         settle()
         check(abs(sidebarWidth() - 310) < 1, "hiding and showing restores custom sidebar width")
-        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 4, showTabs: true)
-        settle()
-        let widthBeforeTabs = sidebarWidth()
-        check(abs(tabs.view.frame.height - 32) < 1, "tab row is 32 points high")
-        let tabOrigin = controller.splitView.convert(tabs.view.bounds.origin, from: tabs.view)
-        check(abs(tabOrigin.x - sidebarWidth() - controller.splitView.dividerThickness) < 1, "tabs start at content edge, outside sidebar")
-        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 4, showTabs: false)
-        settle()
-        check(tabs.view.isHidden && tabs.view.frame.height < 1, "single tab hides row without taking space")
-        check(abs(sidebarWidth() - widthBeforeTabs) < 1, "tab row visibility preserves sidebar width")
         func verifyCursorRegion(_ split: WorkspaceDividerView) {
             guard let divider = split.effectiveDividerRects.first else { fatalError("missing divider") }
             check(abs(divider.rect.width - 25) < 1, "cursor and drag region have the same 25 point width")
@@ -144,6 +133,16 @@ struct WorkspaceLayoutTests {
         settle()
         check(reported != nil && abs(reported!.0 - 315) < 1, "divider changes report layout without changing sidebar width")
         check(abs(reported!.1 - controller.content.editorFraction) < 0.01, "divider changes report the actual content fraction")
+        var reportedVisibility: Bool?
+        controller.onSidebarVisibilityChange = { reportedVisibility = $0 }
+        controller.splitView.setPosition(0, ofDividerAt: 0)
+        settle()
+        check(controller.splitViewItems[0].isCollapsed, "dragging the divider fully left collapses the sidebar")
+        check(reportedVisibility == false, "a dragged collapse reports hidden visibility to the store")
+        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 5)
+        settle()
+        check(!controller.splitViewItems[0].isCollapsed, "the sidebar toggle reopens a dragged-closed sidebar")
+        check(abs(sidebarWidth() - 315) < 1, "reopening after a dragged collapse restores the previous width")
         print("PASS: \(checks) workspace-layout assertions")
     }
 }

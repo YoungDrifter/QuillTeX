@@ -297,6 +297,43 @@ final class ChromeHostingView<Content: View>: NSHostingView<Content> {
 }
 
 private final class ChromeBlankDragView: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
+    // The custom top bar replaces the real titlebar, so AppKit's titlebar
+    // double-click handling never sees these clicks. Handle the drag and the
+    // system double-click action explicitly instead.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount == 2 {
+            Self.performTitlebarDoubleClick(on: window)
+        } else {
+            // performWindowDrag(with:) is public AppKit API but is not exposed to
+            // Swift by the SDK's generated interface; the Objective-C selector is
+            // stable and lets the Window Server own the drag (spaces, snapping).
+            let selector = NSSelectorFromString("performWindowDragWithEvent:")
+            if window.responds(to: selector) { _ = window.perform(selector, with: event) }
+        }
+    }
+
+    private static func performTitlebarDoubleClick(on window: NSWindow) {
+        // Same preference the native titlebar reads: Maximize = zoom to the
+        // window's standard frame, Minimize = dock, None = do nothing.
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize" {
+        case "Minimize": window.miniaturize(nil)
+        case "None": break
+        default: window.performZoom(nil)
+        }
+    }
+}
+
+/// Hosts a chrome row flush with the window's content top. The window keeps its
+/// titlebar area as a safe-area inset, which otherwise pushes the sidebar and the
+/// content top bar down by the titlebar height.
+@MainActor
+func chromeHostingController<Content: View>(_ rootView: Content) -> NSHostingController<Content> {
+    let controller = NSHostingController(rootView: rootView)
+    (controller.view as? NSHostingView<Content>)?.safeAreaRegions = []
+    return controller
 }

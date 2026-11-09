@@ -26,25 +26,25 @@ struct BuildControls: View {
             Button { store.buildNow() } label: {
                 ZStack {
                     Image(systemName: "gearshape.fill")
-                        .font(.system(size: 17, weight: .regular))
+                        .font(.system(size: 15, weight: .regular))
                         .rotationEffect(.degrees(spinning ? 360 : 0))
                         .animation(spinning ? .linear(duration: 1.8).repeatForever(autoreverses: false) : .default, value: spinning)
                         .offset(x: -2.5, y: -2)
                     Image(systemName: "gearshape.fill")
-                        .font(.system(size: 11, weight: .regular))
+                        .font(.system(size: 10, weight: .regular))
                         .rotationEffect(.degrees(spinning ? -360 : 0))
                         .animation(spinning ? .linear(duration: 1.8).repeatForever(autoreverses: false) : .default, value: spinning)
                         .offset(x: 5, y: 4)
                 }
-                .frame(width: ChromeMetrics.controlHeight, height: ChromeMetrics.controlHeight)
+                .frame(width: ChromeMetrics.chromeControlHeight, height: ChromeMetrics.chromeControlHeight)
                 .contentShape(Circle())
             }
             .buttonStyle(ChromeButtonStyle())
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
             .disabled(store.root == nil)
-            .help(store.root == nil ? "Open a project to compile" : "Compile the main file (⌘T)")
-            .accessibilityLabel("Compile the main file")
+            .help(store.root == nil ? "Open a document to compile" : "Compile the document (⌘T)")
+            .accessibilityLabel("Compile the document")
 
             Button { toggleMode() } label: {
                 // Both modes read the same: the word itself says which one is active,

@@ -36,10 +36,10 @@ final class SourceDocument: ObservableObject, Identifiable {
 }
 
 enum SidebarMode: String, CaseIterable, Identifiable {
-    case structure = "Structure", subfiles = "Subfiles", folder = "Folder", result = "Result"
+    case structure = "Structure", tex = "TeX", folder = "Folder", result = "Result"
     var id: String { rawValue }
     var icon: String {
-        switch self { case .structure: "doc.text"; case .subfiles: "doc.on.doc"; case .folder: "folder"; case .result: "exclamationmark.triangle" }
+        switch self { case .structure: "doc.text"; case .tex: "doc.on.doc"; case .folder: "folder"; case .result: "exclamationmark.triangle" }
     }
 }
 enum PaneMode: Int, CaseIterable { case editor, split, preview }
@@ -66,7 +66,7 @@ final class ProjectStore: ObservableObject {
     private var maintainingRootDirectives = false
     private var pendingRootDirectives: Set<URL> = []
     var sourceDirectory: URL?
-    @Published var sidebarWidth: Double = 240
+    @Published var sidebarWidth: Double = 248
     @Published var editorFraction: Double = 0.5
     @Published var pdfReadingState: PDFReadingState?
     @Published var syncStatusMessage: String?
@@ -92,11 +92,10 @@ final class ProjectStore: ObservableObject {
             self?.observedPDFData = self?.build.pdfURL.flatMap { try? Data(contentsOf: $0) }
             self?.updateFileMonitoring()
         }.store(in: &buildObservers)
-        NotificationCenter.default.publisher(for: PluginManager.subfilesChanged).sink { [weak self] notification in
+        NotificationCenter.default.publisher(for: PluginManager.texProjectChanged).sink { [weak self] notification in
             guard let self else { return }
             if notification.object as? Bool == false {
-                self.clearSubfileInsertionPreview()
-                if self.sidebarMode == .subfiles { self.sidebarMode = .folder }
+                if self.sidebarMode == .tex { self.sidebarMode = .folder }
             }
             self.objectWillChange.send()
         }.store(in: &buildObservers)
@@ -111,22 +110,13 @@ final class ProjectStore: ObservableObject {
     @Published var showTemplateChooser = false
     @Published var root: URL? { didSet { updateFileMonitoring() } }
     @Published var documents: [SourceDocument] = [] { didSet { updateFileMonitoring() } }
-    @Published var activeID: UUID? {
-        didSet {
-            if activeID != oldValue, oldValue != nil, !restoringSession { tabBarVisibilityOverride = true }
-        }
-    }
+    @Published var activeID: UUID?
     @Published var index = ProjectIndex()
-    var subfilesEnabled: Bool { PluginManager.shared.isEnabled(PluginManager.subfilesID) }
+    var texProjectEnabled: Bool { PluginManager.shared.isEnabled(PluginManager.texProjectID) }
     @Published var sidebarMode: SidebarMode = .structure {
-        didSet { if sidebarMode == .subfiles && !subfilesEnabled { sidebarMode = .folder } }
+        didSet { if sidebarMode == .tex && !texProjectEnabled { sidebarMode = .folder } }
     }
     @Published var sidebarVisible = true
-    /// A manual choice belongs to this workspace; nil follows the file count.
-    @Published private var tabBarVisibilityOverride: Bool?
-    var isTabBarVisible: Bool { tabBarVisibilityOverride ?? (documents.count > 1) }
-    func setTabBarVisible(_ visible: Bool) { tabBarVisibilityOverride = visible }
-    func toggleTabBar() { setTabBarVisible(!isTabBarVisible) }
     @Published var paneMode: PaneMode = .split
     @Published private(set) var splitLayoutVersion = 0
     func showEditorAndPDF() {
@@ -158,7 +148,6 @@ final class ProjectStore: ObservableObject {
     /// macOS blocks reads in protected folders (Desktop, Documents, Downloads) unless
     /// the app holds a matching privacy grant. Ad-hoc builds lose it on every rebuild.
     @Published var needsFolderAccess = false
-    @Published var showFilePicker = false
     @Published var showBuildSettings = false
     @Published var history: [EditorLocation] = []
     @Published var historyPosition = -1
@@ -222,7 +211,7 @@ final class ProjectStore: ObservableObject {
                 draft: hasDraft ? document.text : nil, savedText: hasDraft ? document.savedText : nil,
                 diskText: hasDraft ? document.diskText : nil)
         }, activePath: activeDocument?.url.path, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
-            paneMode: paneMode.rawValue, tabBarVisible: tabBarVisibilityOverride, expandedNodes: Array(expandedNodes),
+            paneMode: paneMode.rawValue, expandedNodes: Array(expandedNodes),
             sidebarWidth: sidebarWidth, editorFraction: editorFraction, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated,
             sourceDirectoryPath: sourceDirectory?.path)
         let retiring = Array(retiredSessionRoots.filter { $0 != root })
@@ -271,11 +260,10 @@ final class ProjectStore: ObservableObject {
         documents = restored
         activeID = restored.first(where: { $0.url.path == state.activePath })?.id ?? restored.first?.id
         sidebarVisible = state.sidebarVisible
-        sidebarMode = SidebarMode(rawValue: state.sidebarMode) ?? .structure
+        sidebarMode = state.sidebarMode == "Subfiles" ? .tex : (SidebarMode(rawValue: state.sidebarMode) ?? .structure)
         paneMode = PaneMode(rawValue: state.paneMode) ?? .split
-        tabBarVisibilityOverride = state.tabBarVisible
         expandedNodes = Set(state.expandedNodes)
-        sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 240
+        sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 248
         editorFraction = state.editorFraction.isFinite ? min(0.85, max(0.15, state.editorFraction)) : 0.5
         pdfReadingState = state.pdf
         previewIsOutdated = state.pdfIsOutdated == true || restored.contains { $0.isDirty } || sourcesAreNewerThanPDF(restored.map(\.url))
@@ -561,7 +549,7 @@ final class ProjectStore: ObservableObject {
     }
 
     func maintainProjectRootDirectives(replacingExisting: Bool, additionalFiles: [URL] = []) {
-        guard maintainsRootDirectives, !maintainingRootDirectives, let root else { return }
+        guard maintainsRootDirectives, texProjectEnabled, !maintainingRootDirectives, let root else { return }
         maintainingRootDirectives = true
         defer { maintainingRootDirectives = false }
         var failed: [String] = []
@@ -832,6 +820,11 @@ final class ProjectStore: ObservableObject {
     func openSource(_ url: URL, offset: Int? = nil, recordHistory: Bool = true) {
         guard commitSidebarNameEdit() else { return }
         let url = url.standardizedFileURL
+        if !texProjectEnabled, recordHistory, url != root,
+           let resolution = try? Self.resolveMainFile(url), resolution.url != root {
+            openProject(url)
+            return
+        }
         do {
             if recordHistory { rememberCurrentLocation() }
             if activeDocument?.url != url {
@@ -862,19 +855,6 @@ final class ProjectStore: ObservableObject {
         }
     }
     func activate(_ doc: SourceDocument) { openSource(doc.url) }
-
-    /// Reorder buffers without activating them or disturbing their editor state.
-    /// The current main file remains pinned at index zero.
-    func moveTab(_ id: UUID, to proposedIndex: Int) {
-        guard let from = documents.firstIndex(where: { $0.id == id }),
-              documents[from].url != root, documents.count > 1 else { return }
-        let destination = min(documents.count - 1, max(1, proposedIndex))
-        guard from != destination else { return }
-        let document = documents.remove(at: from)
-        documents.insert(document, at: destination)
-        scheduleSessionSave()
-    }
-
 
     /// UTF-16 offset of the first character of a one-based line.
     static func offset(ofLine line: Int, in text: String) -> Int {

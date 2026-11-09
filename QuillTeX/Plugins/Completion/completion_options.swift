@@ -24,7 +24,7 @@ extension LaTeXCompletion.Context {
     }
 }
 
-// Pure inventory provider, called off the main thread and independent of Subfiles.
+// Pure inventory provider, called off the main thread and independent of TeX Project.
 enum CompletionPaths {
     static func candidates(root: URL?, images: Bool) -> [String] {
         guard let root else { return [] }

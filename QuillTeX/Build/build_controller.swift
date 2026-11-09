@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Darwin
 
 /// Runs one build for one project: a sequence of steps, at most one at a time, with a
 /// single follow-up request merged in while it works.
@@ -60,6 +61,11 @@ final class BuildController: ObservableObject {
     /// Retain a useful tail while bounding both the live output and SwiftUI text.
     static let maximumLogCharacters = 200_000
     private static let maximumStepBytes = 800_000
+    /// A step that never exits must not hold the build state forever. The timeout
+    /// terminates the step process; individual stuck steps can be cancelled early
+    /// from the Compile menu.
+    var stepTimeout: TimeInterval = 600
+    private var stepTimeoutWorkItem: DispatchWorkItem?
 
     private struct Active {
         var request: Request
@@ -112,6 +118,8 @@ final class BuildController: ObservableObject {
 
     /// Stops the run in flight and makes sure its result is discarded.
     func cancel() {
+        stepTimeoutWorkItem?.cancel()
+        stepTimeoutWorkItem = nil
         readStepOutput()
         generation += 1
         pendingRequest = nil
@@ -167,6 +175,8 @@ final class BuildController: ObservableObject {
     // MARK: - Steps
 
     private func startNextStep() {
+        stepTimeoutWorkItem?.cancel()
+        stepTimeoutWorkItem = nil
         guard let active else { return }
         guard active.index < active.steps.count else { finish(active); return }
         let step = active.steps[active.index]
@@ -216,6 +226,11 @@ final class BuildController: ObservableObject {
 
         do {
             try process.run()
+            if stepTimeout > 0 {
+                let timeout = DispatchWorkItem { [weak self] in self?.handleStepTimeout(token: token) }
+                stepTimeoutWorkItem = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + stepTimeout, execute: timeout)
+            }
             logPollingTask = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(150))
@@ -228,6 +243,27 @@ final class BuildController: ObservableObject {
             closeStepCapture()
             failCurrentStep(step, message: "Could not start \(launch.executable): \(error.localizedDescription)", alreadyAdvanced: true)
         }
+    }
+
+    /// Stops a step that exceeded `stepTimeout`. The termination handler is made
+    /// stale first, so it cannot publish a later success or start the next step.
+    private func handleStepTimeout(token: Int) {
+        guard token == generation, let active, let process, process.isRunning else { return }
+        readStepOutput()
+        generation += 1
+        process.terminate()
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        closeStepCapture()
+        self.process = nil
+        self.active = nil
+        pendingRequest = nil
+        let message = "Compilation timed out after \(Int(stepTimeout)) seconds."
+        status = .failed(Date(), Date().timeIntervalSince(active.started))
+        lastSummary = "Build timed out"
+        diagnostics = [BuildDiagnostic(severity: .error, message: message, file: active.request.mainFile, line: nil)]
+        selectedDiagnosticID = nil
+        currentStep = nil
+        log = bounded(log + "\n[QuillTeX] \(message)\n")
     }
 
     private func failCurrentStep(_ step: BuildStep, message: String, alreadyAdvanced: Bool = false) {
@@ -262,6 +298,8 @@ final class BuildController: ObservableObject {
     }
 
     private func closeStepCapture() {
+        stepTimeoutWorkItem?.cancel()
+        stepTimeoutWorkItem = nil
         logPollingTask?.cancel(); logPollingTask = nil
         try? logHandle?.close(); logHandle = nil
         try? logReader?.close(); logReader = nil

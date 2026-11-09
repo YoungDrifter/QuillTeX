@@ -120,7 +120,7 @@ struct SettingsView: View {
     private var automation: some View {
         SettingsPage(title: "Automation", subtitle: "Configure saving and compilation.") {
             SettingsCard(title: "Manual mode") {
-                SettingsRow(title: "Compile after saving", subtitle: "Compile the main file after Save or Save All.") {
+                SettingsRow(title: "Compile after saving", subtitle: "Compile the current document target after Save or Save All.") {
                     Toggle("Compile after saving", isOn: $settings.compileOnSave)
                         .labelsHidden().toggleStyle(.switch)
                 }

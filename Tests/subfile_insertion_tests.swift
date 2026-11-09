@@ -1,113 +1,80 @@
 import AppKit
 
 @main
-struct SubfileInsertionTests {
+struct TeXProjectTests {
     @MainActor static func main() throws {
         _ = NSApplication.shared
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("subfile-drag-\(UUID())")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tex-project-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let root = directory.appendingPathComponent("main.tex")
-        let a = directory.appendingPathComponent("a.tex"), b = directory.appendingPathComponent("b.tex"), c = directory.appendingPathComponent("c.tex")
-        for url in [a,b,c] { try "Child".write(to: url, atomically: true, encoding: .utf8) }
-        let initial = "Intro\n\\input{b}\n% after-b notes\n\\section{Between}\n\\include{a} % keep-a\n\\end{document}\n"
-        try initial.write(to: root, atomically: true, encoding: .utf8)
-        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library")), maintainsRootDirectives: false)
+        let linked = directory.appendingPathComponent("linked.tex")
+        let other = directory.appendingPathComponent("other.tex")
+        let nestedDirectory = directory.appendingPathComponent("chapters")
+        let nested = nestedDirectory.appendingPathComponent("nested.tex")
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        try "\\documentclass{article}\n\\begin{document}\n\\end{document}\n".write(to: root, atomically: true, encoding: .utf8)
+        try "% !TeX root = main.tex\nLinked\n".write(to: linked, atomically: true, encoding: .utf8)
+        try "Other\n".write(to: other, atomically: true, encoding: .utf8)
+        try "% !TeX root = ../main.tex\nNested\n".write(to: nested, atomically: true, encoding: .utf8)
+
+        let plugin = PluginManager.shared
+        let previousEnabled = plugin.isEnabled(PluginManager.texProjectID)
+        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
+        defer {
+            plugin.setEnabled(previousEnabled, for: PluginManager.texProjectID)
+            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
+        }
+        plugin.setEnabled(true, for: PluginManager.texProjectID)
+
+        let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library")),
+                                 maintainsRootDirectives: false)
         store.openProject(root, explicitRoot: true)
         store.index = ProjectIndexer(root: root, overrides: [:]).build()
         defer { store.finishClosing() }
-        let doc = store.activeDocument!
-        let surface = EditorSurface(document: doc, store: store)
-        doc.editorSurface = surface
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = surface
-        window.orderFront(nil)
-        defer { window.close() }
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
-            guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
+            guard condition() else { fatalError("FAILED: \(message)") }
+            checks += 1
         }
-        func reset(_ text: String = initial) {
-            doc.text = text; doc.savedText = text; doc.diskText = initial
-            doc.selection = NSRange(location: 0, length: 0)
-            surface.reloadFromDisk()
-            while doc.undoManager.groupingLevel > 0 { doc.undoManager.endUndoGrouping() }
-        }
-        check(store.mainSubfiles.map(\.url.lastPathComponent) == ["b.tex","a.tex"], "subfiles follow source order rather than filename sorting")
-        check(store.unlinkedSubfiles == [c], "unlinked TeX files form a separate collection")
-        let bID = store.mainSubfiles[0].id, aID = store.mainSubfiles[1].id
-        try store.insertSubfile(c, at: .after(bID))
-        let afterB = doc.text
-        check(afterB.contains("\\input{b}\n\\input{c.tex}\n% after-b notes\n"), "after-b insertion occurs on the immediately following line")
-        check((try? String(contentsOf: root, encoding: .utf8)) == initial, "drag insertion leaves the main file unsaved")
-        while doc.undoManager.groupingLevel > 0 { doc.undoManager.endUndoGrouping() }
-        doc.undoManager.undo()
-        check(doc.text == initial && surface.textView.string == initial, "one undo restores the main file before insertion")
-        reset()
-        try store.insertSubfile(c, at: .before(aID))
-        check(doc.text.contains("\\section{Between}\n\\input{c.tex}\n\\include{a}"), "before-a insertion happens after the intervening section")
-        check(doc.text != afterB, "after the previous subfile and before the next subfile remain distinct anchors")
-        check(store.unlinkedSubfiles.isEmpty, "an inserted file moves out of the unlinked section immediately")
-        let unchanged = doc.text
-        do { try store.insertSubfile(c, at: .end); fatalError("duplicate inserted") }
-        catch { check(doc.text == unchanged, "dropping an already included unlinked item cannot duplicate it") }
-        reset()
-        try store.insertSubfile(a, moving: aID, at: .before(bID))
-        check(store.mainSubfiles.map(\.url.lastPathComponent) == ["a.tex","b.tex"], "dragging an existing subfile moves its original reference")
-        check(doc.text.hasPrefix("Intro\n\\include{a} % keep-a\n\\input{b}"), "moving a reference keeps its command spelling and trailing comment")
-        check(doc.text.contains("% after-b notes\n\\section{Between}\n\\end{document}"), "moving a reference preserves intervening body text")
-        reset()
-        check(!(try! store.insertSubfile(b, moving: bID, at: .after(bID))), "dropping a reference at its own boundary is a no-op")
-        let line = (initial as NSString).range(of: "% after-b notes").location
-        try store.insertSubfile(c, at: .editorOffset(line + 5))
-        check(doc.text.contains("\\input{b}\n\\input{c.tex}\n% after-b notes"), "dropping onto a source line inserts before that line")
-        reset()
-        try store.insertSubfile(c, at: .end)
-        check(doc.text.contains("\\include{a} % keep-a\n\\input{c.tex}\n\\end{document}"), "the empty-list target inserts before end document")
-        reset("Before \\input{b} after\n\\include{a}\n")
-        let inlineID = store.mainSubfiles[0].id
-        try store.insertSubfile(b, moving: inlineID, at: .end)
-        check(doc.text.hasPrefix("Before  after\n") && doc.text.hasSuffix("\\input{b}\n"), "moving an inline reference does not remove surrounding prose")
-        reset("\\input{b}\r\nBody\r\n\\end{document}\r\n")
-        try store.insertSubfile(c, at: .after(store.mainSubfiles[0].id))
-        check(doc.text.contains("\\input{b}\r\n\\input{c.tex}\r\nBody"), "drag insertion preserves CRLF line endings")
-        reset("% \\input{c}\n\\begin{verbatim}\\input{c}\\end{verbatim}\n\\input{b}\n")
-        check(store.mainSubfiles.map(\.url) == [b], "comment and literal examples do not become drag anchors")
-        reset()
-        do { try store.insertSubfile(root, at: .end); fatalError("main included itself") }
-        catch { check(doc.text == initial, "the main file cannot be inserted as its own subfile") }
-        do { try store.insertSubfile(c, at: .before("obsolete anchor")); fatalError("stale anchor used") }
-        catch { check(doc.text == initial, "stale references never insert at a guessed position") }
-        doc.hasMarkedText = true
-        do { try store.insertSubfile(c, at: .end); fatalError("interrupted IME") }
-        catch { check(doc.text == initial, "drag insertion does not interrupt marked text") }
-        doc.hasMarkedText = false
-        store.window = window
-        surface.textView.layoutManager?.ensureLayout(for: surface.textView.textContainer!)
-        let screen = window.convertPoint(toScreen: surface.textView.convert(NSPoint(x: 120, y: 45), to: nil))
-        check(store.previewSubfileInsertion(atScreenPoint: screen) != nil, "dragging over the visible main editor provides a source insertion target")
-        check(surface.textView.subfileInsertionOffset != nil, "the source editor exposes an insertion-line preview")
-        store.clearSubfileInsertionPreview()
-        check(surface.textView.subfileInsertionOffset == nil, "ending or cancelling a drag removes its source preview")
-        let plugin = PluginManager.shared
-        let enabled = plugin.isEnabled(PluginManager.subfilesID)
-        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
-        defer {
-            plugin.setEnabled(enabled, for: PluginManager.subfilesID)
-            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
-        }
-        store.sidebarMode = .subfiles
-        surface.textView.subfileInsertionOffset = 0
-        let unchangedSource = doc.text
-        plugin.setEnabled(false, for: PluginManager.subfilesID)
-        check(store.sidebarMode == .folder && !store.subfilesEnabled, "disabling Subfiles exits the optional sidebar")
-        check(surface.textView.subfileInsertionOffset == nil, "disabling Subfiles removes an active drag preview")
-        do { try store.insertSubfile(c, at: .end); fatalError("disabled plugin inserted source") }
-        catch { check(doc.text == unchangedSource, "disabled Subfiles rejects insertion without changing source") }
-        plugin.setEnabled(true, for: PluginManager.subfilesID)
-        store.sidebarMode = .subfiles
-        check(store.sidebarMode == .subfiles && doc.text == unchangedSource, "re-enabling Subfiles restores access while retaining source")
-        print("PASS: \(checks) subfile-insertion assertions")
+
+        check(store.mainTeXFiles == [root], "Main contains only the compile target")
+        check(Set(store.subTeXFiles) == Set([linked, nested]), "Sub is derived from TeX root comments")
+        check(store.otherTeXFiles == [other], "Others contains TeX files without the current root comment")
+
+        try store.setTeXFile(other, role: .sub)
+        check(store.subTeXFiles.contains(other), "moving to Sub adds a root comment immediately")
+        check(store.activeDocument?.text.hasPrefix("% !TeX root = main.tex\n") == true,
+              "the added root comment uses a relative path")
+        try store.setTeXFile(other, role: .other)
+        check(store.otherTeXFiles.contains(other), "moving to Others removes the root relationship")
+        check(ProjectIndexer.rootDirective(in: store.activeDocument!.text) == nil,
+              "moving to Others removes the root comment from the buffer")
+
+        let crlf = "\u{FEFF}% !TeX root = main.tex\r\nBody\r\n"
+        check(ProjectStore.removingRootDirectives(from: crlf) == "\u{FEFF}Body\r\n",
+              "comment removal preserves BOM and CRLF content")
+        let literal = "\\begin{verbatim}\n% !TeX root = fake.tex\n\\end{verbatim}\n"
+        check(ProjectStore.removingRootDirectives(from: literal) == literal,
+              "root-looking text in a verbatim block is left alone")
+
+        store.sidebarMode = .tex
+        plugin.setEnabled(false, for: PluginManager.texProjectID)
+        check(store.sidebarMode == .folder && !store.texProjectEnabled,
+              "disabling TeX Project removes its sidebar mode")
+
+        let standalone = directory.appendingPathComponent("standalone.tex")
+        try "Standalone\n".write(to: standalone, atomically: true, encoding: .utf8)
+        let plainStore = ProjectStore(library: store.library, maintainsRootDirectives: false)
+        plainStore.openProject(root, explicitRoot: true)
+        plainStore.openSource(standalone)
+        check(plainStore.root == standalone && plainStore.activeDocument?.url == standalone,
+              "without the plugin an unlinked TeX file becomes the compile target")
+        plainStore.openProject(linked)
+        check(plainStore.root == root && plainStore.activeDocument?.url == linked,
+              "without the plugin a file with a root comment still opens its declared target")
+        plainStore.finishClosing()
+
+        print("PASS: \(checks) TeX-project assertions")
     }
 }

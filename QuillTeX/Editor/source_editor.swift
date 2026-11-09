@@ -79,6 +79,9 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         super.init(frame: .zero)
         drawsBackground = true; backgroundColor = .textBackgroundColor
         hasVerticalScroller = true; hasHorizontalScroller = false; autohidesScrollers = true
+        // Content starts at the top edge; pulling past the top reveals the native
+        // elastic gap instead of reserving a permanent blank band.
+        verticalScrollElasticity = .allowed
         borderType = .noBorder
         // The ruler draws a hairline at its edge, and AppKit lets it bleed past the
         // scroll view, which used to draw a stray vertical line across the breadcrumb.
@@ -89,7 +92,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 16, height: 18)
+        textView.textContainerInset = NSSize(width: 16, height: ChromeMetrics.paneHeaderHeight)
         textView.isRichText = false; textView.importsGraphics = false
         textView.documentUndoManager = document.undoManager
         textView.allowsUndo = true; textView.usesFindBar = true
@@ -153,13 +156,22 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
                 self.contentView.scroll(to: restoredScrollOrigin)
             } else {
                 self.contentView.scroll(to: restoredScrollOrigin)
-                if document.selection.location > 0 { self.textView.scrollRangeToVisible(document.selection) }
+                // A non-zero origin is a position to preserve (for example after
+                // switching pane modes). Only bring the caret into view when the
+                // document is opening at the very top.
+                if restoredScrollOrigin == .zero, document.selection.location > 0 {
+                    self.textView.scrollRangeToVisible(document.selection)
+                }
             }
             self.reflectScrolledClipView(self.contentView)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func didScroll() {
+        // Collapsing the split item removes the editor from its window and can
+        // reset the clip bounds to zero. Do not overwrite the position the user
+        // will return to when the pane is shown again.
+        guard window != nil else { return }
         textView.closeCandidates()
         source?.scrollOrigin = contentView.bounds.origin
         verticalRulerView?.needsDisplay = true

@@ -21,20 +21,6 @@ struct EditorBehaviorTests {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
         let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library"), bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")), maintainsRootDirectives: false)
-        let visibility = ProjectStore(library: store.library, maintainsRootDirectives: false)
-        visibility.documents = [SourceDocument(url: root, text: "")]
-        check(!visibility.isTabBarVisible, "one file hides tabs by default")
-        visibility.documents.append(SourceDocument(url: child, text: ""))
-        check(visibility.isTabBarVisible, "multiple files show tabs by default")
-        visibility.toggleTabBar()
-        visibility.documents.append(SourceDocument(url: directory.appendingPathComponent("another.tex"), text: ""))
-        visibility.activeID = visibility.documents.last?.id
-        check(!visibility.isTabBarVisible, "manual hide survives opening and switching files")
-        visibility.setTabBarVisible(true)
-        visibility.documents.removeLast(2)
-        check(visibility.isTabBarVisible, "manual show survives closing to one file")
-        check(!ProjectStore(library: store.library, maintainsRootDirectives: false).isTabBarVisible, "new workspace has its own default")
-
         store.openProject(child, explicitRoot: true)
         check(store.root == child && store.activeDocument?.url == child, "explicit open uses the selected file despite its root directive")
         check(store.documents.count == 1, "explicit open does not substitute neighboring main.tex")
@@ -795,8 +781,8 @@ struct EditorBehaviorTests {
         let subfolder = try store.createFolder(named: "中文 文件夹", in: chapters)
         store.sidebarMode = .folder; store.toggleFolder(subfolder)
         check(store.creationDirectory?.standardizedFileURL == subfolder.standardizedFileURL, "folder selection determines the creation location")
-        store.sidebarMode = .subfiles
-        check(store.creationDirectory?.standardizedFileURL == directory.standardizedFileURL, "Subfiles creation starts at the project root")
+        store.sidebarMode = .tex
+        check(store.creationDirectory?.standardizedFileURL == directory.standardizedFileURL, "TeX relationship view creates from the project root")
         do { try store.createFolder(named: "中文 文件夹", in: chapters); fatalError("existing folder was recreated") }
         catch { check(FileManager.default.fileExists(atPath: subfolder.path), "folder creation does not replace an existing folder") }
         do { try store.createFolder(named: "../escape", in: directory); fatalError("folder path traversal was allowed") }

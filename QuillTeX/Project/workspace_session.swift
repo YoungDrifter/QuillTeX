@@ -20,7 +20,6 @@ struct WorkspaceSession: Codable {
     var sidebarVisible: Bool
     var sidebarMode: String
     var paneMode: Int
-    var tabBarVisible: Bool?
     var expandedNodes: [String]
     var sidebarWidth: Double
     var editorFraction: Double

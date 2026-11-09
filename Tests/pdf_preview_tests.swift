@@ -152,6 +152,35 @@ struct PDFPreviewTests {
         check(targetPage.annotations.isEmpty, "out-of-page sync targets cannot create an invalid PDF destination")
         let unchangedPDF = try Data(contentsOf: otherURL)
         check(unchangedPDF == secondData, "sync target marker never changes the PDF on disk")
+
+        // Exercise the same continuous layout and inset used by the floating header.
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.topContentInset = 54
+        view.replacePreview(with: PDFDocument(data: firstData)!, preservesReadingPosition: false)
+        settle()
+        let scroll = view.documentView!.enclosingScrollView!
+        let clip = scroll.contentView
+        let firstPage = view.document!.page(at: 0)!
+        let pageTop = view.convert(firstPage.bounds(for: .mediaBox), from: firstPage).maxY
+        let topGap = view.bounds.maxY - pageTop
+        check(topGap >= 54 && topGap < 66,
+              "first PDF page starts below the header buffer and its native page margin")
+        check(abs(clip.frame.height - view.bounds.height) < 1,
+              "floating header leaves the full PDF viewport available")
+        let initialY = clip.bounds.origin.y
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: initialY + 140))
+        scroll.reflectScrolledClipView(clip)
+        settle()
+        check(abs(clip.bounds.origin.y - initialY - 140) < 1,
+              "PDF header buffer scrolls away with the document")
+        check(view.convert(firstPage.bounds(for: .mediaBox), from: firstPage).maxY > view.bounds.maxY,
+              "scrolled PDF content reaches the top instead of retaining a blank header band")
+        let scrolledPosition = view.readerPosition()!
+        view.replacePreview(with: PDFDocument(data: secondData)!)
+        settle()
+        check(abs(view.readerPosition()!.topPoint.y - scrolledPosition.topPoint.y) < 2,
+              "rebuilding with a header buffer preserves the scrolled reading position")
         print("PASS: \(checks) PDF-preview assertions")
     }
 }

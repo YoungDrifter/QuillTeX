@@ -29,8 +29,14 @@ final class WorkspaceDividerView: NSSplitView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let localPoint = convert(point, from: superview)
-        if effectiveDividerRects.contains(where: { $0.rect.contains(localPoint) }) { return self }
-        return super.hitTest(point)
+        guard effectiveDividerRects.contains(where: { $0.rect.contains(localPoint) }) else {
+            return super.hitTest(point)
+        }
+        // The divider's generous grab band overlaps the editor's overlay scroller.
+        // When the scroller is visible, let it own the click; the divider remains
+        // draggable from the preview side of the line.
+        if let hit = super.hitTest(point), hit is NSScroller { return hit }
+        return self
     }
 
     override func resetCursorRects() {
@@ -91,7 +97,10 @@ final class WorkspaceDividerView: NSSplitView {
     }
 
     override func drawDivider(in rect: NSRect) {
-        super.drawDivider(in: rect)
+        // The window is non-opaque so the sidebar can show the desktop behind it.
+        // Paint the divider itself opaque, or the desktop shows through this line.
+        NSColor(white: 0.90, alpha: 1).setFill()
+        rect.fill()
         guard let index = hoveredDivider, subviews.indices.contains(index),
               abs(rect.midX - (subviews[index].frame.maxX + dividerThickness / 2)) < 1 else { return }
         NSColor.controlAccentColor.withAlphaComponent(0.45).setFill()
@@ -181,20 +190,21 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
 
 final class WorkspaceSplitController: WorkspacePaneSplitController {
     let content: WorkspaceContentSplitController
-    private var tabBarHeight: NSLayoutConstraint?
-    private var tabBarController: NSViewController?
     private var initialized = false
     private var previousSidebar = true
     private var previousSplitLayoutVersion = 0
-    private var sidebarWidth: CGFloat = 240
+    private var sidebarWidth: CGFloat = 248
     private var savedEditorFraction: Double = 0.5
     var onLayoutChange: ((Double, Double) -> Void)?
+    /// Reports a collapse caused by dragging the divider, not by the sidebar toggle.
+    var onSidebarVisibilityChange: ((Bool) -> Void)?
     private var reportingLayout = false
     private var layoutReportPending = false
     private var sidebarAnimating = false
     private var sidebarAnimationGeneration = 0
 
-    init(sidebar: NSViewController, editor: NSViewController, preview: NSViewController, tabBar: NSViewController? = nil) {
+    init(sidebar: NSViewController, topBar: NSViewController, editor: NSViewController, preview: NSViewController,
+         topBarHeight: CGFloat) {
         content = WorkspaceContentSplitController(editor: editor, preview: preview)
         super.init()
         let sidebarItem = NSSplitViewItem(viewController: sidebar)
@@ -204,28 +214,24 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         // Preserve sidebar width, but stay below AppKit's drag priority (490)
         // so the sidebar divider remains freely adjustable.
         sidebarItem.holdingPriority = NSLayoutConstraint.Priority(rawValue: 450)
-        let contentColumn: NSViewController
-        if let tabBar {
-            let column = NSViewController()
-            column.view = NSView()
-            column.addChild(tabBar); column.addChild(content)
-            column.view.addSubview(tabBar.view); column.view.addSubview(content.view)
-            tabBar.view.translatesAutoresizingMaskIntoConstraints = false
-            content.view.translatesAutoresizingMaskIntoConstraints = false
-            let height = tabBar.view.heightAnchor.constraint(equalToConstant: 0)
-            NSLayoutConstraint.activate([
-                tabBar.view.topAnchor.constraint(equalTo: column.view.topAnchor),
-                tabBar.view.leadingAnchor.constraint(equalTo: column.view.leadingAnchor),
-                tabBar.view.trailingAnchor.constraint(equalTo: column.view.trailingAnchor), height,
-                content.view.topAnchor.constraint(equalTo: tabBar.view.bottomAnchor),
-                content.view.leadingAnchor.constraint(equalTo: column.view.leadingAnchor),
-                content.view.trailingAnchor.constraint(equalTo: column.view.trailingAnchor),
-                content.view.bottomAnchor.constraint(equalTo: column.view.bottomAnchor)
-            ])
-            tabBarHeight = height
-            tabBarController = tabBar
-            contentColumn = column
-        } else { contentColumn = content }
+        let contentColumn = NSViewController()
+        contentColumn.view = NSView()
+        contentColumn.addChild(topBar)
+        contentColumn.addChild(content)
+        contentColumn.view.addSubview(topBar.view)
+        contentColumn.view.addSubview(content.view)
+        topBar.view.translatesAutoresizingMaskIntoConstraints = false
+        content.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            topBar.view.topAnchor.constraint(equalTo: contentColumn.view.topAnchor),
+            topBar.view.leadingAnchor.constraint(equalTo: contentColumn.view.leadingAnchor),
+            topBar.view.trailingAnchor.constraint(equalTo: contentColumn.view.trailingAnchor),
+            topBar.view.heightAnchor.constraint(equalToConstant: topBarHeight),
+            content.view.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
+            content.view.leadingAnchor.constraint(equalTo: contentColumn.view.leadingAnchor),
+            content.view.trailingAnchor.constraint(equalTo: contentColumn.view.trailingAnchor),
+            content.view.bottomAnchor.constraint(equalTo: contentColumn.view.bottomAnchor)
+        ])
         let contentItem = NSSplitViewItem(viewController: contentColumn)
         contentItem.minimumThickness = 520
         addSplitViewItem(sidebarItem)
@@ -235,7 +241,7 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func restoreLayout(sidebarWidth width: Double, editorFraction fraction: Double) {
-        sidebarWidth = width.isFinite ? min(400, max(180, width)) : 240
+        sidebarWidth = width.isFinite ? min(400, max(180, width)) : 248
         savedEditorFraction = fraction.isFinite ? min(0.85, max(0.15, fraction)) : 0.5
         reportingLayout = true
         if initialized, previousSidebar { splitView.setPosition(sidebarWidth, ofDividerAt: 0) }
@@ -250,7 +256,17 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
             guard let self else { return }
             self.layoutReportPending = false
             guard !self.sidebarAnimating else { return }
-            if self.previousSidebar { self.sidebarWidth = self.splitViewItems[0].viewController.view.frame.width }
+            // Dragging the divider all the way left collapses the split item
+            // without going through the toggle; keep the store in sync so the
+            // top bar switches to its collapsed layout.
+            let collapsed = self.splitViewItems[0].isCollapsed
+            if self.previousSidebar == collapsed {
+                self.previousSidebar = !collapsed
+                self.onSidebarVisibilityChange?(!collapsed)
+            }
+            if self.previousSidebar, !collapsed {
+                self.sidebarWidth = self.splitViewItems[0].viewController.view.frame.width
+            }
             if !self.content.splitViewItems.contains(where: \.isCollapsed) { self.savedEditorFraction = self.content.editorFraction }
             self.onLayoutChange?(self.sidebarWidth, self.savedEditorFraction)
         }
@@ -269,9 +285,7 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         }
     }
 
-    func update(sidebarVisible: Bool, paneMode: PaneMode, splitLayoutVersion: Int, showTabs: Bool = false) {
-        tabBarHeight?.constant = showTabs ? 32 : 0
-        tabBarController?.view.isHidden = !showTabs
+    func update(sidebarVisible: Bool, paneMode: PaneMode, splitLayoutVersion: Int) {
         if previousSidebar != sidebarVisible {
             if previousSidebar && !sidebarAnimating { sidebarWidth = splitViewItems[0].viewController.view.frame.width }
             previousSidebar = sidebarVisible

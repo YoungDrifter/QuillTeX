@@ -39,6 +39,13 @@ xcodebuild -project "$REPO_ROOT/$APP_NAME.xcodeproj" -scheme "$APP_NAME" \
     -configuration Release -destination 'generic/platform=macOS' \
     -derivedDataPath "$BUILD_DIR/DerivedData" ARCHS="$ARCH" ONLY_ACTIVE_ARCH=YES  build
 APP="$BUILD_DIR/DerivedData/Build/Products/Release/$APP_NAME.app"
+# A successful xcodebuild does not prove the target compiled anything. Catch the
+# "empty app" case before it can be packaged and published.
+EXECUTABLE="$APP/Contents/MacOS/$APP_NAME"
+if [ ! -f "$EXECUTABLE" ]; then
+    echo "error: built app is missing its executable: $EXECUTABLE" >&2
+    exit 1
+fi
 BUILT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")
 if [ "$BUILT_VERSION" != "$VERSION" ]; then
     echo "error: built version $BUILT_VERSION differs from requested version $VERSION" >&2
@@ -57,6 +64,10 @@ hdiutil attach "$STAGING/archive/$DMG_NAME" -readonly -nobrowse -mountpoint "$ST
 DMG_MOUNTED=1
 [ "$(readlink "$STAGING/mounted/Applications")" = /Applications ]
 codesign --verify --deep --strict "$STAGING/mounted/$APP_NAME.app"
+if [ ! -f "$STAGING/mounted/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
+    echo "error: mounted app is missing its executable" >&2
+    exit 1
+fi
 /usr/sbin/mtree -c -p "$APP" -k type,link,size,sha256digest > "$STAGING/app.manifest"
 /usr/sbin/mtree -p "$STAGING/mounted/$APP_NAME.app" -f "$STAGING/app.manifest"
 hdiutil detach "$STAGING/mounted" -quiet

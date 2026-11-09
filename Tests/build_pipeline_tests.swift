@@ -193,6 +193,18 @@ struct BuildPipelineTests {
         check(!streaming.status.isRunning && streaming.lastSummary == "Build cancelled", "cancelled process callbacks cannot publish a later success")
         check(streaming.log.contains("first output"), "cancel preserves the output already received")
 
+        let stuckEngine = try fixture("stuck-engine", body: "echo 'stuck'\nsleep 5")
+        let timeoutBuild = BuildController()
+        timeoutBuild.stepTimeout = 0.4
+        timeoutBuild.compile(request(["xelatex": stuckEngine]))
+        waitForBuild(timeoutBuild, timeout: 5)
+        check(!timeoutBuild.status.isRunning, "a stuck compile is stopped by the step timeout")
+        check({ if case .failed = timeoutBuild.status { return true }; return false }(),
+              "a timed-out compile reports failure instead of staying busy")
+        check(timeoutBuild.diagnostics.contains { $0.message.contains("timed out") },
+              "a timed-out compile produces an actionable diagnostic")
+        check(timeoutBuild.log.contains("timed out"), "the timeout is recorded in the build log")
+
         let queuedEngine = try fixture("queued-engine", body: "echo 'queued build'\nsleep 0.35")
         let queued = BuildController()
         var startedRevisions: [Int?] = []

@@ -36,8 +36,10 @@ struct WelcomeView: View {
                 // still takes its full width when there is room.
                 .frame(minWidth: 372, idealWidth: 420, maxWidth: 420, alignment: .leading)
                 .frame(maxHeight: .infinity)
-                .background(Palette.welcomeLeft)
-            Rectangle().fill(Color.black.opacity(0.06)).frame(width: 1)
+                .background {
+                    if isSheet { Palette.welcomeLeft } else { SidebarBackdrop() }
+                }
+            Rectangle().fill(Palette.hairlineSolid).frame(width: 1)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 7) {

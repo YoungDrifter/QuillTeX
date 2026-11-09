@@ -12,17 +12,21 @@ struct WorkspaceView: View {
             if store.root == nil {
                 WelcomeView(store: store, library: store.library)
             } else {
-                TopBar(store: store)
-                if let message = store.recoveryMessage {
-                    HStack(spacing: 8) {
-                        Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
-                            .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
-                    }.padding(.horizontal, 14).padding(.vertical, 7).background(Palette.subtleSurface)
-                    Divider()
+                ZStack(alignment: .topLeading) {
+                    WorkspaceSplit(store: store)
+                    if let message = store.recoveryMessage {
+                        HStack(spacing: 8) {
+                            Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                                .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
+                        }
+                        .padding(.horizontal, 14).frame(height: 32).background(.thinMaterial, in: Capsule())
+                        .padding(.top, ChromeMetrics.topBarHeight + ChromeMetrics.paneHeaderHeight + 4)
+                        .padding(.leading, store.sidebarVisible ? store.sidebarWidth + 16 : 16)
+                        .padding(.trailing, 16)
+                    }
                 }
-                WorkspaceSplit(store: store)
             }
         }
         .frame(minWidth: isWelcome ? ChromeMetrics.welcomeMinimumSize.width : ChromeMetrics.workspaceMinimumSize.width,
@@ -37,7 +41,6 @@ struct WorkspaceView: View {
         .onChange(of: store.sidebarVisible) { _, _ in store.scheduleSessionSave() }
         .onChange(of: store.sidebarMode) { _, _ in store.scheduleSessionSave() }
         .onChange(of: store.paneMode) { _, _ in store.scheduleSessionSave() }
-        .onChange(of: store.isTabBarVisible) { _, _ in store.scheduleSessionSave() }
         .onChange(of: store.expandedNodes) { _, _ in store.scheduleSessionSave() }
         .onOpenURL { url in
             guard url.isFileURL else { return }
@@ -75,30 +78,39 @@ struct WorkspaceView: View {
 private struct EditorPane: View {
     @ObservedObject var store: ProjectStore
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
+        ZStack(alignment: .top) {
+            Group {
+                if let document = store.activeDocument {
+                    SourceEditor(document: document, store: store).id(document.id)
+                } else {
+                    emptyState
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 8) {
                 EditorBreadcrumb(store: store)
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .quillFloatingCapsule()
                 Spacer(minLength: 8)
                 if let document = store.activeDocument { EditorHistoryButtons(document: document) }
-            }.padding(.horizontal, 12).frame(height: ChromeMetrics.paneHeaderHeight).background(Palette.topBar)
-            Divider()
-            if let document = store.activeDocument {
-                SourceEditor(document: document, store: store).id(document.id)
-            } else {
-                VStack(spacing: 16) {
-                    Spacer()
-                    Image(systemName: "text.book.closed").font(.system(size: 42, weight: .ultraLight)).foregroundStyle(.tertiary)
-                    Text("Start with a document").font(.system(size: 19, weight: .medium))
-                    Text("Open a main .tex file to keep writing.")
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
-                    Button { store.openPanel() } label: {
-                        Text("Open LaTeX File…").padding(.horizontal, 18).frame(height: 34).quillCapsule()
-                    }.buttonStyle(.plain).padding(.top, 4)
-                    Text("⌘O").font(.caption).foregroundStyle(.tertiary)
-                    Spacer()
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.controlSurface)
-            }
+            }.quillPaneRow()
         }
+        .background(Color.white)
+    }
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "text.book.closed").font(.system(size: 42, weight: .ultraLight)).foregroundStyle(.tertiary)
+            Text("Start with a document").font(.system(size: 19, weight: .medium))
+            Text("Open a .tex file to keep writing.")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+            Button { store.openPanel() } label: {
+                Text("Open LaTeX File…").padding(.horizontal, 18).frame(height: 34).quillCapsule()
+            }.buttonStyle(.plain).padding(.top, 4)
+            Text("⌘O").font(.caption).foregroundStyle(.tertiary)
+            Spacer()
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.controlSurface)
     }
 }
 
@@ -112,7 +124,7 @@ private struct EditorHistoryButtons: View {
             historyButton("arrow.uturn.forward", title: "Redo", shortcut: "⇧⌘Z", enabled: document.undoManager.canRedo) {
                 document.undoManager.redo()
             }
-        }.padding(2).quillCapsule()
+        }.padding(2).quillFloatingCapsule()
     }
     private func historyButton(_ icon: String, title: String, shortcut: String, enabled: Bool,
                                action: @escaping () -> Void) -> some View {
@@ -151,30 +163,36 @@ private struct EditorBreadcrumb: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if let main = store.root {
-                // The leading mark stays where it is; the chain beside it scrolls, so a
-                // deep path or a very long file name can never widen the editor pane
-                // (which used to squeeze the preview).
+            if store.root != nil {
+                // The leading mark stays where it is; the chain beside it scrolls
+                // only when its content no longer fits the pill.
                 Image(systemName: "scope")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .frame(width: 16, height: 25)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 1) {
-                        segment(main, icon: "scope", current: active == main, parents: true, showsIcon: false)
-                        ForEach(folders, id: \.self) { folder in
-                            separator
-                            segment(folder, icon: "folder", current: false)
-                        }
-                        if let active, active != main {
-                            separator
-                            segment(active, icon: "doc.text", current: true)
-                        }
+                ViewThatFits(in: .horizontal) {
+                    breadcrumbSegments
+                        .fixedSize(horizontal: true, vertical: false)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        breadcrumbSegments.padding(.trailing, 4)
                     }
-                    .padding(.trailing, 4)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text("QuillTeX").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+    }
+    @ViewBuilder private var breadcrumbSegments: some View {
+        HStack(spacing: 1) {
+            if let main = store.root {
+                segment(main, icon: "scope", current: active == main, parents: true, showsIcon: false)
+                ForEach(folders, id: \.self) { folder in
+                    separator
+                    segment(folder, icon: "folder", current: false)
+                }
+                if let active, active != main {
+                    separator
+                    segment(active, icon: "doc.text", current: true)
+                }
             }
         }
     }
@@ -278,10 +296,11 @@ private struct WorkspaceSplit: NSViewControllerRepresentable {
     final class Coordinator { var root: URL? }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSViewController(context: Context) -> WorkspaceSplitController {
-        let controller = WorkspaceSplitController(sidebar: NSHostingController(rootView: ProjectSidebar(store: store)),
+        let controller = WorkspaceSplitController(sidebar: chromeHostingController(ProjectSidebar(store: store)),
+                                 topBar: chromeHostingController(TopBar(store: store)),
                                  editor: NSHostingController(rootView: EditorPane(store: store)),
                                  preview: NSHostingController(rootView: PreviewPane(store: store)),
-                                 tabBar: NSHostingController(rootView: FileTabBar(store: store)))
+                                 topBarHeight: ChromeMetrics.topBarHeight)
         controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
         context.coordinator.root = store.root
         controller.onLayoutChange = { [weak store] width, fraction in
@@ -291,6 +310,10 @@ private struct WorkspaceSplit: NSViewControllerRepresentable {
                 store.scheduleSessionSave()
             }
         }
+        controller.onSidebarVisibilityChange = { [weak store] visible in
+            guard let store, store.sidebarVisible != visible else { return }
+            store.sidebarVisible = visible
+        }
         return controller
     }
     func updateNSViewController(_ controller: WorkspaceSplitController, context: Context) {
@@ -299,7 +322,7 @@ private struct WorkspaceSplit: NSViewControllerRepresentable {
             controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
         }
         controller.update(sidebarVisible: store.sidebarVisible, paneMode: store.paneMode,
-                          splitLayoutVersion: store.splitLayoutVersion, showTabs: store.isTabBarVisible)
+                          splitLayoutVersion: store.splitLayoutVersion)
     }
 }
 
@@ -341,7 +364,9 @@ private final class WindowHook: NSView, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarSeparatorStyle = .none
-        // QuillTeX draws its own file tabs, so leave AppKit's tab groups alone.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        // A QuillTeX window is a single workspace rather than an AppKit tab group.
         window.tabbingMode = .disallowed
         window.appearance = NSAppearance(named: .aqua)
         window.isMovableByWindowBackground = true
