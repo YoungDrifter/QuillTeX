@@ -133,7 +133,7 @@ struct PDFPreviewTests {
         view.restore(PDFReadingState(pageIndex: 999, topPoint: .zero, scale: 99, zoomMode: .manual))
         settle()
         check(view.readerPosition()?.pageIndex == 2 && view.scaleFactor == view.maxScaleFactor,
-              "restoration clamps removed pages and unsupported zoom levels")
+              "restoration clamps removed pages and unsupported zoom levels (page \(view.readerPosition()?.pageIndex ?? -1), scale \(view.scaleFactor)/\(view.maxScaleFactor))")
 
         let target = PDFHighlight(page: 2, point: CGPoint(x: 50, y: 150), width: 100, height: 18)
         let media = view.document!.page(at: 1)!.bounds(for: .mediaBox)
@@ -153,7 +153,11 @@ struct PDFPreviewTests {
         let unchangedPDF = try Data(contentsOf: otherURL)
         check(unchangedPDF == secondData, "sync target marker never changes the PDF on disk")
 
-        // Exercise the same continuous layout and inset used by the floating header.
+        // Production preview opens flush with the pane top; the editor alone keeps
+        // the floating header buffer. Elastic overscroll still exposes it.
+        check(SyncPDFView.defaultPaneTopInset == 0, "PDF preview reserves no top buffer by default")
+        check(ChromeMetrics.paneHeaderHeight > 0, "editor keeps the floating header buffer")
+        // Exercise the inset machinery for hosts that reserve a header band.
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.topContentInset = 54
@@ -181,6 +185,15 @@ struct PDFPreviewTests {
         settle()
         check(abs(view.readerPosition()!.topPoint.y - scrolledPosition.topPoint.y) < 2,
               "rebuilding with a header buffer preserves the scrolled reading position")
+        // Default preview: no header band, so the first page starts flush with the pane.
+        view.topContentInset = SyncPDFView.defaultPaneTopInset
+        view.replacePreview(with: PDFDocument(data: firstData)!, preservesReadingPosition: false)
+        settle()
+        let flushPage = view.document!.page(at: 0)!
+        let flushTop = view.convert(flushPage.bounds(for: .mediaBox), from: flushPage).maxY
+        let flushGap = view.bounds.maxY - flushTop
+        check(flushGap >= 0 && flushGap < 1,
+              "default PDF preview starts flush with the pane top (gap \(flushGap))")
         print("PASS: \(checks) PDF-preview assertions")
     }
 }

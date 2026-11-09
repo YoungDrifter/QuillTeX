@@ -6,13 +6,11 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.1.3** · macOS 14+ · Apple Silicon
+**Version 1.2.0** · macOS 14+ · Apple Silicon
 
-[下载 1.1.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.3)
+[下载 1.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0)
 
-![QuillTeX 1.1.0 · 写作与预览](docs/versions/1.1.0/images/writing.png)
-
-界面素材来自 1.1.0，1.1.3 沿用该版本演示。
+![QuillTeX 1.2.0 · 写作工作区](docs/icon/screenshot.png)
 
 ## 功能
 
@@ -32,7 +30,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.3) 下载 `QuillTeX-1.1.3.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0) 下载 `QuillTeX-1.2.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -44,7 +42,7 @@
 
 首次发布，支持文稿管理、多文件工程、独立标签栏、LaTeX 编辑与补全、主文件管理、本地编译、PDF 预览和双向定位。
 
-[版本介绍与演示](docs/versions/1.0.0/README.md) · [下载 1.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0)
+[版本介绍](docs/versions/1.0.0/README.md) · [下载 1.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0)
 
 ### 1.0.1 · 侧栏交互调整
 
@@ -68,7 +66,7 @@
 
 跟随输入的行内补全、完整的环境与括号配对、自定义命令优先匹配；可折叠的警告与错误列表；玻璃胶囊分组、统一的滑动选择与悬停反馈，以及对齐的编译设置与策略抽屉。支持子文件标签拖动排序、PDF 实际大小与实时缩放比例，修复导入模板被移出模板库的问题。
 
-[版本介绍与全新演示](docs/versions/1.1.0/README.md) · [下载 1.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.0)
+[版本介绍](docs/versions/1.1.0/README.md) · [下载 1.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.0)
 
 ### 1.1.1 · 编辑体验优化
 
@@ -84,9 +82,15 @@
 
 ### 1.1.3 · TeX 工程与工作区调整
 
-TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主文件注释，关闭插件后当前 TeX 文件直接成为编译目标，移除标签栏并为侧栏采用独立浅灰色调与轻微背景材质，内容顶栏收紧且编译入口前置，编辑与预览顶栏使用内容自适应的悬浮胶囊并提供随正文滚走的顶部白色缓冲留白，PDF 预览移除固定白条和中间编译状态胶囊，默认窗口调整为 1280 × 760 且编辑与预览等宽；编译步骤增加超时保护，顶栏空白处支持系统双击缩放。
+TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主文件注释，关闭插件后当前 TeX 文件直接成为编译目标，移除标签栏并为侧栏采用独立浅灰色调，内容顶栏收紧且编译入口前置，编辑与预览顶栏使用内容自适应的悬浮胶囊并提供随正文滚走的顶部白色缓冲留白，PDF 预览移除固定白条和中间编译状态胶囊，默认窗口调整为 1280 × 760 且编辑与预览等宽；编译步骤增加超时保护，顶栏空白处支持系统双击缩放。
 
 [更新说明](docs/versions/1.1.3/README.md) · [下载 1.1.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.1.3)
+
+### 1.2.0 · 写作工作区焕新
+
+集中发布重做后的写作工作区：TeX Project 按 Main、Sub、Others 管理工程文件并支持拖动增删主文件注释，关闭插件后当前 TeX 文件直接成为编译目标；移除标签栏，侧栏贯穿窗口全高并使用浅灰实色；内容顶栏收紧为 46 pt，编辑与预览改为内容自适应的悬浮胶囊，预览区 PDF 胶囊与编辑区一致使用可点击的面包屑路径并以图标区分，编辑区顶部白色留白随正文滚走，PDF 预览默认与面板顶部齐平、向上拉动才弹性露出留白；PDF 预览移除固定白条和中间编译状态胶囊；默认窗口 1280 × 820 且编辑与预览等宽；编译步骤增加超时保护，顶栏空白支持系统双击缩放，编辑区滚动条显示时暂停中间分隔线拖动。
+
+[更新说明](docs/versions/1.2.0/README.md) · [下载 1.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.0)
 
 ## 本地构建
 

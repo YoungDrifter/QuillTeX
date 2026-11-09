@@ -76,8 +76,8 @@ struct PDFPreview: NSViewRepresentable {
     var highlight: PDFHighlight?
     var readingState: PDFReadingState? = nil
     var onReadingStateChanged: ((PDFReadingState) -> Void)? = nil
-    /// Space reserved above the page for the floating pane header. It keeps the
-    /// page top from sitting under the capsules.
+    /// Scrollable space above the page. Leave at zero for the preview; tests and
+    /// other hosts may set a positive value.
     var topContentInset: CGFloat = 0
     var onCommandClick: (Int, CGPoint) -> Void
 
@@ -89,7 +89,8 @@ struct PDFPreview: NSViewRepresentable {
         view.topContentInset = topContentInset
         view.displayDirection = .vertical
         view.displaysPageBreaks = true
-        view.pageBreakMargins = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+        // No margin above the first page: the preview starts flush with its pane.
+        view.pageBreakMargins = NSEdgeInsets(top: 0, left: 4, bottom: 4, right: 4)
         view.minScaleFactor = 0.1
         view.maxScaleFactor = 4
         view.backgroundColor = NSColor.white
@@ -161,6 +162,10 @@ struct PDFPreview: NSViewRepresentable {
 final class SyncPDFView: PDFView {
     var onCommandClick: ((Int, CGPoint) -> Void)?
     var onReadingStateChanged: ((PDFReadingState) -> Void)?
+    /// Production preview opens flush with the pane top; only the editor keeps
+    /// the floating header buffer. Elastic overscroll can still reveal it and
+    /// springs back when released.
+    static let defaultPaneTopInset: CGFloat = 0
     /// Scrollable space before the first page, beneath the floating header.
     /// Once scrolled away, page content can fill the space between the controls.
     var topContentInset: CGFloat = 0 {
@@ -293,7 +298,7 @@ final class SyncPDFView: PDFView {
         guard let size = pageSize, size.width > 0 else { return }
         zoomMode = .width
         autoScales = false
-        pageBreakMargins = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 4, right: 0)
         // Overlay scrollbars keep the entire preview width available to the page.
         configureHorizontalScrolling()
         let availableWidth = bounds.width
@@ -385,7 +390,9 @@ final class SyncPDFView: PDFView {
 
     func readerPosition() -> ReaderPosition? {
         guard let document, let page = currentPage else { return nil }
-        let topLeftInView = NSPoint(x: bounds.minX, y: bounds.maxY)
+        // Probe just inside the viewport: a page aligned flush with the pane top
+        // must still count as the page under the viewport, not the previous one.
+        let topLeftInView = NSPoint(x: bounds.minX + 0.5, y: bounds.maxY - 0.5)
         let topPage = self.page(for: topLeftInView, nearest: true) ?? page
         let index = document.index(for: topPage)
         let topLeft = convert(topLeftInView, to: topPage)
@@ -405,7 +412,7 @@ final class SyncPDFView: PDFView {
         let point = CGPoint(x: media.minX + position.topPoint.x, y: media.maxY - position.topPoint.y)
         // Old sessions may contain wholePage; retain their scale as a manual zoom.
         zoomMode = position.zoomMode == .wholePage ? .manual : position.zoomMode
-        pageBreakMargins = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 4, right: 0)
         autoScales = false
         scaleFactor = min(maxScaleFactor, max(minScaleFactor, position.scale))
         configureHorizontalScrolling()
@@ -567,7 +574,7 @@ struct PreviewPane: View {
             ZStack {
                 PDFPreview(pdfURL: build.pdfURL, version: build.pdfVersion, controls: controls, highlight: build.highlight,
                            readingState: store.pdfReadingState, onReadingStateChanged: store.updatePDFReadingState,
-                           topContentInset: ChromeMetrics.paneHeaderHeight) { page, point in
+                           topContentInset: SyncPDFView.defaultPaneTopInset) { page, point in
                     store.syncPDFToSource(page: page, point: point)
                 }
                 // The empty state sits on top while there is nothing to show, so the
@@ -578,12 +585,21 @@ struct PreviewPane: View {
             }
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    Label("PDF", systemImage: "doc.richtext")
-                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
-                        .fixedSize()
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .quillFloatingCapsule()
+                    // The preview names the file it renders with the same breadcrumb
+                    // as the editor, so clicking a segment reveals that folder path.
+                    Group {
+                        if store.root != nil {
+                            EditorBreadcrumb(store: store, focus: store.root, leadingIcon: "doc.richtext")
+                        } else {
+                            Label("PDF", systemImage: "doc.richtext")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Palette.primaryInk)
+                        }
+                    }
+                    .fixedSize()
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .quillFloatingCapsule()
                     Spacer(minLength: 10)
                     HStack(spacing: 0) {
                         zoomInput

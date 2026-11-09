@@ -24,35 +24,3 @@ QuillTeX 首次发布，提供文稿管理、多文件工程、LaTeX 编辑、�
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
 编译文稿需要本机安装 TeX（MacTeX / TeX Live）；未安装时仍可编辑与导航。
-
-## 演示文档
-
-[打开演示工程](demo/main.tex) · [查看演示 PDF](demo/main.pdf)
-
-演示工程包含主文稿和多个章节，可用于体验源码编辑、工程导航、编译与 PDF 预览。
-
-## 界面预览
-
-### 启动页
-
-从本地文稿库打开文档，或创建新的文稿。
-
-![QuillTeX 1.0.0 启动页](images/welcome.png)
-
-### 写作与预览
-
-在同一个工作区编辑 LaTeX 源码并查看 PDF 成稿。
-
-![QuillTeX 1.0.0 写作与预览](images/writing.png)
-
-### 结构导航
-
-通过章节、标签和图表索引定位文稿内容。
-
-![QuillTeX 1.0.0 结构导航](images/navigation.png)
-
-### 工程管理
-
-浏览主文稿、子文件和目录结构。
-
-![QuillTeX 1.0.0 工程管理](images/project.png)

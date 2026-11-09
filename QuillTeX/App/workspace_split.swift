@@ -5,6 +5,26 @@ import AppKit
 final class WorkspaceDividerView: NSSplitView {
     private var dividerTrackingAreas: [NSTrackingArea] = []
     private var hoveredDivider: Int?
+    var blocksDraggingWhileLeadingScrollerVisible = false
+
+    func isDividerDragBlocked(at index: Int) -> Bool {
+        guard blocksDraggingWhileLeadingScrollerVisible, subviews.indices.contains(index) else { return false }
+        func hasVisibleScroller(_ view: NSView) -> Bool {
+            guard !view.isHiddenOrHasHiddenAncestor, view.alphaValue > 0 else { return false }
+            if let scroll = view as? NSScrollView, scroll.hasVerticalScroller,
+               let scroller = scroll.verticalScroller, !scroller.isHiddenOrHasHiddenAncestor {
+                let knob = scroller.rect(for: .knob)
+                // Overlay scrollers retain alphaValue == 1 even after fading out.
+                // Native hit testing follows the actual visible/interactive knob.
+                if !knob.isEmpty,
+                   scroller.hitTest(scroller.convert(NSPoint(x: knob.midX, y: knob.midY), to: scroller.superview)) != nil {
+                    return true
+                }
+            }
+            return view.subviews.contains(where: hasVisibleScroller)
+        }
+        return hasVisibleScroller(subviews[index])
+    }
 
     override func layout() {
         super.layout()
@@ -15,14 +35,17 @@ final class WorkspaceDividerView: NSSplitView {
     /// Use it for hit testing and cursors so child editor/PDF cursor regions
     /// cannot take ownership of either side of the visible divider.
     var effectiveDividerRects: [(index: Int, rect: NSRect)] {
+        dividerTrackingRects.filter { !isDividerDragBlocked(at: $0.index) }
+    }
+
+    private var dividerTrackingRects: [(index: Int, rect: NSRect)] {
         guard subviews.count > 1 else { return [] }
         return (0..<(subviews.count - 1)).compactMap { index in
             guard !subviews[index].isHidden, !subviews[index + 1].isHidden,
                   subviews[index].frame.width > 0, subviews[index + 1].frame.width > 0 else { return nil }
             let drawnRect = NSRect(x: subviews[index].frame.maxX, y: bounds.minY,
                                    width: dividerThickness, height: bounds.height)
-            let rect = (delegate?.splitView?(self, effectiveRect: drawnRect,
-                                            forDrawnRect: drawnRect, ofDividerAt: index) ?? drawnRect).intersection(bounds)
+            let rect = drawnRect.insetBy(dx: -12, dy: 0).intersection(bounds)
             return rect.isEmpty ? nil : (index, rect)
         }
     }
@@ -32,15 +55,19 @@ final class WorkspaceDividerView: NSSplitView {
         guard effectiveDividerRects.contains(where: { $0.rect.contains(localPoint) }) else {
             return super.hitTest(point)
         }
-        // The divider's generous grab band overlaps the editor's overlay scroller.
-        // When the scroller is visible, let it own the click; the divider remains
-        // draggable from the preview side of the line.
         if let hit = super.hitTest(point), hit is NSScroller { return hit }
         return self
     }
 
+    override func mouseDown(with event: NSEvent) {
+        // Recheck at mouse-down: an overlay scrollbar may appear after hover.
+        guard !(0..<max(0, subviews.count - 1)).contains(where: isDividerDragBlocked) else { return }
+        super.mouseDown(with: event)
+    }
+
     override func resetCursorRects() {
         super.resetCursorRects()
+        discardCursorRects()
         for divider in effectiveDividerRects { addCursorRect(divider.rect, cursor: .resizeLeftRight) }
     }
 
@@ -48,7 +75,9 @@ final class WorkspaceDividerView: NSSplitView {
         super.updateTrackingAreas()
         for area in dividerTrackingAreas { removeTrackingArea(area) }
         dividerTrackingAreas.removeAll()
-        for divider in effectiveDividerRects {
+        // Keep tracking the edge while the scrollbar fades, then re-evaluate
+        // drag availability on movement instead of leaving a stale cursor region.
+        for divider in dividerTrackingRects {
             let area = NSTrackingArea(rect: divider.rect,
                                      options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInKeyWindow, .enabledDuringMouseDrag],
                                      owner: self, userInfo: ["divider": divider.index])
@@ -65,6 +94,12 @@ final class WorkspaceDividerView: NSSplitView {
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let divider = effectiveDividerRects.first(where: { $0.rect.contains(point) }) else {
+            hoveredDivider = nil
+            needsDisplay = true
+            if blocksDraggingWhileLeadingScrollerVisible, isDividerDragBlocked(at: 0) {
+                NSCursor.arrow.set()
+                return
+            }
             super.mouseMoved(with: event)
             return
         }
@@ -76,6 +111,7 @@ final class WorkspaceDividerView: NSSplitView {
         guard let index = event.trackingArea?.userInfo?["divider"] as? Int else {
             super.mouseEntered(with: event); return
         }
+        guard !isDividerDragBlocked(at: index) else { NSCursor.arrow.set(); return }
         hoveredDivider = index
         needsDisplay = true
         NSCursor.resizeLeftRight.set()
@@ -91,6 +127,10 @@ final class WorkspaceDividerView: NSSplitView {
     override func cursorUpdate(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard effectiveDividerRects.contains(where: { $0.rect.contains(point) }) else {
+            if blocksDraggingWhileLeadingScrollerVisible, isDividerDragBlocked(at: 0) {
+                NSCursor.arrow.set()
+                return
+            }
             super.cursorUpdate(with: event); return
         }
         NSCursor.resizeLeftRight.set()
@@ -101,7 +141,7 @@ final class WorkspaceDividerView: NSSplitView {
         // Paint the divider itself opaque, or the desktop shows through this line.
         NSColor(white: 0.90, alpha: 1).setFill()
         rect.fill()
-        guard let index = hoveredDivider, subviews.indices.contains(index),
+        guard let index = hoveredDivider, !isDividerDragBlocked(at: index), subviews.indices.contains(index),
               abs(rect.midX - (subviews[index].frame.maxX + dividerThickness / 2)) < 1 else { return }
         NSColor.controlAccentColor.withAlphaComponent(0.45).setFill()
         NSRect(x: rect.midX - 1.5, y: rect.minY, width: 3, height: rect.height).fill()
@@ -118,6 +158,9 @@ class WorkspacePaneSplitController: NSSplitViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect,
                             forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
+        if let divider = splitView as? WorkspaceDividerView, divider.isDividerDragBlocked(at: dividerIndex) {
+            return .zero
+        }
         let nativeRect = super.splitView(splitView, effectiveRect: proposedEffectiveRect,
                                         forDrawnRect: drawnRect, ofDividerAt: dividerIndex)
         // Keep AppKit's collapsed-pane rules while making visible thin dividers
@@ -136,6 +179,7 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
 
     init(editor: NSViewController, preview: NSViewController) {
         super.init()
+        (splitView as? WorkspaceDividerView)?.blocksDraggingWhileLeadingScrollerVisible = true
         for controller in [editor, preview] {
             let item = NSSplitViewItem(viewController: controller)
             item.minimumThickness = 260

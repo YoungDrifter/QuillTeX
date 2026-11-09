@@ -143,6 +143,45 @@ struct WorkspaceLayoutTests {
         settle()
         check(!controller.splitViewItems[0].isCollapsed, "the sidebar toggle reopens a dragged-closed sidebar")
         check(abs(sidebarWidth() - 315) < 1, "reopening after a dragged collapse restores the previous width")
+        let editorScroll = NSScrollView()
+        editorScroll.hasVerticalScroller = true
+        editorScroll.autohidesScrollers = true
+        editorScroll.scrollerStyle = .overlay
+        let source = NSTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 4000))
+        source.string = String(repeating: "A long source document\n", count: 200)
+        editorScroll.documentView = source
+        let scrolling = WorkspaceSplitController(sidebar: pane(), topBar: pane(), editor: pane(editorScroll), preview: pane(), topBarHeight: 46)
+        window.contentViewController = scrolling
+        window.setContentSize(NSSize(width: 1280, height: 800))
+        scrolling.view.frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
+        settle()
+        let contentDivider = scrolling.content.splitView as! WorkspaceDividerView
+        let sidebarDivider = scrolling.splitView as! WorkspaceDividerView
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        check(!contentDivider.effectiveDividerRects.isEmpty, "faded overlay scroller permits resizing")
+        editorScroll.flashScrollers()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        check(contentDivider.isDividerDragBlocked(at: 0), "visible overlay knob blocks the entire content divider")
+        check(contentDivider.effectiveDividerRects.isEmpty, "visible scroller removes both sides of the divider grab region")
+        let line = NSRect(x: contentDivider.subviews[0].frame.maxX, y: 0, width: 1, height: contentDivider.bounds.height)
+        check(scrolling.content.splitView(contentDivider, effectiveRect: line, forDrawnRect: line, ofDividerAt: 0).isEmpty,
+              "native split dragging is disabled as well as custom hit testing")
+        check(!sidebarDivider.effectiveDividerRects.isEmpty, "editor scrollbar does not disable the sidebar divider")
+        let originalWidth = contentDivider.subviews[0].frame.width
+        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: contentDivider.convert(NSPoint(x: line.midX + 8, y: 100), to: nil),
+                                      modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                      eventNumber: 0, clickCount: 1, pressure: 1)!
+        contentDivider.mouseDown(with: click)
+        check(contentDivider.subviews[0].frame.width == originalWidth, "preview-side click cannot begin dragging while the knob is visible")
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        check(!contentDivider.effectiveDividerRects.isEmpty, "resizing resumes after the overlay knob fades")
+        editorScroll.scrollerStyle = .legacy
+        editorScroll.autohidesScrollers = false
+        settle()
+        check(contentDivider.isDividerDragBlocked(at: 0), "always-visible legacy scrollbar keeps content resizing disabled")
+        editorScroll.hasVerticalScroller = false
+        settle()
+        check(!contentDivider.effectiveDividerRects.isEmpty, "removing the scrollbar restores content resizing")
         print("PASS: \(checks) workspace-layout assertions")
     }
 }
