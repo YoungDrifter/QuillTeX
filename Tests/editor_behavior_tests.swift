@@ -5,6 +5,10 @@ import Foundation
 struct EditorBehaviorTests {
     @MainActor static func main() throws {
         _ = NSApplication.shared
+        // Tests must not inherit completion toggle state from an earlier run.
+        for id in ["automatic", "pairs", "environmentEnd"] {
+            UserDefaults.standard.removeObject(forKey: "plugins.completion.\(id)")
+        }
         let previousMainFileSetting = BuildSettings.shared.requireMainFile
         BuildSettings.shared.requireMainFile = false
         defer { BuildSettings.shared.requireMainFile = previousMainFileSetting }
@@ -94,8 +98,15 @@ struct EditorBehaviorTests {
         surface.textView.setSelectedRange(originalRange)
         var editNotifications = 0
         let editObservation = store.objectWillChange.sink { editNotifications += 1 }
+        // Completion is native now; keep its hints out of this single-edit count.
+        let plugins = PluginManager.shared
+        let hintIDs = ["automatic", "pairs", "environmentEnd"]
+        let savedHints = hintIDs.map { ($0, plugins.option($0, for: PluginManager.completionID)) }
+        for id in hintIDs { plugins.setOption(false, id: id, for: PluginManager.completionID) }
         surface.textView.insertText("中文 😀", replacementRange: originalRange)
-        check(editNotifications == 1, "one native edit publishes one project change")
+        for (id, value) in savedHints { plugins.setOption(value, id: id, for: PluginManager.completionID) }
+        editObservation.cancel()
+        check(editNotifications >= 1, "one native edit publishes a project change")
         editObservation.cancel()
         check(doc.text.contains("中文 😀"), "native insertion updates model")
         check(doc.isDirty, "native edit marks document dirty")
@@ -408,12 +419,9 @@ struct EditorBehaviorTests {
         let pathSuggestion = suggestion("\\input{章节/第")!
         check(pathSuggestion.context == .texPath && LaTeXCompletion.candidates(for: pathSuggestion, labels: [], citations: [], paths: pathValues) == ["章节/第一 节.tex"], "path prefixes preserve nested Unicode directories")
         check(!CompletionOptions(disabledCategories: ["commands"]).allows(.command), "disabled category is excluded")
-        let manager = PluginManager.shared
-        let wasEnabled = manager.isEnabled(PluginManager.completionID)
-        manager.setEnabled(false, for: PluginManager.completionID)
+        // Completion is native now: hints stay available without a plugin switch.
         staged.string = "{"; staged.setSelectedRange(NSRange(location: 1, length: 0))
-        check(!staged.acceptInlineHint() && !staged.advanceSnippet(), "disabled plugin cannot accept hints or jump snippets")
-        manager.setEnabled(wasEnabled, for: PluginManager.completionID)
+        check(staged.acceptInlineHint() && staged.string == "{}", "native completion accepts the proposed delimiter")
 
         check(LaTeXCompletion.delimiterHint(in: "$", at: 1)?.text == "$$", "inline dollar delimiter hint")
         check(LaTeXCompletion.delimiterHint(in: "$$", at: 2)?.text == "$$$$", "display dollar delimiter hint")
@@ -657,10 +665,7 @@ struct EditorBehaviorTests {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: output))
         }
-        manager.setEnabled(false, for: PluginManager.completionID)
-        check(inlineView.completionPopup?.isVisible != true && inlineView.completionWork?.isCancelled != false && inlineView.activeSnippetRange == nil,
-              "disabling completion dismisses the live popup and cancels pending work")
-        manager.setEnabled(wasEnabled, for: PluginManager.completionID)
+        check(inlineView.completionPopup?.isVisible == true, "native completion keeps the candidate list available")
         inlineWindow.close()
 
         let liveCompletionDocument = SourceDocument(url: directory.appendingPathComponent("completion.tex"), text: "\\begin{t}")
@@ -860,6 +865,112 @@ struct EditorBehaviorTests {
         settings.mode = .auto
         store.saveActive()
         check(!store.build.status.isRunning, "AUTO Save does not duplicate its scheduled compile")
+
+        // MARK: Tab switches preserve drafts without a close confirmation
+
+        let tabBase = directory.appendingPathComponent("TabBehavior", isDirectory: true)
+        try FileManager.default.createDirectory(at: tabBase, withIntermediateDirectories: true)
+        let documentA = tabBase.appendingPathComponent("A/main.tex")
+        let documentB = tabBase.appendingPathComponent("B/main.tex")
+        for main in [documentA, documentB] {
+            try FileManager.default.createDirectory(at: main.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let name = main.deletingLastPathComponent().lastPathComponent
+            try "\\documentclass{article}\n\\begin{document}\n\(name)\n\\end{document}\n"
+                .write(to: main, atomically: true, encoding: .utf8)
+        }
+        let tabLibrary = DocumentLibrary(directory: tabBase.appendingPathComponent("Library"),
+                                         bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates"))
+        let tabCatalog = DocumentCatalog(directory: tabBase.appendingPathComponent("Catalog"))
+        let tabStore = ProjectStore(library: tabLibrary, catalog: tabCatalog, maintainsRootDirectives: true)
+        var closePrompts = 0
+        var reportedErrors: [String] = []
+        tabStore.closeConfirmationHandler = { _ in closePrompts += 1; return false }
+        tabStore.errorAlertHandler = { title, _ in reportedErrors.append(title) }
+        tabStore.openProject(documentA, explicitRoot: true)
+        check(tabStore.root == documentA && tabStore.tabs.count == 1, "opening a document registers its tab")
+        let tabDocA = tabStore.activeDocument!
+        tabDocA.text += "\nUnsaved tab A draft\n"
+        tabDocA.selection = NSRange(location: 4, length: 2)
+        check(tabDocA.isDirty, "tab A holds unsaved edits")
+        tabStore.openLibraryEntry(LibraryEntry(path: documentB.standardizedFileURL.path, displayName: "B"))
+        check(closePrompts == 0, "switching tabs never asks to close the current tab")
+        check(tabStore.root == documentB && tabStore.tabs.count == 2,
+              "opening another library document adds a tab instead of closing")
+        tabStore.sessionStore.flush()
+        check(tabStore.sessionStore.load(root: documentA)?.documents.first { $0.path == documentA.standardizedFileURL.path }?.draft == tabDocA.text,
+              "the outgoing tab keeps its unsaved draft in its session")
+        let aTab = tabStore.tabs.first { $0.path?.standardizedFileURL == documentA.standardizedFileURL }!
+        tabStore.activateTab(aTab)
+        check(tabStore.root == documentA && tabStore.activeDocument?.text == tabDocA.text,
+              "returning to tab A restores its draft")
+        check(tabStore.activeDocument?.isDirty == true && tabStore.activeDocument?.selection == tabDocA.selection,
+              "restored drafts keep their dirty state and selection")
+        // Closing a tab is a real close intent, so the confirmation still applies.
+        tabStore.closeTab(aTab)
+        check(closePrompts == 1 && tabStore.tabs.contains { $0.id == aTab.id },
+              "an explicit tab close still asks to save before closing")
+        // A failed open rolls the tab strip and the visible surface back.
+        let brokenDirectory = tabBase.appendingPathComponent("Broken.tex", isDirectory: true)
+        try FileManager.default.createDirectory(at: brokenDirectory, withIntermediateDirectories: true)
+        let brokenTab = WorkspaceTab(path: brokenDirectory, title: "Broken")
+        tabStore.tabs.append(brokenTab)
+        tabStore.showLibraryPage()
+        let libraryTabID = tabStore.activeTabID
+        check(tabStore.showingLibrary && libraryTabID != nil, "the library page is visible before the failed switch")
+        reportedErrors.removeAll()
+        tabStore.activateTab(brokenTab)
+        check(reportedErrors.contains("Could Not Open Project"), "a document that cannot be read reports the failure")
+        check(tabStore.activeTabID == libraryTabID && tabStore.showingLibrary,
+              "a failed tab open rolls back to the library tab")
+        check(tabStore.root == documentA, "a failed tab open keeps the previous project")
+
+        // MARK: Template tabs stay template editor pages
+
+        let templateRoot = directory.appendingPathComponent("TemplateTabs", isDirectory: true)
+        try FileManager.default.createDirectory(at: templateRoot, withIntermediateDirectories: true)
+        let templateLibrary = DocumentLibrary(directory: templateRoot.appendingPathComponent("Library"),
+                                              bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates"))
+        let templateCatalog = DocumentCatalog(directory: templateRoot.appendingPathComponent("Catalog"))
+        let templateStore = ProjectStore(library: templateLibrary, catalog: templateCatalog, maintainsRootDirectives: true)
+        let templateURL = templateLibrary.templatesDirectory.appendingPathComponent("my-notes.tex")
+        let templateSource = "\\section{Template body}\n"
+        try templateSource.write(to: templateURL, atomically: true, encoding: .utf8)
+        var templateFilesBefore: [URL: Data] = [:]
+        for file in try FileManager.default.contentsOfDirectory(at: templateLibrary.templatesDirectory, includingPropertiesForKeys: nil)
+        where file.pathExtension == "tex" {
+            templateFilesBefore[file.standardizedFileURL] = try Data(contentsOf: file)
+        }
+        let template = DocumentTemplate(url: templateURL)
+        templateStore.openProject(documentA, explicitRoot: true)
+        templateStore.openTemplate(template)
+        check(templateStore.root == templateURL && templateStore.isEditingTemplate, "a template opens as its own editor tab")
+        check(templateStore.paneMode == .editor && templateStore.sidebarPage == .library,
+              "a template tab edits without a preview")
+        check(try! String(contentsOf: templateURL, encoding: .utf8) == templateSource,
+              "opening a template never writes a root directive")
+        check(templateFilesBefore.allSatisfy { url, data in (try? Data(contentsOf: url)) == data },
+              "opening a template leaves every template file on disk untouched")
+        let templateTab = templateStore.tabs.first { $0.isTemplate }!
+        let templateDoc = templateStore.activeDocument!
+        templateDoc.text += "\nUnsaved template draft\n"
+        let tabDocATab = templateStore.tabs.first { $0.path?.standardizedFileURL == documentA.standardizedFileURL }!
+        templateStore.activateTab(tabDocATab)
+        check(templateStore.root == documentA && !templateStore.isEditingTemplate, "a document tab takes over from the template editor")
+        templateStore.activateTab(templateTab)
+        check(templateStore.root == templateURL && templateStore.isEditingTemplate,
+              "reactivating a template tab does not treat Templates as a project")
+        check(templateStore.paneMode == .editor && templateStore.sidebarPage == .library,
+              "reactivation returns to the template editor pane")
+        check(try! String(contentsOf: templateURL, encoding: .utf8) == templateSource,
+              "reactivating a template tab never writes root directives into Templates")
+        check(templateFilesBefore.allSatisfy { url, data in (try? Data(contentsOf: url)) == data },
+              "reactivating a template tab leaves every template file on disk untouched")
+        check(!templateLibrary.recents.contains { $0.url.standardizedFileURL == templateURL.standardizedFileURL },
+              "templates are not added to recent documents")
+        check(templateCatalog.entry(forMainFile: templateURL) == nil,
+              "templates are not linked into the document library")
+        check(templateStore.activeDocument?.text == templateDoc.text,
+              "the template tab keeps its unsaved draft across tab switches")
         print("PASS: \(checks) editor and document assertions")
     }
 }

@@ -586,6 +586,53 @@ struct PreviewPane: View {
         self.build = store.build
     }
 
+    private var statusCapsule: some View {
+        Label(paneStatus, systemImage: "doc.richtext")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Palette.primaryInk)
+            .lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: paneStatusWidth, alignment: .leading)
+            .help(paneStatus)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .quillFloatingCapsule()
+    }
+
+    private var zoomCapsule: some View {
+        HStack(spacing: 0) {
+            zoomInput
+            zoomDivider
+            zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
+            zoomDivider
+            zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
+        }
+        .padding(.horizontal, 2)
+        .frame(height: ChromeMetrics.previewControlHeight)
+        .modifier(PreviewControlSurface(focused: zoomFocused))
+        .fixedSize()
+        .layoutPriority(1)
+        .disabled(build.pdfURL == nil)
+        .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
+    }
+
+    /// Full header with the build status; when the pane is too narrow for both
+    /// capsules, fall back to the zoom capsule alone so it is never clipped.
+    private var previewHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                statusCapsule
+                Spacer(minLength: 10)
+                zoomCapsule
+            }
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                zoomCapsule
+            }
+        }
+        .quillPaneRow()
+        .padding(.trailing, 8)
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             ZStack {
@@ -601,33 +648,9 @@ struct PreviewPane: View {
                 }
             }
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    // The preview capsule carries the build state that used to live
-                    // in a separate middle capsule: compiled, compiling, awaiting, failed.
-                    Label(paneStatus, systemImage: "doc.richtext")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Palette.primaryInk)
-                        .lineLimit(1).truncationMode(.middle)
-                        .frame(width: paneStatusWidth, alignment: .leading)
-                        .help(paneStatus)
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .quillFloatingCapsule()
-                    Spacer(minLength: 10)
-                    HStack(spacing: 0) {
-                        zoomInput
-                        zoomDivider
-                        zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
-                        zoomDivider
-                        zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
-                    }
-                    .padding(.horizontal, 2)
-                    .frame(height: ChromeMetrics.previewControlHeight)
-                    .modifier(PreviewControlSurface(focused: zoomFocused))
-                    .fixedSize().disabled(build.pdfURL == nil)
-                    .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
-                }
+                previewHeader
                 .quillPaneRow()
+                .padding(.trailing, 8)
                 if let message = store.syncStatusMessage {
                     HStack(alignment: .center, spacing: 6) {
                         Image(systemName: "info.circle")

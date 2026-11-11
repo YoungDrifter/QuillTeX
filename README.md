@@ -6,31 +6,36 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 1.2.1** · macOS 14+ · Apple Silicon
+**Version 2.0.0** · macOS 14+ · Apple Silicon
 
-[下载 1.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1)
+[下载 2.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.0)
 
-![QuillTeX 1.2.0 · 写作工作区](docs/icon/screenshot.png)
+![QuillTeX 2.0.0 · 文档库](docs/icon/library.png)
+
+![QuillTeX 2.0.0 · 写作工作区](docs/icon/screenshot.png)
 
 ## 功能
 
-- 本地文稿库、最近打开与模板，支持单文件文稿和多文件工程。
-- 章节、标签和图表导航，帮助定位长篇文稿与子文件。
-- LaTeX 语法高亮与可独立配置的 Completion 插件，按 Tab 接受行内提示，默认 Option–Esc 打开分类候选，快捷键可在插件设置中自定义，支持分阶段环境补全、工程路径和数学参数跳转。
+- 本地文档库自动收录打开的 `.tex`，可按文件夹、Star 和搜索整理；提供列表与 PDF 卡片视图，支持日期属性与排序方向切换，右键可把已编译 PDF 导出到指定目录；文件夹可自定义颜色，新建时选择或通过右键菜单修改。
+- All Tex、Starred、Templates 和文件夹都以标签打开；New Tab 页提供新建、打开、模板、Quick Open 与最近文档。
+- 文档标签可拖动排序和关闭；All Tex 是临时主页标签，打开文档后折叠回 home 图标，点击即可回到文档库。
+- 章节、引用标签、图表和表格导航，帮助定位长篇文稿与子文件。
+- LaTeX 语法高亮与内置 Completion：按 Tab 接受行内提示，Option–Esc 打开分类候选，支持分阶段环境补全、工程路径和数学参数跳转。
+- Templates 以卡片或列表显示每个模板的内容与日期，可在应用内新建、编辑、重命名和删除，点击即像普通文稿一样编辑，不显示 PDF 预览和编译按钮。
+- 新建文档弹窗包含名称、位置与模板三项，默认保存到 `~/Documents/QuillTeX`，并记住上次使用的文件夹；默认新建位置可在设置 → Library 中修改；不选择模板时创建空白文稿。
+- 在展开的文件夹中直接新建 TeX 或文件夹，名称在文件行内编辑，回车或点击侧栏空白处保存，留空使用默认名，右键可重命名或移到废纸篓。
 - 使用 XeLaTeX、pdfLaTeX 或 LuaLaTeX 本地编译，点击诊断跳转到对应源码。
 - 可折叠的警告／错误列表与排版校对，帮助检查错误、溢出行和未解析引用。
 - 源码与 PDF 并排显示，支持手势缩放、Actual Size、适应宽度和实时缩放比例，以及 ⌘-点击双向定位。
-- 点击顶栏文件名可重命名并设置 Finder 标签，文件切换通过 TeX、Folder、Structure 侧栏与编辑区路径完成。
-- TeX Project 插件按 Main、Sub、Others 管理工程关系，可拖动文件切换入口或增删 `% !TeX root = …` 注释，关闭插件后当前 TeX 文件直接作为编译与预览目标，已有主文件注释仍会被识别。
-- 在展开的文件夹中直接新建 TeX 或文件夹，名称在文件行内编辑，回车或点击侧栏空白处保存，留空使用默认名，右键可重命名或移到废纸篓。
-- 恢复已打开文件、编辑位置与 PDF 阅读状态，保留异常退出前的未保存编辑。
+- TeX Project 是内置功能：按 Main、Sub、Others 管理工程关系，可拖动文件增删 `% !TeX root = …` 注释，已有主文件注释仍会被识别。
+- 重新打开工程时恢复上次的文件、编辑位置与 PDF 阅读状态，异常退出前的未保存编辑也会保留。
 - TeX 与 PDF 跟随外部保存自动刷新；存在未保存的 TeX 编辑时，可选择保留当前编辑或采用外部版本。
-- 统一的分类设置界面，包含编译配置、自动构建、插件入口与应用信息。
-- 每天自动检查 GitHub 正式版；有更新时在应用内提示、下载并安装，也可从应用菜单或 About 手动检查。
+- 设置以标签打开；侧栏第 2 页显示编译配置、自动构建与 Library 分类，以及应用版本。
+- 每天自动检查 GitHub 正式版；有更新时在应用内提示、下载并安装，也可从应用菜单手动检查。
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1) 下载 `QuillTeX-1.2.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.0) 下载 `QuillTeX-2.0.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -40,7 +45,7 @@
 
 ### 1.0.0 · 首次发布
 
-首次发布，支持文稿管理、多文件工程、独立标签栏、LaTeX 编辑与补全、主文件管理、本地编译、PDF 预览和双向定位。
+首次发布，支持文稿管理、多文件工程、多标签编辑、LaTeX 编辑与补全、主文件管理、本地编译、PDF 预览和双向定位。
 
 [版本介绍](docs/versions/1.0.0/README.md) · [下载 1.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.0.0)
 
@@ -97,6 +102,12 @@ TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主�
 打开工程时编辑区与预览区恢复等宽，分栏比例不再随窗口缩放漂移；侧栏/编辑与编辑/预览两条中间分隔线在滚动条显示时暂停拖动，滚动条淡出后恢复。编辑区胶囊显示保存状态（Saved / Unsaved），顶栏文件名去掉未保存圆点；PDF 胶囊显示编译状态与临时提示（Not built yet / Compiling · showing the previous PDF / Build succeeded / Awaiting compilation / Build failed / SyncTeX was not found…，均为英文），胶囊宽度随文字自适应；重命名主 TeX 文件时 PDF 与 aux、log、synctex 等辅助文件同步改名。
 
 [更新说明](docs/versions/1.2.1/README.md) · [下载 1.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v1.2.1)
+
+### 2.0.0 · 文档库与标签化工作区
+
+以本地文档库作为启动主页：自动收录打开的 `.tex`，支持文件夹、Star、搜索、文件夹颜色、列表与 PDF 卡片视图、日期属性与排序方向切换，并可右键导出 PDF。All Tex、Starred、Templates 和文件夹以标签打开；All Tex 是临时主页标签，关闭最后一个标签会进入 New Tab。标签可拖动排序与关闭；Templates 可在应用内新建与编辑，无 PDF 预览与编译按钮；新建文档不选模板即为空白，并可设置保存位置，默认新建位置可在设置 → Library 中修改。设置改为标签，侧栏第 2 页显示设置分类；Completion 与 TeX Project 转为内置功能，无需单独启用。界面统一按钮、胶囊与卡片的玻璃材质及动画；新建文档、文件夹与确认弹窗改为简洁的浮动卡片。
+
+[更新说明](docs/versions/2.0.0/README.md) · [下载 2.0.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.0)
 
 ## 本地构建
 

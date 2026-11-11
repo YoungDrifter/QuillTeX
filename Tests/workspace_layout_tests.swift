@@ -3,6 +3,7 @@ import PDFKit
 
 enum PaneMode { case editor, split, preview }
 
+
 @main
 struct WorkspaceLayoutTests {
     @MainActor static func main() {
@@ -35,7 +36,110 @@ struct WorkspaceLayoutTests {
             let items = controller.content.splitViewItems
             return abs(items[0].viewController.view.frame.width - items[1].viewController.view.frame.width) < 1
         }
+        /// Draws a divider into a small bitmap so the resting line can be checked
+        /// without depending on the window server.
+        func renderedDividerPixel(_ split: WorkspaceDividerView) -> NSColor? {
+            let size = NSSize(width: 4, height: 4)
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+            NSGraphicsContext.current = context
+            NSColor.clear.setFill()
+            NSRect(origin: .zero, size: size).fill(using: .copy)
+            split.drawDivider(in: NSRect(origin: .zero, size: size))
+            context.flushGraphics()
+            return rep.colorAt(x: 2, y: 2)?.usingColorSpace(.sRGB)
+        }
         settle()
+        // The content column: one shared backdrop behind a transparent top bar
+        // and a single white rounded card that hosts the editor/PDF split.
+        let contentColumn = controller.splitViewItems[1].viewController.view
+        let backdrop = controller.backdropView
+        let card = controller.cardView
+        let columnBounds = contentColumn.bounds
+        check(backdrop.superview === contentColumn, "backdrop is hosted by the content column")
+        check(card.superview === contentColumn, "card is hosted by the content column")
+        check(contentColumn.subviews.first === backdrop, "backdrop is the backmost content column view")
+        check(contentColumn.subviews.count == 3, "content column stacks backdrop, top bar and card")
+        let topBarHost = contentColumn.subviews[1]
+        check(topBarHost !== backdrop && topBarHost !== card, "top bar sits between backdrop and card")
+        check(abs(topBarHost.frame.height - 46) < 0.5, "top bar keeps its 46 point height on the backdrop")
+        check(abs(backdrop.frame.minX - columnBounds.minX) < 0.5 &&
+              abs(backdrop.frame.minY - columnBounds.minY) < 0.5 &&
+              abs(backdrop.frame.width - columnBounds.width) < 0.5 &&
+              abs(backdrop.frame.height - columnBounds.height) < 0.5,
+              "backdrop covers the whole content column")
+        check(abs(backdrop.veilView.frame.width - backdrop.bounds.width) < 0.5 &&
+              abs(backdrop.veilView.frame.height - backdrop.bounds.height) < 0.5,
+              "backdrop veil covers the material")
+        check(backdrop.material == .sidebar, "backdrop uses the sidebar material")
+        check(backdrop.blendingMode == .behindWindow, "backdrop blends with the window background")
+        check(backdrop.state == .active, "backdrop stays active")
+        check(backdrop.hitTest(NSPoint(x: columnBounds.midX, y: columnBounds.midY)) == nil,
+              "decorative backdrop never takes input")
+        let veil = backdrop.veilView.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB)
+        if backdrop.reducesTransparency {
+            check(veil != nil && abs(veil!.whiteComponent - 0.945) < 0.01 && veil!.alphaComponent > 0.99,
+                  "reduced transparency uses the opaque light gray surface")
+        } else {
+            check(veil != nil && abs(veil!.redComponent - 1) < 0.01 && abs(veil!.alphaComponent - 0.25) < 0.01,
+                  "backdrop uses the sidebar's 25% white veil")
+        }
+        check(abs(card.frame.minX - 8) < 0.5, "card is inset 8 points from the content leading edge")
+        check(abs(card.frame.maxX - (columnBounds.width - 8)) < 0.5, "card is inset 8 points from the content trailing edge")
+        check(abs(card.frame.minY - 8) < 0.5, "card is inset 8 points from the content bottom")
+        check(abs(card.frame.maxY - (columnBounds.height - 46)) < 0.5, "card starts at the 46 point top bar bottom")
+        check(abs(card.frame.maxY - topBarHost.frame.minY) < 0.5, "card top is flush with the top bar bottom")
+        check(card.wantsLayer, "card is layer backed")
+        check(card.layer?.cornerRadius == 16, "card uses a 16 point corner radius")
+        check(card.layer?.cornerCurve == .continuous, "card uses continuous corners")
+        check(card.layer?.masksToBounds == true, "card clips its content to the rounded corners")
+        let cardColor = card.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB)
+        check(cardColor != nil && cardColor!.redComponent > 0.99 && cardColor!.greenComponent > 0.99 &&
+              cardColor!.blueComponent > 0.99 && cardColor!.alphaComponent > 0.99, "card paints opaque white")
+        check(controller.content.view.superview === card, "editor/PDF split is hosted by the card")
+        check(abs(controller.content.view.frame.width - card.bounds.width) < 0.5 &&
+              abs(controller.content.view.frame.height - card.bounds.height) < 0.5,
+              "editor/PDF split fills the card edge to edge")
+        let outerDivider = controller.splitView as! WorkspaceDividerView
+        let innerDivider = controller.content.splitView as! WorkspaceDividerView
+        check(outerDivider.dividerAppearance == .sharedBackground, "outer divider uses the shared backdrop appearance")
+        check(outerDivider.restingDividerColor.alphaComponent == 0, "outer divider is clear at rest")
+        check(innerDivider.dividerAppearance == .cardHairline, "inner divider uses the card hairline appearance")
+        let hairline = innerDivider.restingDividerColor.usingColorSpace(.sRGB)
+        check(hairline != nil && abs(hairline!.redComponent - 0.92) < 0.01 && hairline!.alphaComponent == 1,
+              "inner divider is a subtle opaque hairline")
+        let outerPixel = renderedDividerPixel(outerDivider)
+        check(outerPixel != nil && outerPixel!.alphaComponent < 0.01, "outer divider paints no resting line")
+        let innerPixel = renderedDividerPixel(innerDivider)
+        check(innerPixel != nil && abs(innerPixel!.redComponent - 0.92) < 0.01 && innerPixel!.alphaComponent > 0.99,
+              "inner divider paints the card hairline")
+        // The library browser (no document open) keeps the backdrop but drops the
+        // white card: its content area runs edge to edge below the top bar.
+        controller.setCardStyle(.library)
+        settle()
+        check(controller.cardStyle == .library, "card style switches to the library browser")
+        check(abs(card.frame.minX) < 0.5 && abs(card.frame.maxX - contentColumn.bounds.width) < 0.5 &&
+              abs(card.frame.minY) < 0.5 && abs(card.frame.maxY - (contentColumn.bounds.height - 46)) < 0.5,
+              "library card fills the content area from the top bar to the window edges")
+        let libraryColor = card.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB)
+        check(libraryColor != nil && libraryColor!.alphaComponent < 0.01, "library card has no white surface")
+        check(card.layer?.masksToBounds == false && card.layer?.cornerRadius == 0,
+              "library card neither rounds nor clips the browser")
+        check(abs(backdrop.frame.width - contentColumn.bounds.width) < 0.5 &&
+              abs(backdrop.frame.height - contentColumn.bounds.height) < 0.5,
+              "backdrop still covers the content column in the library style")
+        controller.setCardStyle(.document)
+        settle()
+        check(controller.cardStyle == .document, "card style returns to the document card")
+        check(abs(card.frame.minX - 8) < 0.5 && abs(card.frame.maxX - (contentColumn.bounds.width - 8)) < 0.5 &&
+              abs(card.frame.minY - 8) < 0.5 && abs(card.frame.maxY - (contentColumn.bounds.height - 46)) < 0.5,
+              "switching back restores the document card insets")
+        check(card.layer?.cornerRadius == 16 && card.layer?.masksToBounds == true,
+              "switching back restores the white rounded card")
         let drawn = NSRect(x: sidebarWidth(), y: 0, width: controller.splitView.dividerThickness, height: 800)
         let grab = controller.splitView(controller.splitView, effectiveRect: drawn, forDrawnRect: drawn, ofDividerAt: 0)
         check(abs(grab.width - 25) < 1, "sidebar resize cursor is limited to the divider")
@@ -106,23 +210,45 @@ struct WorkspaceLayoutTests {
         controller.content.splitView.setPosition(400, ofDividerAt: 0)
         settle()
         verifyCursorRegion(controller.content.splitView as! WorkspaceDividerView)
+        let wideCard = card.frame
         window.setContentSize(NSSize(width: 960, height: 700))
         settle()
+        check(abs(card.frame.width - (wideCard.width - 320)) < 1, "card shrinks with the window")
+        check(abs(card.frame.minX - 8) < 0.5 && abs(card.frame.maxX - (contentColumn.bounds.width - 8)) < 0.5,
+              "card keeps its horizontal insets after a window resize")
+        check(abs(card.frame.minY - 8) < 0.5 && abs(card.frame.maxY - (contentColumn.bounds.height - 46)) < 0.5,
+              "card keeps its vertical insets after a window resize")
         verifyCursorRegion(controller.content.splitView as! WorkspaceDividerView)
         for mode in [PaneMode.editor, .preview] {
             controller.update(sidebarVisible: true, paneMode: mode, splitLayoutVersion: 4)
             settle()
             check((controller.content.splitView as! WorkspaceDividerView).effectiveDividerRects.isEmpty,
                   "collapsed content panes leave no resize hit or cursor region")
+            // AppKit may re-run the window's content constraints while collapsing a
+            // split item, so verify the card tracks its own content column exactly.
+            check(abs(card.frame.minX - 8) < 0.5 &&
+                  abs(card.frame.maxX - (contentColumn.bounds.width - 8)) < 0.5 &&
+                  abs(card.frame.minY - 8) < 0.5 &&
+                  abs(card.frame.maxY - (contentColumn.bounds.height - 46)) < 0.5,
+                  "Editor Only / PDF Only leaves the card and its insets unchanged")
         }
+        let expandedContentWidth = contentColumn.bounds.width
         controller.update(sidebarVisible: false, paneMode: .split, splitLayoutVersion: 4)
         settle()
         check((controller.splitView as! WorkspaceDividerView).effectiveDividerRects.isEmpty,
               "collapsed sidebar leaves no stale resize region")
+        check(abs(card.frame.minX - 8) < 0.5 && abs(card.frame.width - (contentColumn.bounds.width - 16)) < 0.5,
+              "card follows the content column when the sidebar collapses")
+        check(contentColumn.bounds.width > expandedContentWidth + 100 && card.frame.width > 200,
+              "collapsing the sidebar gives the card the reclaimed width")
         verifyCursorRegion(controller.content.splitView as! WorkspaceDividerView)
         window.setContentSize(NSSize(width: 1280, height: 800))
         controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 4)
         settle()
+        check(abs(card.frame.width - (contentColumn.bounds.width - 16)) < 0.5,
+              "card returns to the expanded content column width")
+        check(abs(card.frame.maxY - (contentColumn.bounds.height - 46)) < 0.5,
+              "card keeps the top bar boundary after expanding again")
         controller.restoreLayout(sidebarWidth: 315, editorFraction: 0.64)
         settle()
         check(abs(sidebarWidth() - 315) < 1, "restored sidebar width is applied independently")

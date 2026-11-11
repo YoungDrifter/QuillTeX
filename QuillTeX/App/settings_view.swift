@@ -2,43 +2,36 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
-    enum Section: String, CaseIterable {
-        case compilation = "Compilation", automation = "Automation", plugins = "Plugins", about = "About"
-        var symbol: String {
-            switch self {
-            case .compilation: "hammer"
-            case .automation: "clock"
-            case .plugins: "puzzlepiece.extension"
-            case .about: "info.circle"
-            }
-        }
-    }
+    typealias Section = SettingsSection
 
     @ObservedObject private var settings: BuildSettings
-    @State private var selection: Section
+    @ObservedObject private var navigation = SettingsNavigation.shared
+    @State private var libraryDirectory: URL?
     @FocusState private var focused: Field?
     @State private var showingCustomStrategy = false
     @State private var draftName = ""
     @State private var draftRuns = 2
     @State private var draftBibliography = 0
     @State private var hoveringAddStrategy = false
+    var embedded = false
     private enum Field { case texBin, output }
     private var version: String { AppUpdater.currentDisplayVersion }
     private var icon: NSImage { NSImage(named: "AppIcon") ?? NSApp.applicationIconImage }
 
-    init(settings: BuildSettings = .shared, initialSection: Section = .compilation) {
+    init(settings: BuildSettings = .shared, initialSection: Section = .compilation, embedded: Bool = false) {
         _settings = ObservedObject(wrappedValue: settings)
-        _selection = State(initialValue: initialSection)
+        self.embedded = embedded
     }
 
     var body: some View {
         SettingsLayout(appName: "QuillTeX", version: version, icon: icon,
                        categories: Section.allCases.map { SettingsCategory(id: $0, title: $0.rawValue, symbol: $0.symbol) },
-                       selection: $selection) {
-            switch selection {
+                       selection: $navigation.section, embedded: embedded,
+                       showsSidebar: !embedded) {
+            switch navigation.section {
             case .compilation: compilation
             case .automation: automation
-            case .plugins: PluginSettingsPane()
+            case .library: library
             case .about: about
             }
         }
@@ -141,6 +134,26 @@ struct SettingsView: View {
         }
     }
 
+    private var library: some View {
+        SettingsPage(title: "Library", subtitle: "Choose where new documents are created.") {
+            SettingsCard(title: "New documents") {
+                SettingsRow(title: "Default location",
+                            subtitle: (libraryDirectory ?? LibraryPreferences.shared.newDocumentDirectory).path) {
+                    HStack(spacing: 8) {
+                        Button("Choose…") { chooseLibraryFolder() }
+                            .buttonStyle(SettingsActionStyle())
+                        Button("Reset") {
+                            LibraryPreferences.shared.resetToDefault()
+                            libraryDirectory = LibraryPreferences.shared.newDocumentDirectory
+                        }
+                        .buttonStyle(SettingsActionStyle())
+                    }
+                }
+            }
+        }
+        .onAppear { libraryDirectory = LibraryPreferences.shared.newDocumentDirectory }
+    }
+
     private var about: some View {
         AboutSettingsPane(appName: "QuillTeX", icon: icon,
                           summary: "A focused LaTeX editor.")
@@ -193,5 +206,20 @@ struct SettingsView: View {
         panel.message = "Choose the folder that contains latexmk"
         panel.prompt = "Use Folder"
         if panel.runModal() == .OK, let url = panel.url { settings.texBinDirectory = url.path }
+    }
+
+    private func chooseLibraryFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = libraryDirectory ?? LibraryPreferences.shared.newDocumentDirectory
+        panel.message = "Choose where new documents are created"
+        panel.prompt = "Use Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            LibraryPreferences.shared.setDirectory(url)
+            libraryDirectory = url
+        }
     }
 }

@@ -12,22 +12,13 @@ struct DocumentLibraryTests {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
         check(library.storageError == nil, "library initializes")
-        check(library.templates.count == 6, "five portable templates plus blank")
-        check(library.templates.contains { $0.title == "blank" }, "blank template selectable")
-        let blank = library.templates.first { $0.title == "blank" }!
-        let blankBytes = try Data(contentsOf: blank.url)
-        check(blankBytes.isEmpty, "blank template contains zero bytes")
-        let legacyBlank = "\\documentclass[UTF8]{ctexart}\n\\begin{document}\n\n\\end{document}\n"
-        try legacyBlank.write(to: blank.url, atomically: true, encoding: .utf8)
-        let updatedBlankLibrary = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
-        let updatedBlankSource = try updatedBlankLibrary.source(for: blank)
-        check(updatedBlankSource.isEmpty, "the previous shipped blank becomes empty on restart")
-        let customBlank = "% My own starting point\n"
-        try customBlank.write(to: blank.url, atomically: true, encoding: .utf8)
-        let customBlankLibrary = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
-        let retainedBlankSource = try customBlankLibrary.source(for: blank)
-        check(retainedBlankSource == customBlank, "a customized blank template is retained")
-        try Data().write(to: blank.url, options: .atomic)
+        check(library.templates.count == 5, "five portable templates ship without a blank entry")
+        check(!library.templates.contains { $0.title == "blank" }, "blank is not a template; it is the unselected default")
+        for template in library.templates {
+            let actual = try Data(contentsOf: template.url)
+            let original = try Data(contentsOf: bundled.appendingPathComponent(template.url.lastPathComponent))
+            check(actual == original, "template copied without modifications: \(template.title)")
+        }
         for template in library.templates {
             let actual = try Data(contentsOf: template.url)
             let original = try Data(contentsOf: bundled.appendingPathComponent(template.url.lastPathComponent))
@@ -44,17 +35,52 @@ struct DocumentLibraryTests {
         try "Current article".write(to: legacyTemplates.appendingPathComponent("article.tex"), atomically: true, encoding: .utf8)
         try "Customized old article".write(to: legacyTemplates.appendingPathComponent("basic_article.tex"), atomically: true, encoding: .utf8)
         try "Earlier old article".write(to: legacyTemplates.appendingPathComponent("basic-article.tex"), atomically: true, encoding: .utf8)
-        try legacyBlank.write(to: legacyTemplates.appendingPathComponent("空白文稿.tex"), atomically: true, encoding: .utf8)
+        try "Legacy blank".write(to: legacyTemplates.appendingPathComponent("空白文稿.tex"), atomically: true, encoding: .utf8)
         let migrated = DocumentLibrary(directory: legacyDirectory, bundledTemplatesDirectory: bundled)
         check(migrated.storageError == nil, "legacy filenames migrate successfully")
-        check(!migrated.templates.contains { $0.title.hasPrefix("basic") || $0.title == "空白文稿" }, "previous built-in names become plain English names")
+        check(!migrated.templates.contains { $0.title.hasPrefix("basic") }, "previous built-in names become plain English names")
         let articleSources = try migrated.templates.filter { $0.title.hasPrefix("article") }.map { try migrated.source(for: $0) }
         check(Set(articleSources) == ["Current article", "Customized old article", "Earlier old article"], "filename migration retains every customized copy and resolves collisions")
-        let migratedBlank = migrated.templates.first { $0.title == "blank" }!
-        let migratedBlankSource = try migrated.source(for: migratedBlank)
-        check(migratedBlankSource.isEmpty, "renamed stock blank remains empty")
+        let legacyCustomBlank = migrated.templates.first { $0.title == "空白文稿" }
+        check(legacyCustomBlank.flatMap { try? migrated.source(for: $0) } == "Legacy blank",
+              "a customized legacy blank keeps its content instead of being deleted")
+        check(!migrated.templates.contains { $0.title == "blank" }, "an empty retired blank is not recreated")
         let migrationRestart = DocumentLibrary(directory: legacyDirectory, bundledTemplatesDirectory: bundled)
         check(migrationRestart.templates.count == migrated.templates.count, "filename migration does not duplicate templates on restart")
+        // The retired built-in blank is cleaned up once on upgrade; any blank the
+        // user creates later must survive every later launch.
+        let upgrade = base.appendingPathComponent("BlankUpgrade")
+        let upgradeTemplates = upgrade.appendingPathComponent("Templates")
+        try FileManager.default.createDirectory(at: upgradeTemplates, withIntermediateDirectories: true)
+        try Data().write(to: upgradeTemplates.appendingPathComponent("blank.tex"))
+        try Data().write(to: upgradeTemplates.appendingPathComponent("空白文稿.tex"))
+        let upgraded = DocumentLibrary(directory: upgrade, bundledTemplatesDirectory: bundled)
+        check(upgraded.storageError == nil, "blank upgrade cleanup succeeds")
+        check(!FileManager.default.fileExists(atPath: upgradeTemplates.appendingPathComponent("blank.tex").path),
+              "the shipped zero-byte blank.tex is removed once")
+        check(!FileManager.default.fileExists(atPath: upgradeTemplates.appendingPathComponent("空白文稿.tex").path),
+              "the old zero-byte Chinese blank is removed once")
+        check(!upgraded.templates.contains { $0.title == "blank" || $0.title == "空白文稿" },
+              "retired blank entries disappear from the chooser")
+        let userBlank = try upgraded.createTemplate(named: "blank")
+        check(try! upgraded.source(for: userBlank).isEmpty, "New Template blank starts empty")
+        let upgradedRestart = DocumentLibrary(directory: upgrade, bundledTemplatesDirectory: bundled)
+        check(upgradedRestart.templates.contains { $0.title == "blank" },
+              "a blank template created after the upgrade survives a restart")
+        check(FileManager.default.fileExists(atPath: userBlank.url.path),
+              "the second launch no longer deletes the user's blank template")
+        let customizedDirectory = base.appendingPathComponent("CustomizedBlank")
+        let customizedTemplates = customizedDirectory.appendingPathComponent("Templates")
+        try FileManager.default.createDirectory(at: customizedTemplates, withIntermediateDirectories: true)
+        try "\\section{My Blank}".write(to: customizedTemplates.appendingPathComponent("blank.tex"), atomically: true, encoding: .utf8)
+        try Data().write(to: customizedTemplates.appendingPathComponent("空白文稿.tex"))
+        let customized = DocumentLibrary(directory: customizedDirectory, bundledTemplatesDirectory: bundled)
+        check(customized.templates.contains { $0.title == "blank" }, "a customized blank template is preserved")
+        check(customized.templates.first { $0.title == "blank" }.flatMap { try? customized.source(for: $0) } == "\\section{My Blank}",
+              "the customized blank keeps its content")
+        check(!customized.templates.contains { $0.title == "空白文稿" }, "the empty legacy copy is still cleaned up")
+        let customizedRestart = DocumentLibrary(directory: customizedDirectory, bundledTemplatesDirectory: bundled)
+        check(customizedRestart.templates.contains { $0.title == "blank" }, "the customized blank survives a restart")
         // Recovery is isolated from the ordinary chooser/import count checks.
         let recovery = base.appendingPathComponent("Recovery")
         let archived = recovery.appendingPathComponent("RetiredTemplates")
@@ -84,15 +110,15 @@ struct DocumentLibraryTests {
         check(imported != editable.url, "same-name import gets a new name")
         let importedSource = try String(contentsOf: imported, encoding: .utf8)
         check(importedSource == "customized", "import source retained")
-        check(restarted.templates.count == 7, "import immediately updates chooser")
+        check(restarted.templates.count == 6, "import immediately updates chooser")
         // Deleting a template removes only that file and refreshes the chooser.
         let doomed = restarted.templates.first { $0.url.standardizedFileURL.path == imported.standardizedFileURL.path }!
         try restarted.deleteTemplate(doomed)
         check(!FileManager.default.fileExists(atPath: imported.path), "deleted template file is gone")
-        check(restarted.templates.count == 6, "chooser drops the deleted template")
+        check(restarted.templates.count == 5, "chooser drops the deleted template")
         let afterDelete = DocumentLibrary(directory: base, bundledTemplatesDirectory: bundled)
         check(!afterDelete.templates.contains { $0.id == doomed.id }, "deletion persists across launches")
-        check(afterDelete.templates.count == 6, "remaining templates survive")
+        check(afterDelete.templates.count == 5, "remaining templates survive")
         for number in 0..<25 { try restarted.record(base.appendingPathComponent("doc-\(number).tex")) }
         check(restarted.recents.count == 20, "history limit")
         try restarted.record(base.appendingPathComponent("doc-9.tex"))

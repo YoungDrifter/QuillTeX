@@ -1,11 +1,32 @@
 import AppKit
 
+/// The sidebar/content divider lives on the shared backdrop; the editor/PDF
+/// divider lives inside the white card. Each split declares which one it owns,
+/// because `drawDivider` cannot tell them apart by itself.
+enum WorkspaceDividerAppearance {
+    /// No resting line: the sidebar and the content column share one continuous
+    /// backdrop, so a visible line there would break the surface apart.
+    case sharedBackground
+    /// A subtle hairline that reads against the white card.
+    case cardHairline
+}
+
 /// A wider grab region needs its own hover feedback above the neighboring
 /// text/PDF views, whose cursor regions otherwise compete with the thin divider.
 final class WorkspaceDividerView: NSSplitView {
     private var dividerTrackingAreas: [NSTrackingArea] = []
     private var hoveredDivider: Int?
     var blocksDraggingWhileLeadingScrollerVisible = false
+    var dividerAppearance: WorkspaceDividerAppearance = .sharedBackground
+
+    /// The fill under the hover/drag accent. The outer split is clear so the
+    /// sidebar and content keep one unbroken backdrop.
+    var restingDividerColor: NSColor {
+        switch dividerAppearance {
+        case .sharedBackground: return .clear
+        case .cardHairline: return NSColor(white: 0.92, alpha: 1)
+        }
+    }
 
     func isDividerDragBlocked(at index: Int) -> Bool {
         guard blocksDraggingWhileLeadingScrollerVisible, subviews.indices.contains(index) else { return false }
@@ -45,7 +66,10 @@ final class WorkspaceDividerView: NSSplitView {
                   subviews[index].frame.width > 0, subviews[index + 1].frame.width > 0 else { return nil }
             let drawnRect = NSRect(x: subviews[index].frame.maxX, y: bounds.minY,
                                    width: dividerThickness, height: bounds.height)
-            let rect = drawnRect.insetBy(dx: -12, dy: 0).intersection(bounds)
+            // Always a 25 pt grab band, centred on the divider, even when the
+            // outer split has no visible gap at all.
+            let rect = NSRect(x: drawnRect.midX - 12.5, y: bounds.minY,
+                              width: 25, height: bounds.height).intersection(bounds)
             return rect.isEmpty ? nil : (index, rect)
         }
     }
@@ -142,15 +166,88 @@ final class WorkspaceDividerView: NSSplitView {
         NSCursor.resizeLeftRight.set()
     }
 
+    /// The sidebar and content share one continuous backdrop, so the outer split
+    /// has no divider gap at all: a one-point transparent channel between the two
+    /// items let a hairline of desktop through. The inner editor/PDF split keeps
+    /// its hairline thickness.
+    override var dividerThickness: CGFloat { dividerGap }
+
+    var dividerGap: CGFloat = 1
+
     override func drawDivider(in rect: NSRect) {
-        // The window is non-opaque so the sidebar can show the desktop behind it.
-        // Paint the divider itself opaque, or the desktop shows through this line.
-        NSColor(white: 0.90, alpha: 1).setFill()
-        rect.fill()
+        // The window is non-opaque, so a painted line would otherwise be needed
+        // to keep the desktop from showing through. The sidebar and content now
+        // share one backdrop, so the outer divider rests clear; the inner divider
+        // paints its hairline on the white card instead.
+        let resting = restingDividerColor
+        if resting.alphaComponent > 0 {
+            resting.setFill()
+            rect.fill()
+        }
         guard let index = hoveredDivider, !isDividerDragBlocked(at: index), subviews.indices.contains(index),
               abs(rect.midX - (subviews[index].frame.maxX + dividerThickness / 2)) < 1 else { return }
         NSColor.controlAccentColor.withAlphaComponent(0.45).setFill()
         NSRect(x: rect.midX - 1.5, y: rect.minY, width: 3, height: rect.height).fill()
+    }
+}
+
+/// The content column's backdrop. It mirrors `SidebarBackdrop` from
+/// surface_styles.swift: the same behind-window sidebar material under a light
+/// white veil, or an opaque light gray surface when the system reduces
+/// transparency. The top bar and the white editor card are layered on top.
+final class WorkspaceBackdropView: NSVisualEffectView {
+    static let whiteVeil = NSColor.white.withAlphaComponent(0.25)
+    /// Matches `Palette.sidebarSurface` used for the opaque sidebar variant.
+    static let opaqueSurface = NSColor(white: 0.945, alpha: 1)
+
+    let veilView = NSView()
+    private var accessibilityObserver: NSObjectProtocol?
+
+    /// AppKit counterpart of SwiftUI's `accessibilityReduceTransparency`.
+    var reducesTransparency: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency }
+    var veilColor: NSColor { reducesTransparency ? Self.opaqueSurface : Self.whiteVeil }
+
+    init() {
+        super.init(frame: .zero)
+        configure()
+    }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func configure() {
+        material = .sidebar
+        blendingMode = .behindWindow
+        state = .active
+        isEmphasized = false
+        veilView.wantsLayer = true
+        veilView.autoresizingMask = [.width, .height]
+        veilView.frame = bounds
+        addSubview(veilView)
+        updateVeil()
+        accessibilityObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.updateVeil() }
+    }
+
+    override func layout() {
+        super.layout()
+        veilView.frame = bounds
+    }
+
+    func updateVeil() {
+        veilView.layer?.backgroundColor = veilColor.cgColor
+        needsDisplay = true
+    }
+
+    /// Purely decorative: the backdrop must never take clicks from the panes
+    /// or from the divider grab regions above it.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    deinit {
+        if let accessibilityObserver { NotificationCenter.default.removeObserver(accessibilityObserver) }
     }
 }
 
@@ -167,12 +264,17 @@ class WorkspacePaneSplitController: NSSplitViewController {
         if let divider = splitView as? WorkspaceDividerView, divider.isDividerDragBlocked(at: dividerIndex) {
             return .zero
         }
+        // Keep AppKit's collapsed-pane rules while making visible thin dividers
+        // easy to catch from either neighboring pane (25 points overall). A zero
+        // thickness divider (the shared-background outer split) has no native
+        // rect, so its band is provided directly.
+        let band = NSRect(x: drawnRect.midX - 12.5, y: drawnRect.minY,
+                          width: 25, height: drawnRect.height).intersection(splitView.bounds)
+        if splitView.dividerThickness <= 0 { return band }
         let nativeRect = super.splitView(splitView, effectiveRect: proposedEffectiveRect,
                                         forDrawnRect: drawnRect, ofDividerAt: dividerIndex)
-        // Keep AppKit's collapsed-pane rules while making visible thin dividers
-        // easy to catch from either neighboring pane (25 points overall).
         guard !nativeRect.isEmpty else { return nativeRect }
-        return drawnRect.insetBy(dx: -12, dy: 0).intersection(splitView.bounds)
+        return band
     }
 }
 
@@ -192,6 +294,9 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
         // With the editor's scrollbar on screen, the divider pauses; its own grab
         // band would otherwise capture the scrollbar's edge.
         (splitView as? WorkspaceDividerView)?.blocksDraggingWhileLeadingScrollerVisible = true
+        // This divider sits inside the white card, so it paints a subtle hairline
+        // instead of the outer split's clear resting line.
+        (splitView as? WorkspaceDividerView)?.dividerAppearance = .cardHairline
         for controller in [editor, preview] {
             let item = NSSplitViewItem(viewController: controller)
             item.minimumThickness = 260
@@ -266,8 +371,32 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
     }
 }
 
+/// The editor/PDF workspace insets its content into a white rounded card;
+/// the document browser sits directly on the shared backdrop instead.
+enum WorkspaceCardStyle {
+    case document
+    case library
+}
+
 final class WorkspaceSplitController: WorkspacePaneSplitController {
+    /// Inset of the white card inside the content column.
+    static let cardInset: CGFloat = 8
+    static let cardCornerRadius: CGFloat = 16
+
     let content: WorkspaceContentSplitController
+    /// The card container for the editor/PDF split. It is white and rounded for
+    /// a document, and fully transparent edge to edge for the library browser.
+    let cardView: NSView = {
+        let card = NSView()
+        card.wantsLayer = true
+        return card
+    }()
+    /// The shared backdrop behind the top bar and the card, in both styles.
+    let backdropView = WorkspaceBackdropView()
+    private(set) var cardStyle: WorkspaceCardStyle = .document
+    private var cardLeadingConstraint: NSLayoutConstraint!
+    private var cardTrailingConstraint: NSLayoutConstraint!
+    private var cardBottomConstraint: NSLayoutConstraint!
     private var initialized = false
     private var previousSidebar = true
     private var previousSplitLayoutVersion = 0
@@ -287,6 +416,10 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         super.init()
         // Both middle dividers pause while the pane beside them shows a scrollbar.
         (splitView as? WorkspaceDividerView)?.blocksDraggingWhileLeadingScrollerVisible = true
+        // The sidebar and the content column share one backdrop, so their divider
+        // rests clear and only shows the accent while hovered or dragged.
+        (splitView as? WorkspaceDividerView)?.dividerAppearance = .sharedBackground
+        (splitView as? WorkspaceDividerView)?.dividerGap = 0
         let sidebarItem = NSSplitViewItem(viewController: sidebar)
         sidebarItem.minimumThickness = 180
         sidebarItem.maximumThickness = 400
@@ -298,20 +431,43 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         contentColumn.view = NSView()
         contentColumn.addChild(topBar)
         contentColumn.addChild(content)
-        contentColumn.view.addSubview(topBar.view)
-        contentColumn.view.addSubview(content.view)
+        let column = contentColumn.view
+        // Back to front: shared backdrop, transparent top bar, white rounded card.
+        column.addSubview(backdropView)
+        column.addSubview(topBar.view)
+        column.addSubview(cardView)
+        cardView.addSubview(content.view)
         topBar.view.translatesAutoresizingMaskIntoConstraints = false
+        backdropView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.translatesAutoresizingMaskIntoConstraints = false
         content.view.translatesAutoresizingMaskIntoConstraints = false
+        cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: WorkspaceSplitController.cardInset)
+        cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: column.trailingAnchor, constant: -WorkspaceSplitController.cardInset)
+        cardBottomConstraint = cardView.bottomAnchor.constraint(equalTo: column.bottomAnchor, constant: -WorkspaceSplitController.cardInset)
         NSLayoutConstraint.activate([
-            topBar.view.topAnchor.constraint(equalTo: contentColumn.view.topAnchor),
-            topBar.view.leadingAnchor.constraint(equalTo: contentColumn.view.leadingAnchor),
-            topBar.view.trailingAnchor.constraint(equalTo: contentColumn.view.trailingAnchor),
+            backdropView.topAnchor.constraint(equalTo: column.topAnchor),
+            backdropView.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            backdropView.trailingAnchor.constraint(equalTo: column.trailingAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: column.bottomAnchor),
+
+            topBar.view.topAnchor.constraint(equalTo: column.topAnchor),
+            topBar.view.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            topBar.view.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             topBar.view.heightAnchor.constraint(equalToConstant: topBarHeight),
-            content.view.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
-            content.view.leadingAnchor.constraint(equalTo: contentColumn.view.leadingAnchor),
-            content.view.trailingAnchor.constraint(equalTo: contentColumn.view.trailingAnchor),
-            content.view.bottomAnchor.constraint(equalTo: contentColumn.view.bottomAnchor)
+
+            cardLeadingConstraint,
+            cardTrailingConstraint,
+            cardBottomConstraint,
+            cardView.topAnchor.constraint(equalTo: topBar.view.bottomAnchor),
+
+            // The editor/PDF split fills the card edge to edge, so collapsing one
+            // pane (Editor Only / PDF Only) never moves the card or its insets.
+            content.view.topAnchor.constraint(equalTo: cardView.topAnchor),
+            content.view.leadingAnchor.constraint(equalTo: cardView.leadingAnchor),
+            content.view.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
+            content.view.bottomAnchor.constraint(equalTo: cardView.bottomAnchor)
         ])
+        applyCardStyle()
         let contentItem = NSSplitViewItem(viewController: contentColumn)
         contentItem.minimumThickness = 520
         addSplitViewItem(sidebarItem)
@@ -320,6 +476,38 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         NotificationCenter.default.addObserver(self, selector: #selector(splitResized), name: NSSplitView.didResizeSubviewsNotification, object: splitView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Switch between the inset white document card and the edge-to-edge library
+    /// browser surface. The shared backdrop stays behind both.
+    func setCardStyle(_ style: WorkspaceCardStyle) {
+        guard style != cardStyle else { return }
+        cardStyle = style
+        applyCardStyle()
+    }
+
+    private func applyCardStyle() {
+        let inset = cardStyle == .library ? 0 : WorkspaceSplitController.cardInset
+        cardLeadingConstraint.constant = inset
+        cardTrailingConstraint.constant = -inset
+        cardBottomConstraint.constant = -inset
+        switch cardStyle {
+        case .document:
+            cardView.layer?.backgroundColor = NSColor.white.cgColor
+            cardView.layer?.cornerRadius = WorkspaceSplitController.cardCornerRadius
+            cardView.layer?.cornerCurve = .continuous
+            cardView.layer?.masksToBounds = true
+        case .library:
+            // The browser draws straight on the backdrop: no white surface, no
+            // rounding and no clipping between the top bar and the window edges.
+            cardView.layer?.backgroundColor = NSColor.clear.cgColor
+            cardView.layer?.cornerRadius = 0
+            cardView.layer?.cornerCurve = .circular
+            cardView.layer?.masksToBounds = false
+        }
+        cardView.needsLayout = true
+        cardView.superview?.needsLayout = true
+    }
+
     func restoreLayout(sidebarWidth width: Double, editorFraction fraction: Double) {
         sidebarWidth = width.isFinite ? min(400, max(180, width)) : 248
         savedEditorFraction = fraction.isFinite ? min(0.85, max(0.15, fraction)) : 0.5

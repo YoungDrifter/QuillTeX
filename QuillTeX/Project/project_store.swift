@@ -42,12 +42,48 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         switch self { case .structure: "doc.text"; case .tex: "doc.on.doc"; case .folder: "folder"; case .result: "exclamationmark.triangle" }
     }
 }
+enum SidebarPage: String, CaseIterable, Identifiable {
+    /// The document library page: New / Open plus All Docs, Starred, Folders and Tags.
+    case library = "Library"
+    /// The project navigation page currently shown by Structure / TeX / Folder / Result.
+    case structure = "Structure"
+    var id: String { rawValue }
+}
+
 enum PaneMode: Int, CaseIterable { case editor, split, preview }
 struct EditorLocation: Equatable { var url: URL; var offset: Int }
+
+/// One tab in the window. A tab with no path is the New Tab page; opening a
+/// document from it turns that tab into the document tab.
+struct WorkspaceTab: Identifiable, Equatable {
+    let id: UUID
+    var path: URL?
+    var title: String
+    var isSettings: Bool
+    /// A library page tab (home / All Documents / Unsorted) — not a document itself.
+    var isLibrary: Bool
+    var selection: LibrarySelection?
+    /// Editing a template file: a normal text editor, no preview and no compile.
+    var isTemplate: Bool
+    init(id: UUID = UUID(), path: URL?, title: String, isSettings: Bool = false,
+         isLibrary: Bool = false, selection: LibrarySelection? = nil,
+         isTemplate: Bool = false) {
+        self.id = id
+        self.path = path
+        self.title = title
+        self.isSettings = isSettings
+        self.isLibrary = isLibrary
+        self.selection = selection
+        self.isTemplate = isTemplate
+    }
+}
 
 @MainActor
 final class ProjectStore: ObservableObject {
     let library: DocumentLibrary
+    /// The user's document library. The app injects the shared catalog; tests leave it
+    /// nil so opening a project never writes to the user's library.
+    var catalog: DocumentCatalog?
     /// Typesetting for this project. One controller per store, so one compiler per window.
     let build = BuildController()
     let sessionStore: WorkspaceSessionStore
@@ -71,8 +107,9 @@ final class ProjectStore: ObservableObject {
     @Published var pdfReadingState: PDFReadingState?
     @Published var syncStatusMessage: String?
     @Published var recoveryMessage: String?
-    init(library: DocumentLibrary? = nil, maintainsRootDirectives: Bool = true) {
+    init(library: DocumentLibrary? = nil, catalog: DocumentCatalog? = nil, maintainsRootDirectives: Bool = true) {
         self.maintainsRootDirectives = maintainsRootDirectives
+        self.catalog = catalog
         let library = library ?? .shared
         self.library = library
         sessionStore = WorkspaceSessionStore(directory: library.directory.appendingPathComponent("WorkspaceSessions"))
@@ -106,13 +143,37 @@ final class ProjectStore: ObservableObject {
             }
         }.store(in: &buildObservers)
     }
-    @Published var showLibrary = false
-    @Published var showTemplateChooser = false
+    /// The New Document dialog (name + template, no save panel).
+    @Published var showNewDocument = false
+    /// Open tabs in this window; a nil path is the New Tab page.
+    @Published var tabs: [WorkspaceTab] = []
+    @Published var activeTabID: UUID? {
+        didSet {
+            guard oldValue != activeTabID else { return }
+            synchronizeTabVisibility()
+        }
+    }
+    /// The library surface is showing while the window's tabs stay open.
+    @Published var showingLibrary = true
+    /// The Settings tab is showing in the window content.
+    @Published var showingSettings = false
+    /// Which library view the browser is showing.
+    @Published var librarySelection: LibrarySelection = .all
+    /// Library folder the next New Document sheet should file the document into.
+    @Published var pendingNewDocumentFolder: UUID?
+    /// Template editing must not write root directives, catalog links or builds.
+    private var openingTemplate = false
+    private var paneModeBeforeTemplate: PaneMode?
+    /// Display title of `librarySelection`, mirrored in the library top strip.
+    @Published var libraryLocationTitle: String = "All Tex"
+    /// Which of the two sliding sidebar pages is visible.
+    @Published var sidebarPage: SidebarPage = .library
     @Published var root: URL? { didSet { updateFileMonitoring() } }
     @Published var documents: [SourceDocument] = [] { didSet { updateFileMonitoring() } }
     @Published var activeID: UUID?
     @Published var index = ProjectIndex()
-    var texProjectEnabled: Bool { PluginManager.shared.isEnabled(PluginManager.texProjectID) }
+    /// TeX Project is a native part of the editor now.
+    var texProjectEnabled: Bool { true }
     @Published var sidebarMode: SidebarMode = .structure {
         didSet { if sidebarMode == .tex && !texProjectEnabled { sidebarMode = .folder } }
     }
@@ -167,6 +228,11 @@ final class ProjectStore: ObservableObject {
     enum ExternalChangeChoice { case keepMine, useExternal }
     /// The same decision is used by live updates and the save preflight.
     var externalChangeDecision: ((SourceDocument) -> ExternalChangeChoice)?
+    /// Tests replace the modal close confirmation so a headless run can tell a
+    /// real close intent apart from an ordinary tab switch.
+    var closeConfirmationHandler: (([SourceDocument]) -> Bool)?
+    /// Tests capture modal errors instead of blocking the run with an alert.
+    var errorAlertHandler: ((String, String) -> Void)?
 
     private func updateFileMonitoring() {
         guard window != nil, root != nil, !sessionClosed else { fileMonitor.stop(); return }
@@ -284,18 +350,6 @@ final class ProjectStore: ObservableObject {
             do { try library.importTemplate(url) }
             catch { showError("Could Not Add Template", "\(url.lastPathComponent): \(error.localizedDescription)") }
         }
-    }
-    func createDocument(from template: DocumentTemplate) {
-        do {
-            let source = try library.source(for: template)
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
-            panel.nameFieldStringValue = "Untitled.tex"; panel.title = "Save New Document"; panel.prompt = "Create"
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            try source.write(to: url, atomically: true, encoding: .utf8)
-            showTemplateChooser = false
-            openProject(url, explicitRoot: true)
-        } catch { showError("Could Not Create Document", error.localizedDescription) }
     }
     private var folderExpansionOrder: [URL] = []
     static func folderExpansionKey(_ url: URL) -> String { "Folder:folder:" + url.resolvingSymlinksInPath().standardizedFileURL.path }
@@ -631,8 +685,481 @@ final class ProjectStore: ObservableObject {
         return url.path.hasPrefix(prefix) ? String(url.path.dropFirst(prefix.count)) : url.path
     }
     func showError(_ title: String, _ message: String) {
-        let alert = NSAlert(); alert.messageText = title; alert.informativeText = message
-        alert.alertStyle = .warning; alert.addButton(withTitle: "OK"); alert.runModal()
+        if let errorAlertHandler { errorAlertHandler(title, message); return }
+        QuillDialogCenter.shared.showAlert(title, message)
+    }
+    // MARK: - Document library
+
+    /// Open a document chosen in the library. The sidebar flips to the project page
+    /// only once the document actually became the workspace root.
+    func openLibraryEntry(_ entry: LibraryEntry) {
+        guard FileManager.default.fileExists(atPath: entry.path) else {
+            showError("Document Not Found", "“\(entry.displayName)” is no longer at \(entry.path).\nIt stays in the library until you remove it.")
+            return
+        }
+        openProject(entry.url, explicitRoot: true)
+        if root?.standardizedFileURL == entry.url.standardizedFileURL {
+            sidebarPage = .structure
+            catalog?.touch(entry.id)
+        }
+    }
+
+    // MARK: - Tabs and the library surface
+
+    /// Show the library (All Documents / New Tab) while keeping the open tabs alive.
+    func showLibraryPage() {
+        showLibrary(selection: .all, title: "All Tex")
+    }
+
+    /// Show any library surface (All Documents, Starred, Templates, a folder) as the
+    /// active tab. All Documents is the ephemeral home tab; each other section keeps
+    /// its own tab so opening New Tab or a document does not discard it.
+    func showLibrary(selection: LibrarySelection, title: String) {
+        showingSettings = false
+        sidebarPage = .library
+        if let existing = tabs.first(where: { $0.isLibrary && $0.selection == selection }) {
+            activateTab(existing)
+        } else if selection == .all {
+            if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
+               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+                tabs[index].isLibrary = true
+                tabs[index].selection = .all
+                tabs[index].title = title
+                activateTab(tabs[index])
+            } else {
+                let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: .all)
+                tabs.insert(tab, at: 0)
+                activateTab(tab)
+            }
+        } else {
+            if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
+               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+                // The New Tab page becomes this section's tab.
+                tabs[index].isLibrary = true
+                tabs[index].selection = selection
+                tabs[index].title = title
+                activateTab(tabs[index])
+            } else {
+                // Leaving All Tex: the home tab folds back into the home button.
+                if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
+                   tabs[index].isLibrary, tabs[index].selection == .all {
+                    tabs.remove(at: index)
+                    activeTabID = nil
+                }
+                let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: selection)
+                tabs.append(tab)
+                activateTab(tab)
+            }
+        }
+        showingLibrary = true
+        librarySelection = selection
+        libraryLocationTitle = title
+    }
+
+    /// Mirror the library sidebar selection into the active library tab.
+    /// Open the New Tab page as a tab. Opening or creating a document from it
+    /// turns this tab into the document tab instead of adding a second one.
+    func showNewTabPage() {
+        discardHomeTab()
+        if let existing = tabs.first(where: { $0.path == nil && !$0.isSettings && !$0.isLibrary }) {
+            activateTab(existing)
+        } else {
+            let tab = WorkspaceTab(path: nil, title: "New Tab")
+            tabs.append(tab)
+            activateTab(tab)
+        }
+        librarySelection = .newTab
+        libraryLocationTitle = "New Tab"
+        sidebarPage = .library
+    }
+
+    /// A New Tab page is ephemeral: leaving it without creating or opening a
+    /// document removes the tab, so the "+ New Tab" control comes back.
+    private func discardUnusedNewTab() {
+        guard let id = activeTabID,
+              let tab = tabs.first(where: { $0.id == id }),
+              tab.path == nil, !tab.isSettings, !tab.isLibrary else { return }
+        tabs.removeAll { $0.id == tab.id }
+        activeTabID = tabs.last?.id
+    }
+
+    /// Only All Documents is the ephemeral "home" tab. Starred, Templates and folder
+    /// tabs are ordinary tabs and stay open when another tab is opened.
+    private func discardHomeTab() {
+        guard tabs.contains(where: { $0.isLibrary && $0.selection == .all }) else { return }
+        tabs.removeAll { $0.isLibrary && $0.selection == .all }
+        if activeTabID == nil || !tabs.contains(where: { $0.id == activeTabID }) {
+            activeTabID = tabs.last?.id
+        }
+    }
+
+    /// Open Settings as a tab instead of a separate window.
+    func openSettingsTab() {
+        discardHomeTab()
+        if let existing = tabs.first(where: \.isSettings) {
+            activateTab(existing)
+            return
+        }
+        let tab = WorkspaceTab(path: nil, title: "Settings", isSettings: true)
+        if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
+           tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+            tabs[index] = tab
+        } else {
+            tabs.append(tab)
+        }
+        activateTab(tab)
+    }
+
+    // MARK: - Tab activation and closing
+
+    /// The active tab is the single source of truth for which surface is shown;
+    /// no code path may leave a document tab active while the library is drawn.
+    private func synchronizeTabVisibility() {
+        guard let id = activeTabID, let tab = tabs.first(where: { $0.id == id }) else {
+            showingLibrary = true
+            showingSettings = false
+            return
+        }
+        if tab.isSettings {
+            showingSettings = true
+            showingLibrary = false
+        } else if tab.isLibrary {
+            showingSettings = false
+            showingLibrary = true
+            if let selection = tab.selection {
+                librarySelection = selection
+                libraryLocationTitle = tab.title
+            }
+        } else if tab.path == nil {
+            showingSettings = false
+            showingLibrary = true
+            librarySelection = .newTab
+            libraryLocationTitle = "New Tab"
+        } else {
+            showingSettings = false
+            showingLibrary = false
+        }
+    }
+
+    private func tabTitle(for path: URL) -> String {
+        path.lastPathComponent == "main.tex"
+            ? path.deletingLastPathComponent().lastPathComponent
+            : path.deletingPathExtension().lastPathComponent
+    }
+
+    /// Convert the active New Tab / library tab into a document tab, or add one.
+    private func registerDocumentTab(for main: URL) {
+        let title = tabTitle(for: main)
+        let normalized = main.standardizedFileURL
+        let matches = tabs.indices.filter { index in
+            tabs[index].path?.standardizedFileURL == normalized
+        }
+        if let keepIndex = matches.first {
+            // Reuse the existing tab and collapse duplicate document tabs for the
+            // same file, so opening a document repeatedly never stacks copies.
+            let keepID = tabs[keepIndex].id
+            let duplicateIDs = Set(matches.dropFirst().map { tabs[$0].id })
+            if !duplicateIDs.isEmpty {
+                tabs.removeAll { duplicateIDs.contains($0.id) }
+            }
+            discardHomeTab()
+            if let active = activeTabID,
+               let index = tabs.firstIndex(where: { $0.id == active }),
+               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+                tabs.remove(at: index)
+            }
+            activeTabID = keepID
+            showingLibrary = false
+            showingSettings = false
+            sidebarPage = .structure
+            return
+        }
+        if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
+           tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+            // A New Tab page turns into the document tab in place (it is the last
+            // tab). Library home/section tabs keep their position and the document
+            // is appended, so the strip reflects the order documents were opened.
+            tabs[index].path = main
+            tabs[index].title = title
+            tabs[index].selection = nil
+            activeTabID = tabs[index].id
+        } else {
+            discardHomeTab()
+            let tab = WorkspaceTab(path: main, title: title)
+            tabs.append(tab)
+            activeTabID = tab.id
+        }
+        showingLibrary = false
+        showingSettings = false
+        sidebarPage = .structure
+    }
+
+    /// Persist the current tab's draft before another tab or project takes over.
+    /// Editors and build state are recreated when the user comes back.
+    func prepareToLeaveCurrentTab() {
+        guard root != nil else { return }
+        persistSession(includeDrafts: true)
+    }
+
+    /// The tab surface a failed activation returns to. Opening a document replaces
+    /// the buffers, so a failed open must not leave the window on a tab whose
+    /// document never loaded.
+    private struct TabActivationSnapshot {
+        var tabs: [WorkspaceTab]
+        var activeTabID: UUID?
+        var showingLibrary: Bool
+        var showingSettings: Bool
+        var sidebarPage: SidebarPage
+        var librarySelection: LibrarySelection
+        var libraryLocationTitle: String
+        var paneMode: PaneMode
+        var paneModeBeforeTemplate: PaneMode?
+    }
+
+    private func tabActivationSnapshot() -> TabActivationSnapshot {
+        TabActivationSnapshot(tabs: tabs, activeTabID: activeTabID, showingLibrary: showingLibrary,
+            showingSettings: showingSettings, sidebarPage: sidebarPage, librarySelection: librarySelection,
+            libraryLocationTitle: libraryLocationTitle, paneMode: paneMode,
+            paneModeBeforeTemplate: paneModeBeforeTemplate)
+    }
+
+    private func restoreTabActivation(_ snapshot: TabActivationSnapshot, keepingTabs: Bool = false) {
+        if !keepingTabs { tabs = snapshot.tabs }
+        activeTabID = snapshot.activeTabID
+        showingLibrary = snapshot.showingLibrary
+        showingSettings = snapshot.showingSettings
+        sidebarPage = snapshot.sidebarPage
+        librarySelection = snapshot.librarySelection
+        libraryLocationTitle = snapshot.libraryLocationTitle
+        paneMode = snapshot.paneMode
+        paneModeBeforeTemplate = snapshot.paneModeBeforeTemplate
+    }
+
+    func activateTab(_ tab: WorkspaceTab) {
+        let snapshot = tabActivationSnapshot()
+        if tab.id != activeTabID {
+            if isEditingTemplate { paneMode = paneModeBeforeTemplate ?? .split }
+        }
+        let wasEditingTemplate = isEditingTemplate
+        if tab.id != activeTabID {
+            discardUnusedNewTab()
+            // Home is only the All Documents tab itself. Switching to any other tab
+            // (including Templates/Starred/folders) folds it back into the home icon.
+            if !(tab.isLibrary && tab.selection == .all) {
+                discardHomeTab()
+            }
+        }
+        activeTabID = tab.id
+        if tab.isSettings {
+            showingSettings = true
+            showingLibrary = false
+            sidebarPage = .structure
+            return
+        }
+        showingSettings = false
+        if tab.isLibrary {
+            showingLibrary = true
+            sidebarPage = .library
+            if let selection = tab.selection {
+                librarySelection = selection
+                libraryLocationTitle = tab.title
+            }
+            return
+        }
+        guard let path = tab.path else {
+            showingLibrary = true
+            sidebarPage = .library
+            librarySelection = .newTab
+            libraryLocationTitle = "New Tab"
+            return
+        }
+        guard FileManager.default.fileExists(atPath: path.path) else {
+            showError("Document Not Found", "“\(tab.title)” is no longer at \(path.path).")
+            let removedIndex = tabs.firstIndex(where: { $0.id == tab.id }) ?? 0
+            tabs.removeAll { $0.id == tab.id }
+            if tab.id != snapshot.activeTabID {
+                restoreTabActivation(snapshot, keepingTabs: true)
+            } else if tabs.isEmpty {
+                activeTabID = nil
+                showNewTabPage()
+            } else {
+                activateTab(tabs[min(removedIndex, tabs.count - 1)])
+            }
+            return
+        }
+        // A template tab is a real editor page, never a project: activating it keeps
+        // the template path so no root comment, recent entry or catalog link is written.
+        if tab.isTemplate, !wasEditingTemplate { paneModeBeforeTemplate = paneMode }
+        showingLibrary = false
+        showingSettings = false
+        sidebarPage = tab.isTemplate ? .library : .structure
+        if root?.standardizedFileURL == path.standardizedFileURL {
+            if tab.isTemplate { paneMode = .editor }
+            if let doc = documents.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL }) {
+                openSource(doc.url)
+            }
+            return
+        }
+        guard switchToTab(path, asTemplate: tab.isTemplate) else {
+            restoreTabActivation(snapshot)
+            return
+        }
+        if tab.isTemplate {
+            if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+                tabs[index].isTemplate = true
+                tabs[index].title = tab.title
+            }
+            paneMode = .editor
+            showingLibrary = false
+            showingSettings = false
+            sidebarPage = .library
+        }
+    }
+
+    @discardableResult
+    private func switchToTab(_ path: URL, asTemplate: Bool = false) -> Bool {
+        prepareToLeaveCurrentTab()
+        // Same project: reuse the open buffer instead of rebuilding the project.
+        if let root, root.deletingLastPathComponent().standardizedFileURL == path.deletingLastPathComponent().standardizedFileURL,
+           documents.contains(where: { $0.url.standardizedFileURL == path.standardizedFileURL }) {
+            openSource(path)
+            return true
+        }
+        return openProject(path, explicitRoot: true, asTemplate: asTemplate)
+    }
+
+    /// Reorder a non-home tab among the scrollable tabs. All Documents is pinned
+    /// and cannot be dragged or displaced.
+    func moveTab(_ id: UUID, by delta: Int) {
+        guard delta != 0,
+              let index = tabs.firstIndex(where: { $0.id == id }),
+              !(tabs[index].isLibrary && tabs[index].selection == .all) else { return }
+        let homeTabs = tabs.filter { $0.isLibrary && $0.selection == .all }
+        var others = tabs.filter { !($0.isLibrary && $0.selection == .all) }
+        guard let current = others.firstIndex(where: { $0.id == id }) else { return }
+        let target = min(max(0, current + delta), others.count - 1)
+        guard target != current else { return }
+        let tab = others.remove(at: current)
+        others.insert(tab, at: target)
+        tabs = homeTabs + others
+    }
+
+    func closeTab(_ tab: WorkspaceTab) {
+        let path = tab.path
+        if let path, let document = documents.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL }),
+           document.isDirty {
+            // Explicit tab close keeps the synchronous seam for tests, while the
+            // app uses the non-blocking overlay so the button never freezes.
+            if closeConfirmationHandler != nil {
+                guard confirmClose([document]) else { return }
+                finishCloseTab(tab)
+                return
+            }
+            QuillDialogCenter.shared.showSaveChanges(title: "Save Changes Before Closing?",
+                                                     detail: document.url.lastPathComponent) { [weak self] choice in
+                guard let self else { return }
+                switch choice {
+                case .save:
+                    guard self.save(document) else { return }
+                    self.finishCloseTab(tab)
+                case .discard:
+                    self.finishCloseTab(tab)
+                case .cancel:
+                    break
+                }
+            }
+            return
+        }
+        finishCloseTab(tab)
+    }
+
+    private func finishCloseTab(_ tab: WorkspaceTab) {
+        let wasActive = activeTabID == tab.id
+        let removedIndex = tabs.firstIndex(where: { $0.id == tab.id }) ?? tabs.count - 1
+        tabs.removeAll { $0.id == tab.id }
+        guard wasActive else { return }
+        if tabs.isEmpty {
+            activeTabID = nil
+            // Closing the last tab (for example the All Tex home tab) lands on a
+            // fresh New Tab page instead of an empty strip over the library.
+            showNewTabPage()
+            return
+        }
+        let next = tabs[min(max(removedIndex, 0), tabs.count - 1)]
+        activateTab(next)
+    }
+
+    /// Turn the final tab back into the library home, keeping the open project
+    /// buffers alive in case the user returns to them.
+    func closeDocumentToLibrary() {
+        prepareToLeaveCurrentTab()
+        showingLibrary = true
+        showingSettings = false
+        sidebarPage = .library
+        librarySelection = .all
+        libraryLocationTitle = "All Tex"
+    }
+
+    var isEditingTemplate: Bool {
+        guard let id = activeTabID else { return false }
+        return tabs.first(where: { $0.id == id })?.isTemplate == true
+    }
+
+    /// Open a template as a direct editor page: no PDF preview, no compile
+    /// controls, and no library/build side effects for the template file.
+    func openTemplate(_ template: DocumentTemplate) {
+        let wasEditingTemplate = isEditingTemplate
+        let keepActive = activeTabID
+        let previousSidebarPage = sidebarPage
+        if !wasEditingTemplate { paneModeBeforeTemplate = paneMode }
+        activeTabID = nil
+        guard openProject(template.url, explicitRoot: true, asTemplate: true),
+              root?.standardizedFileURL == template.url.standardizedFileURL else {
+            activeTabID = keepActive
+            sidebarPage = previousSidebarPage
+            return
+        }
+        if let id = activeTabID, let index = tabs.firstIndex(where: { $0.id == id }) {
+            tabs[index].isTemplate = true
+            tabs[index].title = template.displayTitle
+        }
+        paneMode = .editor
+        showingLibrary = false
+        showingSettings = false
+        sidebarPage = .library
+    }
+
+    var currentLibraryFolderID: UUID? {
+        if case .folder(let id) = librarySelection { return id }
+        return nil
+    }
+
+    /// Open the New Document sheet, optionally filing the result into a library folder.
+    func openNewDocumentSheet(folderID: UUID? = nil) {
+        pendingNewDocumentFolder = folderID
+        showNewDocument = true
+    }
+
+    /// Create a new document from the dialog: one folder named after the document,
+    /// with a same-named main .tex inside the configured default location.
+    func createNewDocument(named name: String, template: DocumentTemplate?, in chosenDirectory: URL? = nil) {
+        do {
+            let source = template.flatMap { try? library.source(for: $0) } ?? ""
+            let directory = chosenDirectory ?? LibraryPreferences.shared.newDocumentDirectory
+            let main = try LibraryDocumentCreator.create(named: name, templateSource: source, in: directory)
+            let entry = try catalog?.link(main)
+            if let entry {
+                if let folder = pendingNewDocumentFolder { catalog?.setFolder(entry.id, folderID: folder) }
+                catalog?.touch(entry.id)
+            }
+            pendingNewDocumentFolder = nil
+            showNewDocument = false
+            prepareToLeaveCurrentTab()
+            openProject(main, explicitRoot: true)
+            if root?.standardizedFileURL == main.standardizedFileURL { sidebarPage = .structure }
+        } catch {
+            showError("Could Not Create Document", error.localizedDescription)
+        }
     }
     func openPanel(folder: Bool = false) {
         let panel = NSOpenPanel()
@@ -641,6 +1168,7 @@ final class ProjectStore: ObservableObject {
         panel.message = folder ? "Choose the project folder." : "Choose a LaTeX file."
         if !folder { panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText] }
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        prepareToLeaveCurrentTab()
         if folder { openFolder(url) } else { openProject(url) }
     }
     /// Adopt an existing folder as the project: use its `main.tex`, or ask which file
@@ -672,17 +1200,15 @@ final class ProjectStore: ObservableObject {
 
     func promptForFolderAccess() {
         guard let directory else { return }
-        let alert = NSAlert()
-        alert.messageText = "Allow project access?"
-        alert.informativeText = "Allow access to “\(directory.lastPathComponent)” to open and save project files."
-        alert.addButton(withTitle: "Grant Access…")
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Later")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: requestFolderAccess()
-        case .alertSecondButtonReturn: openPrivacySettings()
-        default: break
-        }
+        QuillDialogCenter.shared.showConfirm(
+            title: "Allow Project Access?",
+            message: "Allow access to “\(directory.lastPathComponent)” to open and save project files.",
+            confirmTitle: "Grant Access…",
+            secondaryTitle: "Open System Settings",
+            completion: { [weak self] granted in
+                if granted { self?.requestFolderAccess() }
+            },
+            secondaryCompletion: { [weak self] in self?.openPrivacySettings() })
     }
 
     /// Asking the user for the folder itself is what grants access to everything in
@@ -773,16 +1299,33 @@ final class ProjectStore: ObservableObject {
         verifyFolderAccess()
         refreshIndex(immediate: true)
         adoptExistingPDF()
-        if !restoringSession { maintainProjectRootDirectives(replacingExisting: false) }
-        showLibrary = false
-        do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
+        if !restoringSession, !openingTemplate { maintainProjectRootDirectives(replacingExisting: false) }
+        if !openingTemplate {
+            do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
+        }
+        // Make every opened document part of the link library, including a normal
+        // open (which runs through the restoring path too). The catalog is optional
+        // so isolated tests never write to a real user library.
+        if !openingTemplate, let catalog, let entry = try? catalog.link(main) { catalog.touch(entry.id) }
+        sidebarPage = openingTemplate ? .library : .structure
         if !restoringSession { persistSession(force: true); sessionStore.flush() }
         scheduleSessionSave()
     }
 
-    func openProject(_ incoming: URL, explicitRoot: Bool = false) {
-        guard commitSidebarNameEdit() else { return }
+    /// Open a document or project as this window's workspace. Opening another tab
+    /// or document is not a close: the current tab hands its unsaved drafts to the
+    /// session and no close confirmation interrupts the switch. Only an explicit
+    /// close intent (closing a tab, window or app) passes `closeIntent: true`.
+    /// Templates open through the same path with `asTemplate: true`, which skips
+    /// root-directive maintenance, history and catalog links for the template file.
+    @discardableResult
+    func openProject(_ incoming: URL, explicitRoot: Bool = false, closeIntent: Bool = false,
+                     asTemplate: Bool = false) -> Bool {
+        guard commitSidebarNameEdit() else { return false }
         let incoming = incoming.standardizedFileURL
+        let wasOpeningTemplate = openingTemplate
+        openingTemplate = openingTemplate || asTemplate
+        defer { openingTemplate = wasOpeningTemplate }
         do {
             let recoverableMain = !FileManager.default.fileExists(atPath: incoming.path)
                 && sessionStore.load(root: incoming)?.documents.contains(where: { $0.path == incoming.path && $0.draft != nil }) == true
@@ -798,8 +1341,14 @@ final class ProjectStore: ObservableObject {
                     guard let draft = savedSession?.documents.first(where: { $0.path == main.path })?.draft else { throw error }
                     mainText = draft
                 }
-                guard confirmClose(documents) else { return }
-                persistSession(includeDrafts: false)
+                if closeIntent {
+                    guard confirmClose(documents) else { return false }
+                    if !documents.isEmpty { persistSession(includeDrafts: false) }
+                } else {
+                    // Keep the outgoing tab's unsaved edits recoverable; the session
+                    // draft is never overwritten by a later includeDrafts:false save.
+                    prepareToLeaveCurrentTab()
+                }
                 restoringSession = true
                 defer { restoringSession = false; scheduleSessionSave() }
                 sessionClosed = false
@@ -816,9 +1365,15 @@ final class ProjectStore: ObservableObject {
                 restoreSession(savedSession)
                 if incoming != main { openSource(incoming) }
             }
-            maintainProjectRootDirectives(replacingExisting: explicitRoot)
+            if !openingTemplate { maintainProjectRootDirectives(replacingExisting: explicitRoot) }
             if let warning = resolution.warning { showError("Main File Directive", warning) }
-        } catch { showError("Could Not Open Project", error.localizedDescription) }
+            if !openingTemplate, let catalog, let entry = try? catalog.link(main) { catalog.touch(entry.id) }
+            registerDocumentTab(for: main)
+            return true
+        } catch {
+            showError("Could Not Open Project", error.localizedDescription)
+            return false
+        }
     }
 
     func openSource(_ url: URL, offset: Int? = nil, recordHistory: Bool = true) {
@@ -1031,10 +1586,9 @@ final class ProjectStore: ObservableObject {
                     return true
                 }
             } else if current == nil {
-                let alert = NSAlert(); alert.messageText = "File Changed on Disk"
-                alert.informativeText = "“\(doc.url.lastPathComponent)” is missing or unreadable. Replace it with your edits?"
-                alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Overwrite")
-                guard alert.runModal() == .alertSecondButtonReturn else { return false }
+                guard QuillDialog.confirm(title: "File Changed on Disk",
+                                          message: "“\(doc.url.lastPathComponent)” is missing or unreadable. Replace it with your edits?",
+                                          confirmTitle: "Overwrite") else { return false }
             }
             try doc.text.write(to: doc.url, atomically: true, encoding: .utf8)
             doc.savedText = doc.text; doc.diskText = doc.text
@@ -1244,17 +1798,23 @@ final class ProjectStore: ObservableObject {
     }
     func confirmClose(_ docs: [SourceDocument]) -> Bool {
         guard commitSidebarNameEdit() else { return false }
+        if let closeConfirmationHandler { return closeConfirmationHandler(docs) }
         let dirty = docs.filter { $0.isDirty }
         guard !dirty.isEmpty else { return true }
-        let alert = NSAlert(); alert.messageText = "Save changes before closing?"
-        alert.informativeText = dirty.map { $0.url.lastPathComponent }.joined(separator: "\n")
-        alert.addButton(withTitle: "Save"); alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Discard Changes")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
+        let names = dirty.map { $0.url.lastPathComponent }.joined(separator: "\n")
+        let choice = QuillDialog.present(
+            title: "Save Changes Before Closing?",
+            width: 420,
+            actions: [.primary("Save"),
+                      .destructive("Discard Changes", code: 2)]) {
+            QuillDialogMessage(names)
+        }
+        switch choice {
+        case 1:
             let saved = dirty.allSatisfy { save($0) }
             if saved { persistSession(); sessionStore.flush() }
             return saved
-        case .alertThirdButtonReturn: return true
+        case 2: return true
         default: return false
         }
     }
@@ -1289,6 +1849,7 @@ final class ProjectStore: ObservableObject {
 
     /// Manual compile: save everything first, and stop if any save fails.
     func buildNow() {
+        guard !isEditingTemplate else { return }
         guard let root else { return }
         let preflight = BuildSettings.shared.preflight(engine: engine, strategy: strategy)
         guard preflight.isReady else {
@@ -1387,12 +1948,14 @@ final class ProjectStore: ObservableObject {
             let choice: ExternalChangeChoice
             if let externalChangeDecision { choice = externalChangeDecision(doc) }
             else {
-                let alert = NSAlert()
-                alert.messageText = "External Change Detected"
-                alert.informativeText = "“\(doc.url.lastPathComponent)” changed on disk. Using the external version replaces your unsaved edits; keeping your edits leaves the disk file unchanged until you save."
-                alert.addButton(withTitle: "Keep My Edits")
-                alert.addButton(withTitle: "Use External Version")
-                choice = alert.runModal() == .alertSecondButtonReturn ? .useExternal : .keepMine
+                let result = QuillDialog.present(
+                    title: "External Change Detected",
+                    width: 420,
+                    actions: [.primary("Keep My Edits"),
+                              .secondary("Use External Version", code: 2)]) {
+                    QuillDialogMessage("“\(doc.url.lastPathComponent)” changed on disk. Keep your edits or use the external version?")
+                }
+                choice = result == 2 ? .useExternal : .keepMine
             }
             // The file may change again while the user is deciding. Never accept
             // a stale snapshot, or overwrite a file which disappeared meanwhile.

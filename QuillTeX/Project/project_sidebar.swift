@@ -3,11 +3,131 @@ import AppKit
 
 struct ProjectSidebar: View {
     @ObservedObject var store: ProjectStore
+    @ObservedObject private var catalog = DocumentCatalog.shared
+    @ObservedObject private var settingsNavigation = SettingsNavigation.shared
     @State private var nameBounds: CGRect?
+    /// Page 1 is the library, page 2 the project outline (or Settings
+    /// categories). Paging only exists while a document or the Settings tab is
+    /// active: the library home and New Tab page are single-page surfaces, even
+    /// when a document stays open in another tab.
+    private var hasPages: Bool {
+        if store.isEditingTemplate { return false }
+        return store.showingSettings || (store.root != nil && !store.showingLibrary)
+    }
+    private var pageIndex: Int { hasPages && store.sidebarPage == .structure ? 1 : 0 }
+
     var body: some View {
         VStack(spacing: 0) {
             SidebarNavigationHeader(store: store)
-            SidebarModePicker(store: store).padding(.top, 6).padding(.bottom, 12)
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    if hasPages {
+                        // Page 1 is the document library, page 2 is the project
+                        // navigation. Opening a document lands on page 2.
+                        HStack(spacing: 0) {
+                            libraryPage
+                                .padding(.bottom, 24)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                            Group {
+                                if store.showingSettings {
+                                    settingsPage
+                                } else {
+                                    structurePage
+                                }
+                            }
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                        }
+                        .offset(x: -CGFloat(pageIndex) * geometry.size.width)
+                        .animation(.smooth(duration: 0.26), value: pageIndex)
+                    } else {
+                        libraryPage.frame(width: geometry.size.width, height: geometry.size.height)
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .clipped()
+                .background(SidebarPageSwipeMonitor { direction in
+                    guard hasPages else { return }
+                    store.sidebarPage = direction > 0 ? .structure : .library
+                })
+            }
+            .overlay(alignment: .bottom) {
+                if hasPages {
+                    SidebarPageIndicator(store: store).padding(.bottom, 8)
+                }
+            }
+        }
+        .background(SidebarBackdrop())
+        .onChange(of: store.sidebarMode) { _, mode in
+            if mode != .folder && !store.commitSidebarNameEdit() { store.sidebarMode = .folder }
+        }
+    }
+
+    // MARK: - Page 1: document library
+
+    private var libraryPage: some View {
+        LibrarySidebarContent(store: store, catalog: catalog,
+                              onNew: { store.openNewDocumentSheet() },
+                              onOpen: { store.openPanel() },
+                              onOpenEntry: { store.openLibraryEntry($0) })
+    }
+
+    // MARK: - Page 2: Settings categories
+
+    private var settingsPage: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .center, spacing: 7) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 60, height: 60)
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 1.5)
+                Text("QuillTeX")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Palette.primaryInk)
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2.1") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "68"))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondaryInk)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 16)
+            ForEach(SettingsSection.allCases.filter { $0 != .about }) { section in
+                let selected = settingsNavigation.section == section
+                Button {
+                    settingsNavigation.section = section
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: section.symbol)
+                            .font(.system(size: 13))
+                            .frame(width: ChromeMetrics.sidebarIconWidth)
+                        Text(section.title)
+                            .font(.system(size: 13))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(selected ? Palette.primaryInk : Palette.secondaryInk)
+                    .padding(.horizontal, 8)
+                    .frame(height: 32)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Palette.primaryInk.opacity(selected ? 0.09 : 0)))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 22)
+    }
+
+    // MARK: - Page 2: project navigation
+
+    private var structurePage: some View {
+        VStack(spacing: 0) {
+            DocumentSidebarHeader(store: store)
+            SidebarModePicker(store: store).padding(.top, 8).padding(.bottom, 12)
             if store.sidebarMode != .result {
                 HStack {
                     Text(store.sidebarMode.rawValue).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -42,13 +162,11 @@ struct ProjectSidebar: View {
                     .allowsHitTesting(store.sidebarMode == .result)
                     .accessibilityHidden(store.sidebarMode != .result)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-
         }
-        .background(SidebarBackdrop())
-        .onChange(of: store.sidebarMode) { _, mode in
-            if mode != .folder && !store.commitSidebarNameEdit() { store.sidebarMode = .folder }
-        }
+        // Leave room for the floating page indicator at the sidebar's bottom edge.
+        .padding(.bottom, 22)
     }
+
     /// Shown when macOS refuses to list the project folder, with the fix one click away.
     private var accessNotice: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -99,22 +217,177 @@ struct ProjectSidebar: View {
     }
 }
 
+/// The window-control row: traffic lights on the left, the sidebar toggle at the
+/// top-right of the sidebar (no history navigation).
 private struct SidebarNavigationHeader: View {
     @ObservedObject var store: ProjectStore
+
+    private var hideSidebar: () -> Void { { store.sidebarVisible = false } }
+
     var body: some View {
-        HStack(spacing: ChromeMetrics.chromeSpacing) {
-            Color.clear.frame(width: store.isFullScreen ? ChromeMetrics.controlsInsetFullScreen : ChromeMetrics.controlsInset)
-            ChromeButton(icon: "sidebar.left", label: "Hide Sidebar") { store.sidebarVisible = false }
-            Spacer(minLength: 0)
-            ChromeButton(icon: "chevron.left", label: "Back") { store.moveHistory(-1) }
-                .disabled(!store.canGoBack)
-            ChromeButton(icon: "chevron.right", label: "Forward") { store.moveHistory(1) }
-                .disabled(!store.canGoForward)
+        HStack(spacing: 0) {
+            if store.isFullScreen {
+                // Full screen has no traffic lights, so the collapse control moves
+                // to the sidebar's top-left corner where the window buttons were.
+                ChromeButton(icon: "sidebar.left", label: "Hide Sidebar", action: hideSidebar)
+                    .padding(.leading, 8)
+                Spacer(minLength: 0)
+            } else {
+                Color.clear.frame(width: ChromeMetrics.controlsInset)
+                Spacer(minLength: 0)
+                ChromeButton(icon: "sidebar.left", label: "Hide Sidebar", action: hideSidebar)
+            }
         }
         .padding(.trailing, 8)
         .frame(height: ChromeMetrics.topBarHeight)
         .contentShape(Rectangle())
     }
+}
+
+/// Page 2's document header: the compiled page thumbnail, the document name and
+/// how long ago it was last saved.
+private struct DocumentSidebarHeader: View {
+    @ObservedObject var store: ProjectStore
+    private var mainDocument: SourceDocument? {
+        guard let root = store.root else { return nil }
+        return store.documents.first { $0.url.standardizedFileURL == root.standardizedFileURL }
+    }
+    private var title: String {
+        guard let root = store.root else { return "Document" }
+        // A main.tex project is named after its folder, matching the library.
+        return root.lastPathComponent == "main.tex"
+            ? root.deletingLastPathComponent().lastPathComponent
+            : root.deletingPathExtension().lastPathComponent
+    }
+    private var lastModified: Date? {
+        guard let main = store.root else { return nil }
+        if let document = mainDocument, document.isDirty { return Date() }
+        return (try? main.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+    private var relativeTime: String {
+        guard let date = lastModified else { return "Not saved yet" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+    private var entry: LibraryEntry? {
+        guard let root = store.root else { return nil }
+        return LibraryEntry(path: root.path, displayName: title,
+                            kind: root.lastPathComponent == "main.tex" ? .project : .file)
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if let entry {
+                    LibraryDocumentThumbnail(entry: entry, size: CGSize(width: 34, height: 42), cornerRadius: 7)
+                } else {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: 34, height: 42)
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(Palette.hairline, lineWidth: 0.6))
+                        .overlay(Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(Palette.secondaryInk))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.primaryInk)
+                        .lineLimit(1).truncationMode(.middle)
+                    Text(relativeTime)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.secondaryInk)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            Rectangle().fill(Palette.hairline).frame(height: 1)
+                .padding(.horizontal, 12)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Two dots at the sidebar's bottom edge: page 1 is the library, page 2 the project.
+private struct SidebarPageIndicator: View {
+    @ObservedObject var store: ProjectStore
+    private var pageIndex: Int { store.sidebarPage == .structure ? 1 : 0 }
+    var body: some View {
+        HStack(spacing: 6) {
+            dot(0)
+            dot(1)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 20)
+        .background(Capsule().fill(Color.white.opacity(0.92)))
+        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 5, y: 1)
+        .help("Switch between the library and the project")
+    }
+    private func dot(_ index: Int) -> some View {
+        Button {
+            store.sidebarPage = index == 0 ? .library : .structure
+        } label: {
+            Circle().fill(index == pageIndex ? Palette.primaryInk : Palette.secondaryInk.opacity(0.35))
+                .frame(width: 6, height: 6)
+                .frame(width: 14, height: 14)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(index == 0 ? "Library" : "Project")
+        .accessibilityLabel(index == 0 ? "Library page" : "Project page")
+        .accessibilityAddTraits(index == pageIndex ? .isSelected : [])
+    }
+}
+
+/// A horizontal two-finger swipe over the sidebar switches its two pages. It
+/// observes scroll-wheel events locally so the vertical scroll views inside the
+/// sidebar keep working unchanged.
+private struct SidebarPageSwipeMonitor: NSViewRepresentable {
+    let onSwipe: (Int) -> Void
+    func makeNSView(context: Context) -> NSView {
+        let view = SidebarPageSwipeView()
+        view.onSwipe = onSwipe
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? SidebarPageSwipeView)?.onSwipe = onSwipe
+    }
+}
+
+private final class SidebarPageSwipeView: NSView {
+    var onSwipe: ((Int) -> Void)?
+    private var monitor: Any?
+    private var accumulated: CGFloat = 0
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeMonitor()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  event.phase == .began || self.accumulated != 0 || abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else {
+                return event
+            }
+            let local = self.convert(event.locationInWindow, from: nil)
+            guard self.bounds.contains(local) else { return event }
+            if event.phase == .began { self.accumulated = 0 }
+            self.accumulated += event.scrollingDeltaX
+            if event.phase == .ended || event.momentumPhase == .ended || event.phase == .cancelled {
+                if abs(self.accumulated) > 30 { self.onSwipe?(self.accumulated < 0 ? 1 : -1) }
+                self.accumulated = 0
+            }
+            return event
+        }
+    }
+    private func removeMonitor() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        accumulated = 0
+    }
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private struct OutlineRow: View {
@@ -341,8 +614,12 @@ private struct SidebarTrashForm: View {
         }.frame(width: ChromeMetrics.popoverWidth)
     }
     private func apply() {
-        do { if try store.trashProjectFile(url) { onClose() } }
-        catch { self.error = error.localizedDescription }
+        // Run after the button action so the close confirmation can present
+        // without blocking SwiftUI's update pass.
+        DispatchQueue.main.async {
+            do { if try store.trashProjectFile(url) { onClose() } }
+            catch { self.error = error.localizedDescription }
+        }
     }
 }
 
@@ -468,29 +745,24 @@ struct SidebarModePicker: View {
     @ObservedObject var store: ProjectStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var modes: [SidebarMode] { SidebarMode.allCases.filter { $0 != .tex || store.texProjectEnabled } }
-    private var maximumWidth: CGFloat {
-        CGFloat(modes.count) * ChromeMetrics.sidebarModeSlotWidth
-            + CGFloat(max(0, modes.count - 1)) * ChromeMetrics.chromeSpacing + 6
-    }
     var body: some View {
-        ChromeSegmentedGroup(selection: store.sidebarMode) { namespace in
+        ChromeSegmentedGroup(selection: store.sidebarMode) { _ in
             ForEach(modes) { mode in
-                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode, selectionNamespace: namespace) {
+                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode) {
                     store.sidebarMode = mode
                 }
             }
         }
         .padding(3).quillCapsule()
-        .frame(maxWidth: maximumWidth)
+        .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : ChromeMotion.feedback, value: modes.count)
-        .padding(.horizontal, 10).frame(maxWidth: .infinity)
+        .padding(.horizontal, 10)
     }
 }
 
 private struct SidebarModeButton: View {
     let mode: SidebarMode
     let selected: Bool
-    let selectionNamespace: Namespace.ID
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -498,7 +770,10 @@ private struct SidebarModeButton: View {
                 .font(.system(size: ChromeMetrics.chromeIconSize, weight: .regular))
                 .frame(maxWidth: .infinity).frame(height: 34).contentShape(Capsule())
         }
-        .buttonStyle(ChromeButtonStyle(selected: selected, selectionNamespace: selectionNamespace))
+        // Each button carries its own capsule. A shared sliding capsule is
+        // positioned through a GeometryReader preference, and while the whole
+        // sidebar page slides it escaped its page and hovered over the other one.
+        .buttonStyle(ChromeButtonStyle(selected: selected))
         .modifier(ChromeHoverFeedback(selected: selected))
         .help(mode.rawValue).accessibilityLabel(mode.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])

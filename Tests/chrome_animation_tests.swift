@@ -14,7 +14,13 @@ private struct ObservedTitlebar: View {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("QuillTeX-chrome-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
         let store = ProjectStore(library: DocumentLibrary(directory: temp,
-            bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")))
+            bundledTemplatesDirectory: URL(fileURLWithPath: "QuillTeX/Project/bundled_templates")),
+            maintainsRootDirectives: false)
+        // The titlebar only carries the document chrome while a workspace is open;
+        // with no document it shows the library strip.
+        let document = temp.appendingPathComponent("chrome.tex")
+        try "\\documentclass{article}\n\\begin{document}\nChrome\n\\end{document}\n".write(to: document, atomically: true, encoding: .utf8)
+        store.openProject(document, explicitRoot: true)
         store.paneMode = .editor
         let root = NSHostingView(rootView: ObservedTitlebar(store: store))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: ChromeMetrics.topBarHeight),
@@ -37,12 +43,20 @@ private struct ObservedTitlebar: View {
             // Scan the pill's lower edge, below the glyphs, in the pane controls.
             let y = Int((ChromeMetrics.topBarHeight / 2 + 9) * scale)
             var best = (start: 0, length: 0), start = 0
-            for x in Int((root.bounds.width - 290) * scale)..<Int((root.bounds.width - 100) * scale) {
-                let color = bitmap.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+            // The pane switch now sits at the trailing edge, next to the compile controls;
+            // scan only its own slots so no compile glyph is mistaken for the pill.
+            for x in Int((root.bounds.width - 175) * scale)..<Int((root.bounds.width - 6) * scale) {
+                guard let raw = bitmap.colorAt(x: x, y: y), raw.alphaComponent > 0.5 else {
+                    start = 0
+                    continue
+                }
+                let color = raw.usingColorSpace(.deviceRGB)!
                 if max(color.redComponent, color.greenComponent, color.blueComponent) < 0.4 {
                     if start == 0 { start = x }
                     if x-start+1 > best.length { best = (start, x-start+1) }
-                } else { start = 0 }
+                } else {
+                    start = 0
+                }
             }
             return ((CGFloat(best.start) + CGFloat(best.length)/2) / scale, CGFloat(best.length) / scale)
         }
@@ -74,14 +88,6 @@ private struct ObservedTitlebar: View {
         check(split.center > editor.center && split.center < preview.center, "middle pane has its own selection position")
         let returned = switchTo(.editor)
         check(abs(returned.center-editor.center) < 1, "selection slides back to the first pane")
-        let plugin = PluginManager.shared
-        let previousEnabled = plugin.isEnabled(PluginManager.texProjectID)
-        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
-        defer {
-            plugin.setEnabled(previousEnabled, for: PluginManager.texProjectID)
-            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
-        }
-        plugin.setEnabled(true, for: PluginManager.texProjectID)
         store.sidebarMode = .structure
         let sidebar = NSHostingView(rootView: SidebarModePicker(store: store)
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(Palette.sidebarTop))
@@ -107,21 +113,17 @@ private struct ObservedTitlebar: View {
             return ((CGFloat(best.start) + CGFloat(best.length) / 2) / scale, CGFloat(best.length) / scale)
         }
         settle(0.3)
-        let four = sidebarSelection()
-        plugin.setEnabled(false, for: PluginManager.texProjectID); settle(0.3)
-        let three = sidebarSelection()
-        check(three.center - four.center > 20, "three sidebar modes recenter inside a shorter capsule: four \(four), three \(three)")
-        check(abs(three.width - four.width) < 2, "removing a mode preserves each remaining target width")
-        store.sidebarMode = .folder; settle(0.3)
-        let middle = sidebarSelection()
-        store.sidebarMode = .result; settle(0.3)
+        let first = sidebarSelection()
+        store.sidebarMode = .tex; settle(0.5)
+        let second = sidebarSelection()
+        store.sidebarMode = .result; settle(0.5)
         let last = sidebarSelection()
-        check(abs(middle.center - 120) < 2, "the middle of three sidebar modes stays centered")
-        check(abs((middle.center - three.center) - (last.center - middle.center)) < 2,
-              "three sidebar controls keep equal spacing")
-        plugin.setEnabled(true, for: PluginManager.texProjectID); settle(0.3)
-        check(store.sidebarMode == .result && sidebarSelection().center > last.center + 20,
-              "restoring a fourth mode expands the capsule and preserves selection")
+        // TeX Project is a native feature now, so the picker always has all four
+        // modes and flows from the leading to the trailing edge.
+        check(first.width > 20, "sidebar mode targets keep a usable width")
+        check(second.center > first.center + 5, "sidebar modes flow towards the trailing edge")
+        check(last.center > second.center + 10, "the trailing sidebar mode sits at the end")
+        check(store.sidebarMode == .result, "the last sidebar mode stays selected")
         sidebarWindow.setContentSize(NSSize(width: 180, height: 64)); settle(0.3)
         let narrow = sidebarSelection()
         check(narrow.width > 12 && narrow.center + narrow.width / 2 < 180,

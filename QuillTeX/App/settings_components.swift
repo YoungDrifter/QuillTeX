@@ -20,16 +20,42 @@ struct SettingsCategory<ID: Hashable>: Identifiable {
     let symbol: String
 }
 
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case compilation = "Compilation"
+    case automation = "Automation"
+    case library = "Library"
+    case about = "About"
+    var id: String { rawValue }
+    var title: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .compilation: "hammer"
+        case .automation: "clock"
+        case .library: "books.vertical"
+        case .about: "info.circle"
+        }
+    }
+}
+
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    static let shared = SettingsNavigation()
+    @Published var section: SettingsSection = .compilation
+}
+
 struct SettingsLayout<ID: Hashable, Content: View>: View {
     let appName: String
     let version: String
     let icon: NSImage
     let categories: [SettingsCategory<ID>]
     @Binding var selection: ID
+    var embedded = false
+    var showsSidebar = true
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         HStack(spacing: 0) {
+            if showsSidebar {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 10) {
                     Image(nsImage: icon).resizable().frame(width: 34, height: 34)
@@ -55,15 +81,18 @@ struct SettingsLayout<ID: Hashable, Content: View>: View {
             .frame(width: SettingsStyle.sidebarWidth)
             .background(SettingsStyle.secondarySurface)
             Rectangle().fill(SettingsStyle.border).frame(width: 1)
+            }
             content().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(SettingsStyle.surface)
         .foregroundStyle(Palette.primaryInk)
         .tint(.black)
-        .frame(minWidth: SettingsStyle.minimumSize.width, idealWidth: SettingsStyle.windowSize.width,
-               minHeight: SettingsStyle.minimumSize.height, idealHeight: SettingsStyle.windowSize.height)
+        .frame(minWidth: embedded ? 0 : SettingsStyle.minimumSize.width,
+               idealWidth: embedded ? nil : SettingsStyle.windowSize.width,
+               minHeight: embedded ? 0 : SettingsStyle.minimumSize.height,
+               idealHeight: embedded ? nil : SettingsStyle.windowSize.height)
         .preferredColorScheme(.light)
-        .background(SettingsWindowConfiguration(appName: appName))
+        .background { if !embedded { SettingsWindowConfiguration(appName: appName) } }
     }
 }
 

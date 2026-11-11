@@ -3,41 +3,101 @@ import AppKit
 import Combine
 
 struct WorkspaceView: View {
-    @StateObject private var store = ProjectStore()
+    // The window's store must use the shared catalog so opening any local .tex
+    // links it into the document library (All Tex / folders) immediately.
+    @StateObject private var store = ProjectStore(catalog: DocumentCatalog.shared)
+    @StateObject private var libraryDialogs = LibraryDialogCenter.shared
+    @StateObject private var dialogCenter = QuillDialogCenter.shared
     @Environment(\.openWindow) private var openWindow
     var openURL: URL? = nil
-    private var isWelcome: Bool { store.root == nil }
     var body: some View {
-        VStack(spacing: 0) {
-            if store.root == nil {
-                WelcomeView(store: store, library: store.library)
-            } else {
-                ZStack(alignment: .topLeading) {
-                    WorkspaceSplit(store: store)
-                    if let message = store.recoveryMessage {
-                        HStack(spacing: 8) {
-                            Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
-                                .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
-                        }
-                        .padding(.horizontal, 14).frame(height: 32).background(.thinMaterial, in: Capsule())
-                        .padding(.top, ChromeMetrics.topBarHeight + ChromeMetrics.paneHeaderHeight + 4)
-                        .padding(.leading, store.sidebarVisible ? store.sidebarWidth + 16 : 16)
-                        .padding(.trailing, 16)
-                    }
+        ZStack(alignment: .topLeading) {
+            // The window is one shell: the sidebar (library page 1 / project page 2)
+            // and the content card. With no document open the content card hosts the
+            // All Docs browser, so there is no separate launch screen.
+            WorkspaceSplit(store: store)
+            if let message = store.recoveryMessage, store.root != nil {
+                HStack(spacing: 8) {
+                    Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
+                        .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
                 }
+                .padding(.horizontal, 14).frame(height: 32).background(.thinMaterial, in: Capsule())
+                .padding(.top, ChromeMetrics.topBarHeight + ChromeMetrics.paneHeaderHeight + 4)
+                .padding(.leading, store.sidebarVisible ? store.sidebarWidth + 16 : 16)
+                .padding(.trailing, 16)
             }
         }
-        .frame(minWidth: isWelcome ? ChromeMetrics.welcomeMinimumSize.width : ChromeMetrics.workspaceMinimumSize.width,
-               minHeight: isWelcome ? ChromeMetrics.welcomeMinimumSize.height : ChromeMetrics.workspaceMinimumSize.height)
+        .frame(minWidth: ChromeMetrics.workspaceMinimumSize.width, maxWidth: .infinity,
+               minHeight: ChromeMetrics.workspaceMinimumSize.height, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(.light)
         .background(WindowConnection(store: store))
         .focusedSceneObject(store)
-         .sheet(isPresented: $store.showLibrary) { WelcomeView(store: store, library: store.library, isSheet: true).frame(width: 880, height: 560) }
-        .sheet(isPresented: Binding(get: { store.showTemplateChooser && store.root != nil && !store.showLibrary }, set: { store.showTemplateChooser = $0 })) { TemplateChooser(store: store, library: store.library) }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.checkExternalChanges(); store.library.reloadTemplates() }
+        .overlay {
+            ZStack {
+                if store.showNewDocument {
+                    NewDocumentDialog(templates: store.library.templates,
+                                      directory: LibraryPreferences.shared.newDocumentStartDirectory,
+                                      onDismiss: {
+                                          store.showNewDocument = false
+                                          store.pendingNewDocumentFolder = nil
+                                      }) { name, template, directory in
+                        store.createNewDocument(named: name, template: template, in: directory)
+                    }
+                    .transition(.opacity)
+                    .zIndex(20)
+                }
+                if let request = libraryDialogs.folderDialog {
+                    NewFolderDialog(catalog: .shared,
+                                    request: request,
+                                    onDismiss: { libraryDialogs.folderDialog = nil })
+                        .transition(.opacity)
+                        .zIndex(21)
+                }
+                if let request = dialogCenter.alert {
+                    QuillOverlayAlert(request: request, dismiss: { dialogCenter.alert = nil })
+                        .transition(.opacity)
+                        .zIndex(22)
+                }
+                if let request = dialogCenter.confirmRequest {
+                    QuillOverlayConfirm(request: request, dismiss: { dialogCenter.confirmRequest = nil })
+                        .transition(.opacity)
+                        .zIndex(22)
+                }
+                if let request = dialogCenter.promptRequest {
+                    QuillOverlayPrompt(request: request, dismiss: { dialogCenter.promptRequest = nil })
+                        .transition(.opacity)
+                        .zIndex(22)
+                }
+                if let request = dialogCenter.saveChanges {
+                    QuillOverlaySaveChanges(request: request, dismiss: { dialogCenter.saveChanges = nil })
+                        .transition(.opacity)
+                        .zIndex(22)
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: store.showNewDocument)
+        .animation(.easeOut(duration: 0.18), value: libraryDialogs.folderDialog?.id)
+        .animation(.easeOut(duration: 0.18), value: dialogCenter.alert?.id)
+        .animation(.easeOut(duration: 0.18), value: dialogCenter.confirmRequest?.id)
+        .animation(.easeOut(duration: 0.18), value: dialogCenter.promptRequest?.id)
+        .animation(.easeOut(duration: 0.18), value: dialogCenter.saveChanges?.id)
+        .onChange(of: store.root) { _, root in
+            store.sidebarPage = root == nil ? .library : .structure
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.checkExternalChanges()
+            store.library.reloadTemplates()
+            store.catalog?.refreshMetadata()
+        }
+        .onChange(of: store.showingSettings) { _, showing in
+            if showing {
+                store.sidebarVisible = true
+                store.sidebarPage = .structure
+            }
+        }
         .onChange(of: store.sidebarVisible) { _, _ in store.scheduleSessionSave() }
         .onChange(of: store.sidebarMode) { _, _ in store.scheduleSessionSave() }
         .onChange(of: store.paneMode) { _, _ in store.scheduleSessionSave() }
@@ -50,12 +110,11 @@ struct WorkspaceView: View {
             else { AppDelegate.openDocuments([url]) }
         }
         .onAppear {
-            let restoredURL = AppDelegate.consumeRestoredDocument()
             AppDelegate.openWorkspace = { url in openWindow(id: "workspace", value: url) }
             if store.root == nil, let openURL { store.openProject(openURL) }
 
             if AppDelegate.pendingNewDocument {
-                AppDelegate.pendingNewDocument = false; store.showTemplateChooser = true
+                AppDelegate.pendingNewDocument = false; store.openNewDocumentSheet()
             }
             let pending = AppDelegate.pendingOpenURLs
             AppDelegate.pendingOpenURLs = []
@@ -70,7 +129,15 @@ struct WorkspaceView: View {
             // The command-line document belongs to the launch window only. Reading it
             // here on every appearance made each new window reopen the same project.
             if store.root == nil, let url = AppDelegate.consumeLaunchDocument() { store.openProject(url) }
-            if store.root == nil, let url = restoredURL { store.openProject(url, explicitRoot: true) }
+            if AppDelegate.pendingSettings {
+                AppDelegate.pendingSettings = false
+                store.openSettingsTab()
+            }
+            // A plain launch starts on the All Tex home page as a tab, not on an
+            // empty tab strip with the New Tab button standing in for the page.
+            if store.root == nil, store.tabs.isEmpty, !store.showingSettings {
+                store.showLibraryPage()
+            }
         }
     }
 }
@@ -80,13 +147,21 @@ private struct EditorPane: View {
     var body: some View {
         ZStack(alignment: .top) {
             Group {
-                if let document = store.activeDocument {
+                if store.showingSettings {
+                    SettingsView(embedded: true)
+                } else if store.root == nil || store.showingLibrary {
+                    LibraryBrowser(store: store, catalog: .shared,
+                                   onOpenEntry: { store.openLibraryEntry($0) },
+                                   onNew: { store.openNewDocumentSheet() },
+                                   onOpen: { store.openPanel() })
+                } else if let document = store.activeDocument {
                     SourceEditor(document: document, store: store).id(document.id)
                 } else {
                     emptyState
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if store.root != nil && !store.showingLibrary && !store.showingSettings {
             HStack(spacing: 8) {
                 Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
                       systemImage: "square.and.pencil")
@@ -99,8 +174,12 @@ private struct EditorPane: View {
                 Spacer(minLength: 8)
                 if let document = store.activeDocument { EditorHistoryButtons(document: document) }
             }.quillPaneRow()
+            }
         }
-        .background(Color.white)
+        // The library, New Tab and Templates surfaces sit on the shared backdrop;
+        // documents and the embedded Settings page get the white card.
+        .background(store.root == nil || store.showingLibrary ? Color.clear : Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
     private var emptyState: some View {
         VStack(spacing: 16) {
@@ -146,18 +225,28 @@ private struct EditorHistoryButtons: View {
         .help("\(title) (\(shortcut))").accessibilityLabel(title)
     }
 }
-private struct WorkspaceSplit: NSViewControllerRepresentable {
+private struct WorkspaceSplit: NSViewRepresentable {
     @ObservedObject var store: ProjectStore
-    final class Coordinator { var root: URL? }
+    final class Coordinator {
+        var root: URL?
+        var controller: WorkspaceSplitController?
+    }
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSViewController(context: Context) -> WorkspaceSplitController {
+    func makeNSView(context: Context) -> WorkspaceSplitContainer {
+        let editorHost = NSHostingController(rootView: EditorPane(store: store))
+        let previewHost = NSHostingController(rootView: PreviewPane(store: store))
+        // Pane content fills the card; its SwiftUI fitting height must not stretch
+        // the split's items beyond the window height.
+        editorHost.sizingOptions = []
+        previewHost.sizingOptions = []
         let controller = WorkspaceSplitController(sidebar: chromeHostingController(ProjectSidebar(store: store)),
                                  topBar: chromeHostingController(TopBar(store: store)),
-                                 editor: NSHostingController(rootView: EditorPane(store: store)),
-                                 preview: NSHostingController(rootView: PreviewPane(store: store)),
+                                 editor: editorHost,
+                                 preview: previewHost,
                                  topBarHeight: ChromeMetrics.topBarHeight)
         controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
         context.coordinator.root = store.root
+        context.coordinator.controller = controller
         controller.onLayoutChange = { [weak store] width, fraction in
             guard let store else { return }
             if abs(store.sidebarWidth - width) > 0.5 || abs(store.editorFraction - fraction) > 0.001 {
@@ -169,15 +258,44 @@ private struct WorkspaceSplit: NSViewControllerRepresentable {
             guard let store, store.sidebarVisible != visible else { return }
             store.sidebarVisible = visible
         }
-        return controller
+        let container = WorkspaceSplitContainer()
+        controller.view.translatesAutoresizingMaskIntoConstraints = true
+        controller.view.autoresizingMask = [.width, .height]
+        controller.view.frame = container.bounds
+        container.addSubview(controller.view)
+        return container
     }
-    func updateNSViewController(_ controller: WorkspaceSplitController, context: Context) {
+    /// The split controller reports a large fitting size from its panes' minimum
+    /// widths; SwiftUI must fill the window instead of sizing the window around it.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WorkspaceSplitContainer, context: Context) -> CGSize? {
+        let window = nsView.window?.contentView?.bounds.size
+        return CGSize(width: proposal.width ?? window?.width ?? ChromeMetrics.workspaceWindowSize.width,
+                      height: proposal.height ?? window?.height ?? ChromeMetrics.workspaceWindowSize.height)
+    }
+    func updateNSView(_ container: WorkspaceSplitContainer, context: Context) {
+        guard let controller = context.coordinator.controller else { return }
         if context.coordinator.root != store.root {
             context.coordinator.root = store.root
             controller.restoreLayout(sidebarWidth: store.sidebarWidth, editorFraction: store.editorFraction)
         }
-        controller.update(sidebarVisible: store.sidebarVisible, paneMode: store.paneMode,
+        // Settings always sits on the inset white card, even with no document open.
+        let showingLibrary = (store.root == nil || store.showingLibrary) && !store.showingSettings
+        controller.setCardStyle(showingLibrary ? .library : .document)
+        // Settings uses the window sidebar's second page for its categories, so
+        // the sidebar stays visible.
+        controller.update(sidebarVisible: store.sidebarVisible,
+                          paneMode: showingLibrary || store.showingSettings ? .editor : store.paneMode,
                           splitLayoutVersion: store.splitLayoutVersion)
+    }
+}
+
+/// A plain NSView host: unlike NSViewControllerRepresentable it has no fitting
+/// size to hand SwiftUI, so the split always fills the window instead of the
+/// window being sized around the controller's subview constraints.
+private final class WorkspaceSplitContainer: NSView {
+    override func layout() {
+        super.layout()
+        subviews.first?.frame = bounds
     }
 }
 
@@ -260,8 +378,8 @@ private final class WindowHook: NSView, NSWindowDelegate {
             guard let self else { return }
             if self.nativeControlCentre == nil { self.nativeControlCentre = self.controlCentreFromTop() }
             self.applyProjectState(self.store.root != nil)
-            if self.store.root == nil, let window = self.window {
-                self.applyWindowSize(ChromeMetrics.welcomeWindowSize, to: window)
+            if let window = self.window, window.frame.size.width <= ChromeMetrics.workspaceMinimumSize.width + 1 {
+                self.applyWindowSize(ChromeMetrics.workspaceWindowSize, to: window)
             }
         }
     }
@@ -333,38 +451,16 @@ private final class WindowHook: NSView, NSWindowDelegate {
         guard let window else { return }
         if appliedProjectState != projectOpen {
             appliedProjectState = projectOpen
-            if projectOpen { enterWorkspaceMode(window) } else { enterWelcomeMode(window) }
+            // The library and the document workspace share one shell, so both open
+            // at the same editing size. SwiftUI sizes a new window to the content's
+            // minimum, so widen a cramped window once the project state settles.
+            growIfCramped(window)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self, let window = self.window else { return }
+                self.growIfCramped(window)
+            }
         }
         updateChrome()
-    }
-
-    /// The launcher window stays a completely ordinary window: close, minimise, zoom
-    /// and resize all keep working. It simply opens at the launcher size rather than
-    /// at whatever size the workspace was left at.
-    private func enterWelcomeMode(_ window: NSWindow) {
-        if window.styleMask.contains(.fullScreen), !exitingFullScreen {
-            exitingFullScreen = true
-            window.toggleFullScreen(nil)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.exitingFullScreen = false
-                self.appliedProjectState = nil
-                self.applyProjectState(self.store.root != nil)
-            }
-            return
-        }
-        applyWindowSize(ChromeMetrics.welcomeWindowSize, to: window)
-    }
-
-    private func enterWorkspaceMode(_ window: NSWindow) {
-        // SwiftUI sizes a new window to the content's minimum, so a project that is
-        // already open at launch would start cramped. Open up to an editing size,
-        // and check again once SwiftUI has finished its own sizing pass.
-        growIfCramped(window)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self, self.store.root != nil, let window = self.window else { return }
-            self.growIfCramped(window)
-        }
     }
 
     /// Only widens a window that is still sitting at the workspace minimum, so a size
@@ -413,16 +509,10 @@ private final class WindowHook: NSView, NSWindowDelegate {
         if store.isFullScreen != fullScreen { store.isFullScreen = fullScreen }
         // Never touch the controls while the system owns the full-screen title bar.
         guard !fullScreen, !systemFullScreenChrome else { return }
-        let target: CGFloat
-        if store.root == nil {
-            // The launcher keeps AppKit's own position.
-            target = nativeControlCentre ?? ChromeMetrics.topBarHeight / 2
-        } else {
-            // The controls draw their circles about a point above the centre of their
-            // frames (measured from screenshots), so aim a little lower to land them on
-            // the bar's centre line.
-            target = ChromeMetrics.topBarHeight / 2 + ChromeMetrics.trafficLightOpticalOffset
-        }
+        // The library and the workspace share the same 46 pt top strip. The controls
+        // draw their circles about a point above the centre of their frames (measured
+        // from screenshots), so aim a little lower to land them on the strip's line.
+        let target = ChromeMetrics.topBarHeight / 2 + ChromeMetrics.trafficLightOpticalOffset
         centreWindowControls(fromTop: target)
     }
 
@@ -458,7 +548,7 @@ private final class WindowHook: NSView, NSWindowDelegate {
         }
         let current = top - buttonContainer.convert(close.frame, to: nil).midY
         let delta = fromTop - current
-        let horizontal = store.root == nil ? 0 : ChromeMetrics.controlsHorizontalOffset
+        let horizontal = ChromeMetrics.controlsHorizontalOffset
         let currentX = buttonContainer.convert(close.frame, to: nil).minX
         let expectedX = (standardControlFrames.first?.minX ?? currentX) + horizontal
         guard abs(delta) >= 0.1 || abs(expectedX - currentX) >= 0.1 else { return }

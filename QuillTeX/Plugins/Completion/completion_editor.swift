@@ -55,7 +55,8 @@ extension SourceTextView {
     var completionRequest: (revision: Int, length: Int, caret: NSRange)? { get { completionSession.completionRequest } set { completionSession.completionRequest = newValue } }
     var snippet: CompletionSession.SnippetSession? { get { completionSession.snippet } set { completionSession.snippet = newValue } }
     var insertingCompletion: Bool { get { completionSession.insertingCompletion } set { completionSession.insertingCompletion = newValue } }
-    var completionEnabled: Bool { PluginManager.shared.isEnabled(PluginManager.completionID) }
+    /// Completion is a native part of the editor now.
+    var completionEnabled: Bool { true }
     @objc func completionSettingsChanged(_ notification: Notification) {
         guard notification.object as? String == PluginManager.completionID else { return }
         closeCandidates(); dismissCompletions(); endSnippet()

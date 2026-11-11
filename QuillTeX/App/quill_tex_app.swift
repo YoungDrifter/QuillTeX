@@ -15,12 +15,9 @@ struct QuillTeXApp: App {
         WindowGroup(id: "workspace", for: URL.self) { url in
             WorkspaceView(openURL: url.wrappedValue)
         }
-            .defaultSize(width: ChromeMetrics.welcomeWindowSize.width, height: ChromeMetrics.welcomeWindowSize.height)
+            .defaultSize(width: ChromeMetrics.workspaceWindowSize.width, height: ChromeMetrics.workspaceWindowSize.height)
             .windowStyle(.hiddenTitleBar)
             .commands { ProjectCommands() }
-        Settings { SettingsView() }
-            .defaultSize(width: SettingsStyle.windowSize.width, height: SettingsStyle.windowSize.height)
-            .windowResizability(.contentMinSize)
     }
 }
 
@@ -47,23 +44,24 @@ struct ProjectCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(editUndoManager?.canRedo != true)
         }
         CommandGroup(after: .textEditing) {
-            if plugins.isEnabled(PluginManager.completionID) {
-                Button("Show Completions") { (NSApp.keyWindow?.firstResponder as? SourceTextView)?.complete(nil) }
-                    .keyboardShortcut(plugins.completionShortcut.equivalent, modifiers: plugins.completionShortcut.swiftModifiers)
-                    .disabled(store?.activeDocument == nil)
-            }
+            Button("Show Completions") { (NSApp.keyWindow?.firstResponder as? SourceTextView)?.complete(nil) }
+                .keyboardShortcut(plugins.completionShortcut.equivalent, modifiers: plugins.completionShortcut.swiftModifiers)
+                .disabled(store?.activeDocument == nil)
         }
-        CommandGroup(after: .appSettings) {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                if let store { store.openSettingsTab() }
+                else { AppDelegate.pendingSettings = true; openWindow(id: "workspace") }
+            }.keyboardShortcut(",", modifiers: .command)
             Button("Check for Updates…") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
         }
         CommandGroup(replacing: .newItem) {
             Button("New Document…") {
-                if let store { store.showTemplateChooser = true }
+                if let store { store.openNewDocumentSheet() }
                 else { AppDelegate.pendingNewDocument = true; openWindow(id: "workspace") }
             }.keyboardShortcut("n")
             Button("New Window") { openWindow(id: "workspace") }.keyboardShortcut("n", modifiers: [.command, .shift])
-            Button("Library & Recents…") { store?.showLibrary = true }.disabled(store == nil || store?.root == nil)
             Button("Open LaTeX File…") { openProjectPanel() }.keyboardShortcut("o")
             Divider()
             Button("Reveal Project in Finder") {
@@ -93,6 +91,7 @@ struct ProjectCommands: Commands {
                 .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
         }
         CommandGroup(after: .sidebar) {
+            Button("All Tex") { store?.showLibraryPage() }.keyboardShortcut("l", modifiers: [.command, .shift])
             Button("Show or Hide Sidebar") { store?.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
             Button("Editor Only") { store?.paneMode = .editor }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Editor and PDF") { store?.showEditorAndPDF() }.keyboardShortcut("2", modifiers: [.command, .option])
@@ -120,6 +119,7 @@ struct ProjectCommands: Commands {
     static var openWorkspace: ((URL) -> Void)?
     static var pendingOpenPanel: Bool?
     static var pendingNewDocument = false
+    static var pendingSettings = false
     /// `--open <path>` on the command line. Claimed once, by the launch window, so a
     /// later "New Window" starts at the launcher instead of reopening the project.
     private static var launchDocument: String? = {
@@ -127,13 +127,6 @@ struct ProjectCommands: Commands {
               CommandLine.arguments.indices.contains(index + 1) else { return nil }
         return CommandLine.arguments[index + 1]
     }()
-    private static var didRestoreDocument = false
-    static func consumeRestoredDocument() -> URL? {
-        guard !didRestoreDocument else { return nil }
-        didRestoreDocument = true
-        guard ProcessInfo.processInfo.environment["QUILLTEX_DISABLE_SESSION_RESTORE"] != "1" else { return nil }
-        return WorkspaceSessionStore(directory: DocumentLibrary.shared.directory.appendingPathComponent("WorkspaceSessions")).lastWorkspace()
-    }
     static func consumeLaunchDocument() -> URL? {
         guard let path = launchDocument else { return nil }
         launchDocument = nil

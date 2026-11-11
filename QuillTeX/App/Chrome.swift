@@ -183,167 +183,274 @@ private struct OptionalCapsule: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View { if enabled { content.quillCapsule() } else { content } }
 }
 struct TopBar: View {
-    @State private var showingFileInfo = false
-    @State private var showingRecents = false
     @ObservedObject var store: ProjectStore
-    private var titleWidth: CGFloat {
-        let name = store.activeDocument?.url.deletingPathExtension().lastPathComponent ?? "QuillTeX"
-        let width = (name as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium)]).width
-        return min(240, ceil(width) + 30)
+    @State private var hoveredTab: UUID?
+    @State private var tabStripWidth: CGFloat = 0
+    @State private var tabDragOffsets: [UUID: CGFloat] = [:]
+    @State private var tabDragSource: UUID?
+    @State private var tabDragStartIndex = 0
+    @State private var tabDragTargetIndex: Int?
+
+    /// All Documents is the home tab: it stays pinned before the scrolling strip
+    /// and never scrolls out of view, no matter how many tabs are open.
+    private var pinnedHomeTab: WorkspaceTab? {
+        store.tabs.first { $0.isLibrary && $0.selection == .all }
     }
 
-    /// Fixed right-side controls that the document title leaves room for.
-    private static let fixedChromeWidth: CGFloat = 650
+    private enum TabStripItem: Identifiable {
+        case tab(WorkspaceTab)
+        case gap(Int)
+        var id: String {
+            switch self {
+            case .tab(let tab): tab.id.uuidString
+            case .gap(let index): "gap-\(index)"
+            }
+        }
+    }
+
+    private var tabStripItems: [TabStripItem] {
+        var items = scrollableTabs.map(TabStripItem.tab)
+        if tabDragSource != nil, let target = tabDragTargetIndex {
+            items.insert(.gap(target), at: min(max(0, target), items.count))
+        }
+        return items
+    }
+
+    private var scrollableTabs: [WorkspaceTab] {
+        let homeID = pinnedHomeTab?.id
+        // Keep the store's creation order: a Templates or Starred tab opened
+        // later must appear after the documents that were opened before it.
+        return store.tabs.filter { $0.id != homeID }
+    }
+
+    private var showsDocumentControls: Bool {
+        store.root != nil && !store.showingLibrary && !store.showingSettings
+            && !store.isEditingTemplate
+    }
+
 
     var body: some View {
         ChromeHostingContainer(content:
             GeometryReader { geometry in
                 let compact = geometry.size.width < 1100
-                let segmentWidth = ChromeMetrics.segmentedButtonWidth
                 HStack(spacing: compact ? 4 : 6) {
-                    // History belongs to the sidebar while it is visible. Once the
-                    // sidebar is hidden, its toggle and history join this leading row
-                    // so navigation stays reachable in the same place.
-                    if !store.sidebarVisible {
-                        HStack(spacing: ChromeMetrics.chromeSpacing) {
-                            ChromeButton(icon: "sidebar.left", label: "Show Sidebar") {
-                                store.sidebarVisible = true
-                            }
-                            ChromeButton(icon: "chevron.left", label: "Back") { store.moveHistory(-1) }
-                                .disabled(!store.canGoBack)
-                            ChromeButton(icon: "chevron.right", label: "Forward") { store.moveHistory(1) }
-                                .disabled(!store.canGoForward)
+                    // The sidebar toggle joins the bar while the sidebar is hidden.
+                    if !store.sidebarVisible && !store.showingSettings {
+                        ChromeButton(icon: "sidebar.left", label: "Show Sidebar") {
+                            store.sidebarVisible = true
                         }
                     }
-                    // The compile capsule is the document's primary action, so it
-                    // leads the bar and the title absorbs the remaining width.
-                    BuildControls(store: store).fixedSize(horizontal: true, vertical: false)
-                    ZStack {
-                        Button { showingFileInfo.toggle() } label: {
-                            HStack(spacing: 5) {
-                                Text(store.activeDocument?.url.deletingPathExtension().lastPathComponent ?? "QuillTeX")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .lineLimit(1).truncationMode(.middle)
-                                    .alignmentGuide(VerticalAlignment.center) { dimensions in
-                                        dimensions[.firstTextBaseline] - NSFont.systemFont(ofSize: 13, weight: .medium).capHeight / 2
-                                    }
-                                Image(systemName: "chevron.down").font(.system(size: 9)).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: min(titleWidth, max(48, geometry.size.width - Self.fixedChromeWidth)))
-                            .frame(height: ChromeMetrics.chromeControlHeight)
-                            .padding(.horizontal, 10)
-                            .contentShape(Capsule())
-                            .help(store.activeDocument?.url.lastPathComponent ?? "QuillTeX")
-                            .layoutPriority(-1)
-                        }
-                        .buttonStyle(ChromeButtonStyle())
-                        .modifier(ChromeHoverFeedback())
-                        .chromeControlBoundary()
-                        .onChange(of: store.activeID) { _, _ in showingFileInfo = false }
-                        .disabled(store.activeDocument == nil)
-                        .popover(isPresented: $showingFileInfo) {
-                            if let url = store.activeDocument?.url {
-                                DocumentFileInfoPopover(url: url, update: store.updateActiveFile) { showingFileInfo = false }
-                            }
-                        }
+                    // The pinned All Documents tab replaces the home icon.
+                    if let pinnedHomeTab {
+                        tabPill(pinnedHomeTab)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .layoutPriority(1)
+                    } else {
+                        ChromeButton(icon: "house", label: "All Tex") { store.showLibraryPage() }
                     }
-                    .frame(maxWidth: .infinity)
-                    .layoutPriority(-1)
-                    ChromeSegmentedGroup(selection: store.paneMode) { paneSelection in
-                        ChromeButton(icon: "rectangle", label: "Editor Only", selected: store.paneMode == .editor,
-                                     width: segmentWidth, selectionNamespace: paneSelection) { store.paneMode = .editor }
-                        // The wash marks the PDF side, matching PDF Only — so the split
-                        // icon fills its right half.
-                        ChromeButton(icon: store.paneMode == .split ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled", label: "Editor and PDF", selected: store.paneMode == .split,
-                                     width: segmentWidth, selectionNamespace: paneSelection) { store.showEditorAndPDF() }
-                        ChromeButton(icon: "rectangle.fill", label: "PDF Only", selected: store.paneMode == .preview,
-                                     width: segmentWidth, selectionNamespace: paneSelection) { store.paneMode = .preview }
-                    }.padding(.horizontal, ChromeMetrics.chromeGroupInset).quillCapsule().chromeControlGroup()
-                    // Recents and Settings share the trailing capsule group. Both
-                    // open a native popover, like the compile settings and the
-                    // document title popovers.
-                    HStack(spacing: ChromeMetrics.chromeSpacing) {
-                        ChromeButton(icon: "clock", label: "Recent Projects") { showingRecents.toggle() }
-                            .popover(isPresented: $showingRecents) {
-                                RecentProjectsView(store: store, library: store.library, onClose: { showingRecents = false })
-                            }
-                        SettingsLink {
-                            Image(systemName: "gearshape").font(.system(size: ChromeMetrics.chromeIconSize, weight: .regular))
-                                .foregroundStyle(Palette.primaryInk)
-                                .frame(width: ChromeMetrics.chromeControlHeight, height: ChromeMetrics.chromeControlHeight).contentShape(Circle())
-                        }
-                        .buttonStyle(ChromeButtonStyle())
-                        .modifier(ChromeHoverFeedback())
-                        .chromeControlBoundary()
-                        .help("Settings")
-                        .accessibilityLabel("Settings")
+                    // Library-only tabs may use the full bar; once a document adds
+                    // the compile/pane controls the strip shrinks towards the left.
+                    tabStrip(maxWidth: .infinity)
+                    newTabControl
+                    Spacer(minLength: 8)
+                    if showsDocumentControls {
+                        // Compile and pane controls sit together on the right, with a
+                        // quiet rule separating them from the tabs. Non-document tabs
+                        // (library home, New Tab, Templates, Settings) have no compile
+                        // context, so the group slides away towards the trailing edge.
+                        Rectangle().fill(Palette.hairline)
+                            .frame(width: 1, height: 18)
+                            .padding(.horizontal, 7)
+                        BuildControls(store: store).fixedSize(horizontal: true, vertical: false)
+                        ChromeSegmentedGroup(selection: store.paneMode) { paneSelection in
+                            ChromeButton(icon: "rectangle", label: "Editor Only", selected: store.paneMode == .editor,
+                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .editor }
+                            ChromeButton(icon: store.paneMode == .split ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled", label: "Editor and PDF", selected: store.paneMode == .split,
+                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.showEditorAndPDF() }
+                            ChromeButton(icon: "rectangle.fill", label: "PDF Only", selected: store.paneMode == .preview,
+                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .preview }
+                        }.padding(.horizontal, ChromeMetrics.chromeGroupInset).quillCapsule().chromeControlGroup()
+                        .fixedSize()
+                        .layoutPriority(2)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)))
                     }
-                    .padding(.horizontal, ChromeMetrics.chromeGroupInset).quillCapsule().chromeControlGroup()
                 }
+                .animation(.smooth(duration: 0.24), value: showsDocumentControls)
                 .padding(.leading, store.sidebarVisible
                          ? 10
                          : (store.isFullScreen ? ChromeMetrics.controlsInsetFullScreen : ChromeMetrics.controlsInset))
                 .padding(.trailing, 10)
                 .frame(height: ChromeMetrics.topBarHeight)
-                .background(Palette.topBar)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(Palette.chromeDivider)
-                        .frame(height: 1)
-                        .allowsHitTesting(false)
-                }
             }
             .frame(height: ChromeMetrics.topBarHeight)
         ).frame(height: ChromeMetrics.topBarHeight)
     }
+
+    // MARK: - Tabs
+
+    private func tabStrip(maxWidth: CGFloat) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(tabStripItems) { item in
+                    switch item {
+                    case .tab(let tab):
+                        tabPill(tab)
+                    case .gap:
+                        Capsule()
+                            .fill(Palette.primaryInk.opacity(0.08))
+                            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.8))
+                            .frame(width: 8, height: 26)
+                            .transition(.opacity)
+                    }
+                }
+            }
+            .animation(.smooth(duration: 0.24), value: scrollableTabs.map(\.id))
+            .padding(.vertical, 2)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: TabStripWidthKey.self, value: proxy.size.width)
+                }
+            }
+        }
+        // Hug the tabs so the add control follows the last one. maxWidth-only is
+        // flexible: HStack shrinks this strip only when the tabs would reach the
+        // fixed compile controls on the right.
+        .frame(maxWidth: max(tabStripWidth, 0), alignment: .leading)
+        .layoutPriority(0)
+        .onPreferenceChange(TabStripWidthKey.self) { tabStripWidth = $0 }
+    }
+
+    /// With no document tabs the New Tab page is offered as a wide pill; once
+    /// tabs exist the same action shrinks to a quiet plus.
+    /// The New Tab page is itself a tab: with no tabs the control is the wide
+    /// "＋ New Tab" pill, with document tabs it shrinks to a quiet plus, and while
+    /// the New Tab tab is open it is that tab (no second add control).
+    @ViewBuilder
+    private var newTabControl: some View {
+        // The library page and Settings are tabs too, but they must not hide the
+        // add control; only an open New Tab page does.
+        if store.tabs.contains(where: { $0.path == nil && !$0.isSettings && !$0.isLibrary }) {
+            EmptyView()
+        } else {
+            // One quiet plus for both states: it is the same reliable ChromeButton
+            // used elsewhere in the bar, so opening the New Tab page always works.
+            ChromeButton(icon: "plus", label: "New Tab") { store.showNewTabPage() }
+        }
+    }
+
+    private func tabPill(_ tab: WorkspaceTab) -> some View {
+        let active = store.activeTabID == tab.id
+            && (tab.isSettings ? store.showingSettings
+                : (tab.isLibrary ? store.showingLibrary && !store.showingSettings
+                    : (tab.path == nil ? store.showingLibrary && store.librarySelection == .newTab
+                                       : !store.showingLibrary && !store.showingSettings)))
+        let hovered = hoveredTab == tab.id
+        return HStack(spacing: 4) {
+            Button { store.activateTab(tab) } label: {
+                HStack(spacing: 6) {
+                    if tab.isLibrary {
+                        Image(systemName: "folder")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
+                    } else if tab.isSettings {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
+                    } else if tab.path == nil {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
+                    }
+                    Text(tab.title)
+                        .font(.system(size: 12.5, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, active || hovered ? 2 : 12)
+                .frame(height: 30)
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .chromeControlBoundary()
+            .transition(.opacity)
+            .help(tab.isLibrary ? "Library" : (tab.path?.path ?? "New Tab"))
+
+            if active || hovered {
+                Button { store.closeTab(tab) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(Palette.secondaryInk)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .chromeControlBoundary()
+                .padding(.trailing, 6)
+                .transition(.opacity)
+                .help("Close Tab")
+                .accessibilityLabel("Close \(tab.title)")
+            }
+        }
+        .frame(maxWidth: 210)
+        .background {
+            if active {
+                Capsule().fill(Color.white)
+            } else if hovered {
+                Capsule().fill(Palette.primaryInk.opacity(0.055))
+            }
+        }
+        .clipShape(Capsule())
+        .overlay {
+            if active {
+                Capsule().strokeBorder(Palette.hairline, lineWidth: 0.9)
+            }
+        }
+        .animation(.smooth(duration: 0.18), value: active)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                if hoveredTab != tab.id { hoveredTab = tab.id }
+            case .ended:
+                if hoveredTab == tab.id { hoveredTab = nil }
+            }
+        }
+        .offset(x: tabDragOffsets[tab.id] ?? 0)
+        .zIndex(tabDragOffsets[tab.id] == nil ? 0 : 1)
+        .animation(.easeOut(duration: 0.14), value: hovered)
+        .simultaneousGesture(tabDragGesture(tab))
+    }
+
+    /// Home stays pinned; every other tab can be dragged to a new position.
+    private func tabDragGesture(_ tab: WorkspaceTab) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard !(tab.isLibrary && tab.selection == .all) else { return }
+                if tabDragSource != tab.id {
+                    tabDragSource = tab.id
+                    tabDragStartIndex = scrollableTabs.firstIndex(where: { $0.id == tab.id }) ?? 0
+                }
+                tabDragOffsets[tab.id] = value.translation.width
+                let steps = Int((value.translation.width / 120).rounded())
+                tabDragTargetIndex = min(max(0, tabDragStartIndex + steps), max(0, scrollableTabs.count - 1))
+            }
+            .onEnded { value in
+                defer {
+                    tabDragOffsets[tab.id] = nil
+                    tabDragSource = nil
+                    tabDragTargetIndex = nil
+                }
+                guard !(tab.isLibrary && tab.selection == .all) else { return }
+                let steps = Int((value.translation.width / 120).rounded())
+                store.moveTab(tab.id, by: steps)
+            }
+    }
 }
 
-/// File metadata editor presented from the document title.
-private struct DocumentFileInfoPopover: View {
-    let url: URL
-    let update: (URL, [String]) throws -> Void
-    let dismiss: () -> Void
-    @State private var name = ""
-    @State private var tags = ""
-    @State private var error: String?
-    @FocusState private var nameFocused: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            QuillPopoverTitle("File Information")
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
-                GridRow {
-                    Text("Name").foregroundStyle(.secondary)
-                    TextField("File name", text: $name).textFieldStyle(.roundedBorder)
-                        .focused($nameFocused).onSubmit(apply)
-                }
-                GridRow {
-                    Text("Tags").foregroundStyle(.secondary)
-                    TextField("Separate tags with commas", text: $tags).textFieldStyle(.roundedBorder).onSubmit(apply)
-                }
-                if let error { Text(error).foregroundStyle(.red).gridCellColumns(2).fixedSize(horizontal: false, vertical: true) }
-                HStack {
-                    Spacer()
-                    Button("Cancel", action: dismiss).buttonStyle(SettingsActionStyle())
-                    Button("Done", action: apply).buttonStyle(SettingsActionStyle()).keyboardShortcut(.defaultAction)
-                }.gridCellColumns(2)
-            }
-        }
-        .frame(width: ChromeMetrics.popoverWidth).quillPopoverContent()
-        .onAppear {
-            name = url.lastPathComponent
-            tags = ((try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []).joined(separator: ", ")
-            nameFocused = true
-        }
-    }
-    private func apply() {
-        do {
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed != ".", trimmed != "..", !trimmed.contains("/"), !trimmed.contains("\0") else {
-                throw NSError(domain: "DocumentName", code: 1, userInfo: [NSLocalizedDescriptionKey: "Enter a valid file name."])
-            }
-            let destination = url.deletingLastPathComponent().appendingPathComponent(trimmed)
-            let names = Array(NSOrderedSet(array: tags.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })) as? [String] ?? []
-            try update(destination, names)
-            dismiss()
-        } catch { self.error = error.localizedDescription }
-    }
+private struct TabStripWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
