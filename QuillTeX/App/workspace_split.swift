@@ -355,6 +355,10 @@ final class WorkspaceContentSplitController: WorkspacePaneSplitController {
 
     func update(mode newMode: PaneMode, equalize: Bool) {
         guard newMode != mode || equalize else { return }
+        // Clicking Editor + PDF when it is already split and 50/50 is a no-op:
+        // adjustSubviews/setPosition still nudged the divider by a pixel on each
+        // click, which made an equal layout look like it was being re-adjusted.
+        if newMode == .split, mode == .split, equalize, abs(editorFraction - 0.5) < 0.005 { return }
         if newMode != .preview { splitViewItems[0].isCollapsed = false }
         if newMode != .editor { splitViewItems[1].isCollapsed = false }
         if newMode == .preview { splitViewItems[0].isCollapsed = true }

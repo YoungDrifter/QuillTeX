@@ -25,8 +25,6 @@ struct WorkspaceSession: Codable {
     var pdf: PDFReadingState?
     var pdfIsOutdated: Bool? = nil
     var sourceDirectoryPath: String? = nil
-    /// Last editor/preview split ratio; reopening restores it instead of resetting.
-    var editorFraction: Double? = nil
 }
 
 /// A serial writer keeps a slow draft write from replacing a newer workspace state.

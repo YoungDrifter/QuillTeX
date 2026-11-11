@@ -250,8 +250,9 @@ private struct WorkspaceSplit: NSViewRepresentable {
         context.coordinator.controller = controller
         controller.onLayoutChange = { [weak store] width, fraction in
             guard let store else { return }
-            if abs(store.sidebarWidth - width) > 0.5 || abs(store.editorFraction - fraction) > 0.001 {
-                store.sidebarWidth = width; store.editorFraction = fraction
+            let snapped = abs(fraction - 0.5) < 0.01 ? 0.5 : fraction
+            if abs(store.sidebarWidth - width) > 0.5 || abs(store.editorFraction - snapped) > 0.001 {
+                store.sidebarWidth = width; store.editorFraction = snapped
                 store.scheduleSessionSave()
             }
         }

@@ -57,7 +57,7 @@ struct WorkspaceSessionTests {
         check(recovered.activeDocument?.scrollOrigin.y == 350, "restore editor scroll position")
         check(!recovered.sidebarVisible && recovered.sidebarMode == .folder && recovered.paneMode == .editor, "restore pane modes")
         check(recovered.expandedNodes == original.expandedNodes, "restore expanded branches")
-        check(recovered.sidebarWidth == 315 && abs(recovered.editorFraction - 0.64) < 0.0001, "restore the sidebar width and the editor/preview split ratio")
+        check(recovered.sidebarWidth == 315 && recovered.editorFraction == 0.5, "restore the sidebar width and open the editor/preview split equal")
         check(recovered.pdfReadingState == original.pdfReadingState, "restore PDF position and manual zoom")
         check(recovered.recoveryMessage != nil, "make recovered edits visible")
         recovered.activeDocument!.hasMarkedText = true
@@ -85,7 +85,7 @@ struct WorkspaceSessionTests {
         reopened.sessionStore.flush()
         let clamped = ProjectStore(library: library, maintainsRootDirectives: false)
         clamped.openProject(root, explicitRoot: true)
-        check(clamped.sidebarWidth == 400 && abs(clamped.editorFraction - 0.64) < 0.0001, "clamp the sidebar width and preserve the split ratio")
+        check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.5, "clamp the sidebar width and open the split equal")
         let main = clamped.documents.first!
         check(main.selection.location == (main.text as NSString).length && main.selection.length == 0, "clamp restored selection to current file")
         main.text += "\nUnsaved main draft"
