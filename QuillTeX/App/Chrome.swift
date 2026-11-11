@@ -246,7 +246,7 @@ struct TopBar: View {
                             .fixedSize(horizontal: true, vertical: false)
                             .layoutPriority(1)
                     } else {
-                        ChromeButton(icon: "house", label: "All Tex") { store.showLibraryPage() }
+                        ChromeButton(icon: "house", label: "All Documents") { store.showLibraryPage() }
                     }
                     // Library-only tabs may use the full bar; once a document adds
                     // the compile/pane controls the strip shrinks towards the left.

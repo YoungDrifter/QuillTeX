@@ -4,7 +4,7 @@ import Combine
 
 struct WorkspaceView: View {
     // The window's store must use the shared catalog so opening any local .tex
-    // links it into the document library (All Tex / folders) immediately.
+    // links it into the document library (All Documents / folders) immediately.
     @StateObject private var store = ProjectStore(catalog: DocumentCatalog.shared)
     @StateObject private var libraryDialogs = LibraryDialogCenter.shared
     @StateObject private var dialogCenter = QuillDialogCenter.shared
@@ -133,7 +133,7 @@ struct WorkspaceView: View {
                 AppDelegate.pendingSettings = false
                 store.openSettingsTab()
             }
-            // A plain launch starts on the All Tex home page as a tab, not on an
+            // A plain launch starts on the All Documents home page as a tab, not on an
             // empty tab strip with the New Tab button standing in for the page.
             if store.root == nil, store.tabs.isEmpty, !store.showingSettings {
                 store.showLibraryPage()

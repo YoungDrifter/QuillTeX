@@ -165,7 +165,7 @@ final class ProjectStore: ObservableObject {
     private var openingTemplate = false
     private var paneModeBeforeTemplate: PaneMode?
     /// Display title of `librarySelection`, mirrored in the library top strip.
-    @Published var libraryLocationTitle: String = "All Tex"
+    @Published var libraryLocationTitle: String = "All Documents"
     /// Which of the two sliding sidebar pages is visible.
     @Published var sidebarPage: SidebarPage = .library
     @Published var root: URL? { didSet { updateFileMonitoring() } }
@@ -708,7 +708,7 @@ final class ProjectStore: ObservableObject {
 
     /// Show the library (All Documents / New Tab) while keeping the open tabs alive.
     func showLibraryPage() {
-        showLibrary(selection: .all, title: "All Tex")
+        showLibrary(selection: .all, title: "All Documents")
     }
 
     /// Show any library surface (All Documents, Starred, Templates, a folder) as the
@@ -740,7 +740,7 @@ final class ProjectStore: ObservableObject {
                 tabs[index].title = title
                 activateTab(tabs[index])
             } else {
-                // Leaving All Tex: the home tab folds back into the home button.
+                // Leaving All Documents: the home tab folds back into the home button.
                 if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
                    tabs[index].isLibrary, tabs[index].selection == .all {
                     tabs.remove(at: index)
@@ -1080,7 +1080,7 @@ final class ProjectStore: ObservableObject {
         guard wasActive else { return }
         if tabs.isEmpty {
             activeTabID = nil
-            // Closing the last tab (for example the All Tex home tab) lands on a
+            // Closing the last tab (for example the All Documents home tab) lands on a
             // fresh New Tab page instead of an empty strip over the library.
             showNewTabPage()
             return
@@ -1097,7 +1097,7 @@ final class ProjectStore: ObservableObject {
         showingSettings = false
         sidebarPage = .library
         librarySelection = .all
-        libraryLocationTitle = "All Tex"
+        libraryLocationTitle = "All Documents"
     }
 
     var isEditingTemplate: Bool {

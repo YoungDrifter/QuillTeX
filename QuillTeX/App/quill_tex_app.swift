@@ -91,7 +91,7 @@ struct ProjectCommands: Commands {
                 .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
         }
         CommandGroup(after: .sidebar) {
-            Button("All Tex") { store?.showLibraryPage() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            Button("All Documents") { store?.showLibraryPage() }.keyboardShortcut("l", modifiers: [.command, .shift])
             Button("Show or Hide Sidebar") { store?.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
             Button("Editor Only") { store?.paneMode = .editor }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Editor and PDF") { store?.showEditorAndPDF() }.keyboardShortcut("2", modifiers: [.command, .option])

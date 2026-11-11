@@ -4,7 +4,7 @@ import PDFKit
 
 // MARK: - Library appearance
 
-/// Measurements shared by the library sidebar and the All Docs browser. The
+/// Measurements shared by the library sidebar and the All Documents browser. The
 /// browser follows the reference's large, airy rows; the sidebar stays on the
 /// compact side so it works from 180 pt upwards.
 private enum LibraryLook {
@@ -772,7 +772,7 @@ struct LibrarySidebarContent: View {
 
     private var navigation: some View {
         VStack(alignment: .leading, spacing: 1) {
-            navRow("All Tex", symbol: "list.bullet.rectangle", selection: .all)
+            navRow("All Documents", symbol: "list.bullet.rectangle", selection: .all)
             navRow("Templates", symbol: "square.on.square", selection: .templates)
             navRow("Starred", symbol: "star", selection: .starred)
             foldersHeader
@@ -1100,7 +1100,7 @@ private struct LibraryFolderRow: View {
 
 // MARK: - Browser
 
-/// The All Docs browser drawn straight on the window's blurred backdrop: no card,
+/// The All Documents browser drawn straight on the window's blurred backdrop: no card,
 /// no opaque fill. The shell provides the backdrop and the top strip.
 struct LibraryBrowser: View {
     @ObservedObject var store: ProjectStore
@@ -1203,14 +1203,14 @@ struct LibraryBrowser: View {
 
     private var browserTitle: String {
         switch store.librarySelection {
-        case .all: return "All Tex"
+        case .all: return "All Documents"
         case .starred: return "Starred"
         case .templates: return "Templates"
         case .newTab: return "New Tab"
         case .folder(let id):
             guard let id else { return DocumentCatalog.unsortedTitle }
             return catalog.folder(id: id)?.name ?? "Folder"
-        case .tag: return "All Tex"
+        case .tag: return "All Documents"
         }
     }
 
@@ -1454,9 +1454,9 @@ struct LibraryBrowser: View {
         case .folder(nil): return "Any documents you haven't moved into a specific folder will appear here."
         case .folder(let id):
             if let folder = id.flatMap({ catalog.folder(id: $0) }) {
-                return "No documents in “\(folder.name)” yet. Move a document here from All Tex."
+                return "No documents in “\(folder.name)” yet. Move a document here from All Documents."
             }
-            return "This folder is empty. Move a document here from All Tex."
+            return "This folder is empty. Move a document here from All Documents."
         case .tag: return "Documents you create or open will be collected here."
         }
     }
@@ -1817,7 +1817,7 @@ struct NewDocumentDialog: View {
                     Button {
                         selectedTemplateID = nil
                     } label: {
-                        if selectedTemplate == nil { Label("Blank", systemImage: "checkmark") } else { Text("Blank") }
+                        if selectedTemplate == nil { Label("None", systemImage: "checkmark") } else { Text("None") }
                     }
                     if !templates.isEmpty { Divider() }
                     ForEach(templates) { template in
@@ -1833,7 +1833,7 @@ struct NewDocumentDialog: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Text(selectedTemplate?.displayTitle ?? "Blank")
+                        Text(selectedTemplate?.displayTitle ?? "None")
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: 9, weight: .medium))
                     }
