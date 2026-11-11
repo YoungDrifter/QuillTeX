@@ -16,9 +16,9 @@ private enum LibraryLook {
     static let browserRowHeight: CGFloat = 64
     static let docTileSize = CGSize(width: 32, height: 40)
     static let folderTints: [Color] = [.blue, .pink, .orange, .gray]
-    /// The row of the document that is actually open reads as selected, the rest
-    /// only take a hover wash.
-    static let activeWash: Double = 0.075
+    /// Browser rows and cards only take a transient hover wash. Which documents
+    /// are open is already visible in the tab strip, so nothing stays highlighted
+    /// in the library after the pointer leaves a row.
     static let hoverWash: Double = 0.04
 }
 
@@ -1343,7 +1343,6 @@ struct LibraryBrowser: View {
                             store: store,
                             catalog: catalog,
                             entry: entry,
-                            isActive: isActive(entry),
                             dateColumn: dateColumn,
                             onOpen: { onOpenEntry(entry) }
                         )
@@ -1367,7 +1366,6 @@ struct LibraryBrowser: View {
                                 store: store,
                                 catalog: catalog,
                                 entry: entry,
-                                isActive: isActive(entry),
                                 onOpen: { onOpenEntry(entry) }
                             )
                         }
@@ -1387,11 +1385,6 @@ struct LibraryBrowser: View {
             .padding(.horizontal, LibraryLook.browserInset)
             .padding(.top, 16)
             .padding(.bottom, 5)
-    }
-
-    private func isActive(_ entry: LibraryEntry) -> Bool {
-        guard let active = store.activeDocument?.url.standardizedFileURL else { return false }
-        return active.path == entry.url.standardizedFileURL.path
     }
 
     @ViewBuilder
@@ -1545,7 +1538,6 @@ private struct LibraryBrowserRow: View {
     @ObservedObject var store: ProjectStore
     @ObservedObject var catalog: DocumentCatalog
     let entry: LibraryEntry
-    let isActive: Bool
     let dateColumn: LibraryDateColumn?
     let onOpen: () -> Void
 
@@ -1566,8 +1558,7 @@ private struct LibraryBrowserRow: View {
         .frame(height: LibraryLook.browserRowHeight)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Palette.primaryInk.opacity(isActive ? LibraryLook.activeWash
-                                                          : (hovered ? LibraryLook.hoverWash : 0)))
+                .fill(Palette.primaryInk.opacity(hovered ? LibraryLook.hoverWash : 0))
                 .padding(.horizontal, 10)
         }
         .overlay(alignment: .bottom) {
@@ -1659,7 +1650,6 @@ private struct LibraryGridCard: View {
     @ObservedObject var store: ProjectStore
     @ObservedObject var catalog: DocumentCatalog
     let entry: LibraryEntry
-    let isActive: Bool
     let onOpen: () -> Void
 
     @State private var hovered = false
@@ -1711,8 +1701,7 @@ private struct LibraryGridCard: View {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(isActive ? Palette.primaryInk.opacity(0.16) : Palette.hairline.opacity(hovered ? 0.95 : 0.65),
-                                  lineWidth: isActive ? 1 : 0.7)
+                    .strokeBorder(Palette.hairline.opacity(hovered ? 0.95 : 0.65), lineWidth: 0.7)
             }
             .shadow(color: .black.opacity(hovered ? 0.10 : 0.055),
                     radius: hovered ? 9 : 4, y: hovered ? 3 : 1.5)
