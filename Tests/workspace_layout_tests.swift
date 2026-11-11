@@ -157,15 +157,32 @@ struct WorkspaceLayoutTests {
         check(abs(sidebarWidth() - sidebar) < 1, "balancing keeps sidebar width")
         controller.content.splitView.setPosition(350, ofDividerAt: 0)
         settle()
-        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 2)
+        let customContentFraction = controller.content.editorFraction
+        check(!balanced(), "the editor/PDF divider can be dragged unequal")
+        // Clicking the already-selected mode is not an equalize command: the store
+        // does not bump splitLayoutVersion, so the controller must leave the divider.
+        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 1)
         settle()
-        check(balanced(), "clicking the already-selected split mode balances again")
+        check(abs(controller.content.editorFraction - customContentFraction) < 0.01,
+              "clicking the already-selected split mode keeps the user's divider")
+        controller.content.splitView.setPosition(350, ofDividerAt: 0)
+        settle()
         for mode in [PaneMode.editor, .preview, .split] {
             controller.update(sidebarVisible: true, paneMode: mode, splitLayoutVersion: 2)
             settle()
             check(abs(sidebarWidth() - sidebar) < 1, "pane mode changes keep sidebar width")
         }
         check(balanced(), "returning from a single pane balances content")
+        controller.update(sidebarVisible: true, paneMode: .editor, splitLayoutVersion: 10)
+        settle()
+        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 11)
+        settle()
+        check(balanced(), "clicking Editor + PDF from a single pane equalizes once")
+        controller.update(sidebarVisible: true, paneMode: .preview, splitLayoutVersion: 12)
+        settle()
+        controller.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 13)
+        settle()
+        check(balanced(), "returning from PDF Only to Editor + PDF equalizes once")
         controller.splitView.setPosition(310, ofDividerAt: 0)
         settle()
         check(abs(sidebarWidth() - 310) < 1, "sidebar divider remains adjustable")

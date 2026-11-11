@@ -755,6 +755,64 @@ struct EditorBehaviorTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         check(abs(restoredSurface.contentView.bounds.origin.y - savedOriginBeforeCollapse.y) < 1,
               "a collapsed and restored editor pane keeps its reading position")
+
+        // Collapsing the editor pane to zero width and bringing it back used to
+        // leave AppKit's document view at x = -ruleThickness. Every line then
+        // slid under the line-number gutter and lost its first characters.
+        let originDocument = SourceDocument(url: root, text: String(repeating: "\\documentclass[11pt]{article}\n", count: 90))
+        let originSurface = EditorSurface(document: originDocument, store: store)
+        let originContainer = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 420))
+        originSurface.autoresizingMask = []
+        originSurface.frame = originContainer.bounds
+        originContainer.addSubview(originSurface)
+        let originWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+                                    styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        originWindow.contentView = originContainer
+        originSurface.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let originGutter = originSurface.verticalRulerView?.ruleThickness ?? 0
+        func firstGlyphScreenX(_ surface: EditorSurface) -> CGFloat? {
+            guard let layout = surface.textView.layoutManager, let container = surface.textView.textContainer else { return nil }
+            layout.ensureLayout(for: container)
+            let glyph = layout.glyphIndexForCharacter(at: 0)
+            let fragment = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let location = layout.location(forGlyphAt: glyph)
+            return surface.contentView.frame.minX + surface.textView.frame.minX + fragment.minX + location.x
+                + surface.textView.textContainerOrigin.x - surface.contentView.bounds.minX
+        }
+        let alignedGlyphX = firstGlyphScreenX(originSurface)
+        check(alignedGlyphX != nil && abs(alignedGlyphX! - (originGutter + 13)) < 1.5,
+              "the editor starts text beside the gutter, not underneath it")
+        // The real trigger: a split pane laid out at zero width and restored.
+        originSurface.frame = NSRect(x: 0, y: 0, width: 0, height: 420)
+        originContainer.layoutSubtreeIfNeeded()
+        originSurface.frame = originContainer.bounds
+        originContainer.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        originContainer.layoutSubtreeIfNeeded()
+        check(abs(originSurface.textView.frame.origin.x) < 0.01,
+              "restoring a zero-width editor pane resets the document view origin")
+        check(abs(originSurface.contentView.bounds.origin.x + originGutter) < 0.5,
+              "restoring a zero-width editor pane keeps the ruler-aligned scroll origin")
+        let restoredGlyphX = firstGlyphScreenX(originSurface)
+        check(restoredGlyphX != nil && abs(restoredGlyphX! - (originGutter + 13)) < 1.5,
+              "restoring a zero-width editor pane keeps every line's first characters visible")
+        // AppKit can also leave both halves wrong (document view shifted and the
+        // clip view back at zero); layout must recover the invariant as well.
+        originSurface.textView.frame.origin.x = -originGutter
+        originSurface.contentView.scroll(to: NSPoint(x: 0, y: originSurface.contentView.bounds.origin.y))
+        originSurface.reflectScrolledClipView(originSurface.contentView)
+        originSurface.needsLayout = true
+        originSurface.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        originSurface.layoutSubtreeIfNeeded()
+        check(abs(originSurface.textView.frame.origin.x) < 0.01 &&
+              abs(originSurface.contentView.bounds.origin.x + originGutter) < 0.5,
+              "layout repairs a stale negative document view origin")
+        let repairedGlyphX = firstGlyphScreenX(originSurface)
+        check(repairedGlyphX != nil && abs(repairedGlyphX! - (originGutter + 13)) < 1.5,
+              "no line's first characters stay clipped after repair")
+        originWindow.close()
         // Editor Only → Editor + PDF narrows the editor. Re-wrapping must keep
         // the line at the top instead of leaving a stale pixel offset.
         let widthDocument = SourceDocument(url: root, text: String(repeating: "A narrow-line reading position\n", count: 240))

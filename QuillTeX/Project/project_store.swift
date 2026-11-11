@@ -181,6 +181,10 @@ final class ProjectStore: ObservableObject {
     @Published var paneMode: PaneMode = .split
     @Published private(set) var splitLayoutVersion = 0
     func showEditorAndPDF() {
+        // The pane buttons are mode switches, not an "equalize" command. While the
+        // split is already visible a click must leave the user's divider exactly
+        // where it is; only entering the split from a single pane equalizes once.
+        guard paneMode != .split else { return }
         paneMode = .split
         splitLayoutVersion += 1
     }

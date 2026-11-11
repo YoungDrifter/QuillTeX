@@ -71,6 +71,22 @@ struct WorkspaceSessionTests {
         check(reopened.activeDocument?.text == "Changed externally", "normal close with discarded drafts restores disk contents")
         check(!reopened.documents.contains { $0.url == missing }, "missing clean tabs are skipped")
         check(!reopened.documents.contains { $0.isDirty }, "discarded edits do not return")
+        // The pane buttons are mode switches: only entering the split equalizes
+        // once; clicking the active Editor + PDF must not nudge the divider.
+        reopened.paneMode = .editor
+        let versionBeforeSplit = reopened.splitLayoutVersion
+        reopened.showEditorAndPDF()
+        check(reopened.paneMode == .split && reopened.splitLayoutVersion == versionBeforeSplit + 1,
+              "Editor Only to Editor + PDF requests the split once")
+        reopened.paneMode = .preview
+        let versionBeforeSecondSplit = reopened.splitLayoutVersion
+        reopened.showEditorAndPDF()
+        check(reopened.paneMode == .split && reopened.splitLayoutVersion == versionBeforeSecondSplit + 1,
+              "PDF Only to Editor + PDF requests the split once")
+        let versionWhileSplit = reopened.splitLayoutVersion
+        reopened.showEditorAndPDF()
+        check(reopened.paneMode == .split && reopened.splitLayoutVersion == versionWhileSplit,
+              "clicking the active Editor + PDF never re-equalizes the divider")
         let session = reopened.sessionStore.load(root: root)!
         var invalid = session
         invalid.version = 99

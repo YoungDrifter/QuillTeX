@@ -31,6 +31,8 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
     /// bounds before `layout()` runs, so the anchor cannot be read there.
     private var lastTopVisibleCharacter: Int?
     private var changingAttributes = false
+    /// Guards the invariant fix against re-entrant layout while it corrects frames.
+    private var isAligningHorizontal = false
     private var lineIndex = SourceLineIndex()
     private var textRevision = 0
     private var committedRevision = 0
@@ -155,7 +157,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
             guard let self, self.initialPositionRestorePending else { return }
             self.initialPositionRestorePending = false
             self.layoutSubtreeIfNeeded()
-            let restoredOrigin = NSPoint(x: self.horizontalContentOrigin, y: restoredScrollOrigin.y)
+            let restoredOrigin = NSPoint(x: self.horizontalContentOrigin, y: max(0, restoredScrollOrigin.y))
             if restoresEditorPosition {
                 if let layout = self.textView.layoutManager, let container = self.textView.textContainer {
                     layout.ensureLayout(forBoundingRect: NSRect(origin: restoredOrigin, size: self.contentView.bounds.size), in: container)
@@ -231,26 +233,39 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         reflectScrolledClipView(contentView)
     }
 
-    /// NSScrollView aligns the text beside the line-number ruler by offsetting
-    /// the clip view. AppKit expresses that either by moving the clip or by
-    /// moving the content view, so derive the origin from the actual tiling
-    /// instead of trusting a value saved by an earlier window.
+    /// NSScrollView puts the line-number ruler on top of the left edge and
+    /// compensates by scrolling the clip view left by exactly the ruler width.
+    /// The document view itself must stay at x = 0. AppKit breaks that second
+    /// half of the invariant while a pane is collapsed to zero width (it leaves
+    /// `documentView.frame.origin.x = -ruleThickness` behind when the pane comes
+    /// back), which shifted every line under the gutter and clipped its first
+    /// characters. Always restore both halves explicitly instead of reading the
+    /// (possibly stale) tiling back.
     private var horizontalContentOrigin: CGFloat {
-        contentView.frame.minX - (verticalRulerView?.ruleThickness ?? 0)
+        -(verticalRulerView?.ruleThickness ?? 0)
+    }
+
+    /// Put the editor back on the ruler-aligned horizontal origin: document view
+    /// at x = 0 and clip view scrolled left by the ruler width. The editor never
+    /// scrolls sideways, so every other horizontal value is a stale layout.
+    private func alignHorizontalOrigin() {
+        guard !isAligningHorizontal else { return }
+        isAligningHorizontal = true
+        defer { isAligningHorizontal = false }
+        if abs(textView.frame.origin.x) > 0.01 {
+            var frame = textView.frame
+            frame.origin.x = 0
+            textView.frame = frame
+        }
+        let wanted = horizontalContentOrigin
+        guard abs(contentView.bounds.origin.x - wanted) > 0.01 else { return }
+        contentView.scroll(to: NSPoint(x: wanted, y: contentView.bounds.origin.y))
+        reflectScrolledClipView(contentView)
     }
 
     override func tile() {
         super.tile()
         alignHorizontalOrigin()
-    }
-
-    /// Bring the editor back to the ruler-aligned horizontal position. The
-    /// editor never scrolls sideways, so any other value is a stale layout.
-    private func alignHorizontalOrigin() {
-        let wanted = horizontalContentOrigin
-        guard abs(contentView.bounds.origin.x - wanted) > 0.5 else { return }
-        contentView.scroll(to: NSPoint(x: wanted, y: contentView.bounds.origin.y))
-        reflectScrolledClipView(contentView)
     }
 
     /// Collapsing a split pane takes the editor out of its window, which can
@@ -259,7 +274,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil, !initialPositionRestorePending, let source else { return }
-        let origin = NSPoint(x: horizontalContentOrigin, y: source.scrollOrigin.y)
+        let origin = NSPoint(x: horizontalContentOrigin, y: max(0, source.scrollOrigin.y))
         guard origin.y != 0 else { return }
         restoringScrollAfterWindowReturn = true
         DispatchQueue.main.async { [weak self] in
@@ -276,11 +291,13 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         // Collapsing the split item removes the editor from its window and can
         // reset the clip bounds to zero. Do not overwrite the position the user
         // will return to when the pane is shown again.
-        if restoringScrollAfterWindowReturn { return }
+        if restoringScrollAfterWindowReturn || isAligningHorizontal { return }
         guard window != nil else { return }
         textView.closeCandidates()
         alignHorizontalOrigin()
-        source?.scrollOrigin = NSPoint(x: 0, y: contentView.bounds.origin.y)
+        // The clip view can sit above the document while a pane is collapsed;
+        // negative offsets are not reading positions and must not be persisted.
+        source?.scrollOrigin = NSPoint(x: 0, y: max(0, contentView.bounds.origin.y))
         if let top = topVisibleCharacterOffset() { lastTopVisibleCharacter = top }
         verticalRulerView?.needsDisplay = true
         store?.scheduleSessionSave()
