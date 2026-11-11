@@ -54,6 +54,7 @@ struct WorkspaceLayoutTests {
             return rep.colorAt(x: 2, y: 2)?.usingColorSpace(.sRGB)
         }
         settle()
+        check(balanced(), "a freshly opened workspace starts with equal editor and preview widths")
         // The content column: one shared backdrop behind a transparent top bar
         // and a single white rounded card that hosts the editor/PDF split.
         let contentColumn = controller.splitViewItems[1].viewController.view

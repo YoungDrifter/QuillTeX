@@ -742,6 +742,42 @@ struct EditorBehaviorTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         check(restoredSurface.textView.selectedRange() == NSRange(location: 4, length: 8), "a real editor restores the complete saved selection")
         check(abs(restoredSurface.contentView.bounds.origin.y - 350) < 1, "a real editor preserves the reading position when its selection is offscreen")
+        // Switching to PDF Only removes the editor from its window; coming back
+        // must put the saved reading position back instead of jumping to the top.
+        let savedOriginBeforeCollapse = restoredSurface.contentView.bounds.origin
+        restoredWindow.contentView = NSView()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        restoredWindow.contentView = restoredSurface
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        check(abs(restoredSurface.contentView.bounds.origin.y - savedOriginBeforeCollapse.y) < 1,
+              "a collapsed and restored editor pane keeps its reading position")
+        // Editor Only → Editor + PDF narrows the editor. Re-wrapping must keep
+        // the line at the top instead of leaving a stale pixel offset.
+        let widthDocument = SourceDocument(url: root, text: String(repeating: "A narrow-line reading position\n", count: 240))
+        let widthSurface = EditorSurface(document: widthDocument, store: store)
+        let widthWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 500),
+                                   styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        widthWindow.contentView = widthSurface
+        widthSurface.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        widthSurface.contentView.scroll(to: NSPoint(x: 0, y: 320))
+        widthSurface.reflectScrolledClipView(widthSurface.contentView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        func sourceLine(_ offset: Int?) -> Int? {
+            guard let offset else { return nil }
+            let ns = widthDocument.text as NSString
+            let prefix = ns.substring(to: min(max(0, offset), ns.length))
+            return prefix.components(separatedBy: "\n").count
+        }
+        let lineBeforeWidthChange = sourceLine(widthSurface.topVisibleCharacterOffset())
+        widthWindow.setContentSize(NSSize(width: 480, height: 500))
+        widthWindow.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        widthWindow.contentView?.layoutSubtreeIfNeeded()
+        let lineAfterWidthChange = sourceLine(widthSurface.topVisibleCharacterOffset())
+        check(lineBeforeWidthChange != nil && lineAfterWidthChange == lineBeforeWidthChange,
+              "narrowing the editor keeps the top visible source line")
+        widthWindow.close()
         restoredSurface.navigate(to: NSRange(location: 0, length: 0))
         check(restoredSurface.contentView.bounds.origin.y < 30, "explicit navigation can leave the restored reading position")
         let beforeFeedback = restoredSurface.textView.string
