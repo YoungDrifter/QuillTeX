@@ -181,11 +181,10 @@ final class ProjectStore: ObservableObject {
     @Published var paneMode: PaneMode = .split
     @Published private(set) var splitLayoutVersion = 0
     func showEditorAndPDF() {
-        // Clicking the already-active split control must not churn the split layout:
-        // re-balancing on every click made the editor scroll/resize under the pointer.
-        if paneMode == .split, abs(editorFraction - 0.5) < 0.001 { return }
+        // The control is a mode switch, not an "equalize" command. Clicking it
+        // while already split must leave the divider exactly where it is.
+        guard paneMode != .split else { return }
         paneMode = .split
-        splitLayoutVersion += 1
     }
     /// Set by the window hook: full screen hides the window controls, so the top bar moves over.
     @Published var isFullScreen = false
@@ -282,7 +281,7 @@ final class ProjectStore: ObservableObject {
         }, activePath: activeDocument?.url.path, sidebarVisible: sidebarVisible, sidebarMode: sidebarMode.rawValue,
             paneMode: paneMode.rawValue, expandedNodes: Array(expandedNodes),
             sidebarWidth: sidebarWidth, pdf: pdfReadingState, pdfIsOutdated: previewIsOutdated,
-            sourceDirectoryPath: sourceDirectory?.path)
+            sourceDirectoryPath: sourceDirectory?.path, editorFraction: editorFraction)
         let retiring = Array(retiredSessionRoots.filter { $0 != root })
         sessionStore.save(state, retiringRoots: retiring) { [weak self] error in
             Task { @MainActor in
@@ -333,10 +332,8 @@ final class ProjectStore: ObservableObject {
         paneMode = PaneMode(rawValue: state.paneMode) ?? .split
         expandedNodes = Set(state.expandedNodes)
         sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 248
-        // Every project opens with the editor and preview equal. A ratio the user
-        // drags during this session stays for the session, but reopening the
-        // project starts clean instead of restoring a drifted split.
-        editorFraction = 0.5
+        // Restore the ratio the user left behind; a fresh project still opens 50/50.
+        editorFraction = state.editorFraction.map { min(0.85, max(0.15, $0)) } ?? 0.5
         pdfReadingState = state.pdf
         previewIsOutdated = state.pdfIsOutdated == true || restored.contains { $0.isDirty } || sourcesAreNewerThanPDF(restored.map(\.url))
         if restored.contains(where: { $0.isDirty }) { recoveryMessage = "Recovered unsaved edits. Save when you are ready." }
