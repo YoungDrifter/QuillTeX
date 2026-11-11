@@ -629,8 +629,6 @@ struct PreviewPane: View {
                 zoomCapsule
             }
         }
-        .quillPaneRow()
-        .padding(.trailing, 8)
     }
 
     var body: some View {
@@ -650,7 +648,6 @@ struct PreviewPane: View {
             VStack(spacing: 0) {
                 previewHeader
                 .quillPaneRow()
-                .padding(.trailing, 8)
                 if let message = store.syncStatusMessage {
                     HStack(alignment: .center, spacing: 6) {
                         Image(systemName: "info.circle")

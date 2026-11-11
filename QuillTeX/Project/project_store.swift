@@ -181,6 +181,9 @@ final class ProjectStore: ObservableObject {
     @Published var paneMode: PaneMode = .split
     @Published private(set) var splitLayoutVersion = 0
     func showEditorAndPDF() {
+        // Clicking the already-active split control must not churn the split layout:
+        // re-balancing on every click made the editor scroll/resize under the pointer.
+        if paneMode == .split, abs(editorFraction - 0.5) < 0.001 { return }
         paneMode = .split
         splitLayoutVersion += 1
     }
