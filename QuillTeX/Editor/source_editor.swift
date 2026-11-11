@@ -98,7 +98,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 16, height: ChromeMetrics.paneHeaderHeight)
+        textView.textContainerInset = NSSize(width: 8, height: ChromeMetrics.paneHeaderHeight)
         textView.isRichText = false; textView.importsGraphics = false
         textView.documentUndoManager = document.undoManager
         textView.allowsUndo = true; textView.usesFindBar = true
@@ -237,6 +237,11 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
     /// instead of trusting a value saved by an earlier window.
     private var horizontalContentOrigin: CGFloat {
         contentView.frame.minX - (verticalRulerView?.ruleThickness ?? 0)
+    }
+
+    override func tile() {
+        super.tile()
+        alignHorizontalOrigin()
     }
 
     /// Bring the editor back to the ruler-aligned horizontal position. The
