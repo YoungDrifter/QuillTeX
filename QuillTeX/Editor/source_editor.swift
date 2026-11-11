@@ -155,13 +155,14 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
             guard let self, self.initialPositionRestorePending else { return }
             self.initialPositionRestorePending = false
             self.layoutSubtreeIfNeeded()
+            let restoredOrigin = NSPoint(x: self.horizontalContentOrigin, y: restoredScrollOrigin.y)
             if restoresEditorPosition {
                 if let layout = self.textView.layoutManager, let container = self.textView.textContainer {
-                    layout.ensureLayout(forBoundingRect: NSRect(origin: restoredScrollOrigin, size: self.contentView.bounds.size), in: container)
+                    layout.ensureLayout(forBoundingRect: NSRect(origin: restoredOrigin, size: self.contentView.bounds.size), in: container)
                 }
-                self.contentView.scroll(to: restoredScrollOrigin)
+                self.contentView.scroll(to: restoredOrigin)
             } else {
-                self.contentView.scroll(to: restoredScrollOrigin)
+                self.contentView.scroll(to: restoredOrigin)
                 // A non-zero origin is a position to preserve (for example after
                 // switching pane modes). Only bring the caret into view when the
                 // document is opening at the very top.
@@ -170,6 +171,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
                 }
             }
             self.reflectScrolledClipView(self.contentView)
+            self.alignHorizontalOrigin()
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -182,6 +184,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
             ? (lastTopVisibleCharacter ?? topVisibleCharacterOffset()) : nil
         super.layout()
         lastLayoutWidth = bounds.width
+        alignHorizontalOrigin()
         guard let anchor else { return }
         // Text re-wrapping settles after the scroll view lays out its new width;
         // restore on the next pass so the line position uses the new layout.
@@ -224,7 +227,24 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         }
         let target = max(0, line.minY + textView.textContainerOrigin.y)
         guard abs(contentView.bounds.origin.y - target) > 0.5 else { return }
-        contentView.scroll(to: NSPoint(x: contentView.bounds.origin.x, y: target))
+        contentView.scroll(to: NSPoint(x: horizontalContentOrigin, y: target))
+        reflectScrolledClipView(contentView)
+    }
+
+    /// NSScrollView aligns the text beside the line-number ruler by offsetting
+    /// the clip view. AppKit expresses that either by moving the clip or by
+    /// moving the content view, so derive the origin from the actual tiling
+    /// instead of trusting a value saved by an earlier window.
+    private var horizontalContentOrigin: CGFloat {
+        contentView.frame.minX - (verticalRulerView?.ruleThickness ?? 0)
+    }
+
+    /// Bring the editor back to the ruler-aligned horizontal position. The
+    /// editor never scrolls sideways, so any other value is a stale layout.
+    private func alignHorizontalOrigin() {
+        let wanted = horizontalContentOrigin
+        guard abs(contentView.bounds.origin.x - wanted) > 0.5 else { return }
+        contentView.scroll(to: NSPoint(x: wanted, y: contentView.bounds.origin.y))
         reflectScrolledClipView(contentView)
     }
 
@@ -234,8 +254,8 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard window != nil, !initialPositionRestorePending, let source else { return }
-        let origin = source.scrollOrigin
-        guard origin != .zero else { return }
+        let origin = NSPoint(x: horizontalContentOrigin, y: source.scrollOrigin.y)
+        guard origin.y != 0 else { return }
         restoringScrollAfterWindowReturn = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -254,7 +274,8 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         if restoringScrollAfterWindowReturn { return }
         guard window != nil else { return }
         textView.closeCandidates()
-        source?.scrollOrigin = contentView.bounds.origin
+        alignHorizontalOrigin()
+        source?.scrollOrigin = NSPoint(x: 0, y: contentView.bounds.origin.y)
         if let top = topVisibleCharacterOffset() { lastTopVisibleCharacter = top }
         verticalRulerView?.needsDisplay = true
         store?.scheduleSessionSave()

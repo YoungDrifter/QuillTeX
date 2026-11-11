@@ -138,6 +138,7 @@ struct WorkspaceView: View {
             if store.root == nil, store.tabs.isEmpty, !store.showingSettings {
                 store.showLibraryPage()
             }
+
         }
     }
 }

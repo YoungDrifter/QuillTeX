@@ -733,7 +733,7 @@ struct EditorBehaviorTests {
         check(LineNumberRuler.thickness(forLineCount: 13) < 40, "a short document keeps a narrow gutter")
         let restoredDocument = SourceDocument(url: root, text: String(repeating: "A restored reading line\n", count: 160))
         restoredDocument.selection = NSRange(location: 4, length: 8)
-        restoredDocument.scrollOrigin = CGPoint(x: 0, y: 350)
+        restoredDocument.scrollOrigin = CGPoint(x: -999, y: 350)
         restoredDocument.restoresEditorPosition = true
         let restoredSurface = EditorSurface(document: restoredDocument, store: store)
         let restoredWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
@@ -742,6 +742,10 @@ struct EditorBehaviorTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         check(restoredSurface.textView.selectedRange() == NSRange(location: 4, length: 8), "a real editor restores the complete saved selection")
         check(abs(restoredSurface.contentView.bounds.origin.y - 350) < 1, "a real editor preserves the reading position when its selection is offscreen")
+        let gutter = restoredSurface.verticalRulerView?.ruleThickness ?? 0
+        let alignedOrigin = restoredSurface.contentView.frame.minX - gutter
+        check(abs(restoredSurface.contentView.bounds.origin.x - alignedOrigin) < 0.5,
+              "the editor aligns text beside the line-number gutter regardless of a stale saved scrollX")
         // Switching to PDF Only removes the editor from its window; coming back
         // must put the saved reading position back instead of jumping to the top.
         let savedOriginBeforeCollapse = restoredSurface.contentView.bounds.origin
