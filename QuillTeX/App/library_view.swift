@@ -2019,9 +2019,13 @@ struct NewDocumentDialog: View {
                     .foregroundStyle(Palette.primaryInk)
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(Palette.primaryInk.opacity(templateHovered ? 0.09 : 0.035), in: Capsule())
-                    .overlay(Capsule().strokeBorder(
-                        Palette.primaryInk.opacity(templateHovered ? 0.16 : 0.10), lineWidth: 0.8))
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Palette.primaryInk.opacity(templateHovered ? 0.10 : 0.05)))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.black.opacity(templateHovered ? 0.30 : 0.22),
+                                          lineWidth: 1))
                     .animation(.easeOut(duration: 0.12), value: templateHovered)
                 }
                 .menuStyle(.borderlessButton)
