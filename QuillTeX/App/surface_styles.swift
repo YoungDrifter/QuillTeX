@@ -363,14 +363,23 @@ struct QuillDialogCard<Content: View>: View {
         }
         .frame(width: width)
         .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white)
+            // Same translucent glass language as the toolbar capsules: a blurred
+            // material with a light white veil instead of an opaque white card, so
+            // dialogs sit in the window rather than on top of it.
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.regularMaterial)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(LinearGradient(colors: [Color.white.opacity(0.55),
+                                                  Color.white.opacity(0.30)],
+                                         startPoint: .top, endPoint: .bottom))
+            }
         }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 0.8)
+                .strokeBorder(Palette.primaryInk.opacity(0.10), lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.16), radius: 24, y: 10)
+        .shadow(color: .black.opacity(0.18), radius: 30, y: 12)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.97, anchor: .center)
         .offset(y: appeared ? 0 : 6)

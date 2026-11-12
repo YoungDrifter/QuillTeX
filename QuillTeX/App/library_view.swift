@@ -1068,7 +1068,7 @@ private struct LibraryFolderRow: View {
         .overlay(alignment: .top) {
             if dropTargeted {
                 Rectangle()
-                    .fill(Palette.primaryInk.opacity(0.55))
+                    .fill(Color(nsColor: .controlAccentColor))
                     .frame(height: 2)
                     .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep + 6)
                     .padding(.trailing, 6)
@@ -1158,6 +1158,7 @@ private struct LibrarySidebarDocumentRow: View {
     let onOpen: () -> Void
 
     @State private var dropTargeted = false
+    @State private var hovered = false
 
     var body: some View {
         let missing = catalog.isMissing(entry)
@@ -1193,15 +1194,21 @@ private struct LibrarySidebarDocumentRow: View {
             .contentShape(Rectangle())
         .padding(.leading, indent)
         .contentShape(Rectangle())
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Palette.primaryInk.opacity(hovered ? Palette.chromeHoverOpacity : 0))
+                .padding(.horizontal, 2)
+        }
         .overlay(alignment: .top) {
             if dropTargeted {
                 Rectangle()
-                    .fill(Palette.primaryInk.opacity(0.55))
+                    .fill(Color(nsColor: .controlAccentColor))
                     .frame(height: 2)
                     .padding(.leading, indent + 6)
                     .padding(.trailing, 6)
             }
         }
+        .onHover { hovered = $0 }
         .dropDestination(for: String.self) { payloads, _ in
             // Same-level drag inserts the dragged document before this row.
             var handled = false
