@@ -1472,11 +1472,11 @@ struct LibraryBrowser: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .regular))
+                .font(.system(size: 12.5, weight: .regular))
                 .foregroundStyle(Palette.secondaryInk)
             TextField("Search", text: $search)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: 13.5))
                 .foregroundStyle(Palette.primaryInk)
             if isSearching {
                 Button {
@@ -1494,18 +1494,28 @@ struct LibraryBrowser: View {
         }
         .padding(.horizontal, 11)
         .frame(width: 196)
-        .background {
+        .modifier(LibraryControlSurface())
+        // Fill the whole pill on hover, not just the text area.
+        .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Palette.primaryInk.opacity(searchHovered ? 0.05 : 0))
+                .allowsHitTesting(false)
         }
-        .modifier(LibraryControlSurface())
         .onHover { searchHovered = $0 }
         .animation(.easeOut(duration: 0.15), value: searchHovered)
+        // The window put the first text field into edit mode on open, leaving a
+        // blinking caret in the Search pill before the user clicked anything.
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                if search.isEmpty { NSApp.keyWindow?.makeFirstResponder(nil) }
+            }
+        }
         .help("Filter documents by name or path")
     }
 
     private var sortMenu: some View {
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
+            .modifier(ChromeHoverFeedback())
     }
 
     private var columnHeader: some View {
@@ -1914,7 +1924,6 @@ struct NewDocumentDialog: View {
 
     @State private var name = "Untitled"
     @State private var selectedTemplateID: String?
-    @State private var templateHovered = false
     @State private var destination: URL
     @FocusState private var nameFocused: Bool
 
@@ -2024,14 +2033,12 @@ struct NewDocumentDialog: View {
                 .fixedSize()
                 .padding(.horizontal, 12)
                 .frame(minHeight: 28)
-                // Exactly the Choose… capsule metrics: label-owned backgrounds are
-                // dropped by AppKit's menu rendering, so the wrapper draws it.
-                .background(Capsule().fill(Color.black.opacity(templateHovered ? 0.06 : 0.025)))
-                .overlay(Capsule().strokeBorder(Color.black.opacity(templateHovered ? 0.20 : 0.12),
-                                                lineWidth: 1))
+                // Same capsule and the same hover feedback as the Choose… button
+                // beside it (SettingsActionStyle uses ChromeHoverFeedback).
+                .background(Capsule().fill(Color.black.opacity(0.025)))
+                .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 1))
                 .contentShape(Capsule())
-                .background(ChromeHoverState { templateHovered = $0 }.allowsHitTesting(false))
-                .animation(.easeOut(duration: 0.12), value: templateHovered)
+                .modifier(ChromeHoverFeedback())
             }
         }
     }
@@ -2286,6 +2293,7 @@ private struct TemplatesBrowser: View {
 
     private var sortMenu: some View {
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
+            .modifier(ChromeHoverFeedback())
     }
 
     private var searchField: some View {
