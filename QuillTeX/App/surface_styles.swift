@@ -272,16 +272,16 @@ struct QuillDialogButtonStyle: ButtonStyle {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(foreground)
-            .frame(maxWidth: .infinity, minHeight: 38)
+            .frame(maxWidth: .infinity, minHeight: 42)
             .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(background(pressed: pressed))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(role == .primary ? Color.clear : Palette.hairline, lineWidth: 0.8)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .scaleEffect(pressed && !reduceMotion ? 0.99 : 1)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
             .opacity(isEnabled ? 1 : 0.45)
@@ -289,7 +289,7 @@ struct QuillDialogButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch role {
-        case .primary: .white
+        case .primary: Palette.primaryInk
         case .secondary: Palette.primaryInk
         case .destructive: .red
         }
@@ -298,7 +298,7 @@ struct QuillDialogButtonStyle: ButtonStyle {
     private func background(pressed: Bool) -> Color {
         switch role {
         case .primary:
-            return Palette.primaryInk.opacity(pressed ? 0.82 : 1)
+            return Palette.primaryInk.opacity(pressed ? 0.12 : 0.07)
         case .secondary:
             return Palette.primaryInk.opacity(pressed ? 0.08 : 0.035)
         case .destructive:
@@ -355,8 +355,8 @@ struct QuillDialogCard<Content: View>: View {
             header
             Rectangle().fill(Palette.hairline).frame(height: 0.8)
             VStack(alignment: .leading, spacing: 0) { content() }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Rectangle().fill(Palette.hairline).frame(height: 0.8)
             footer
@@ -367,19 +367,17 @@ struct QuillDialogCard<Content: View>: View {
             // material with a light white veil instead of an opaque white card, so
             // dialogs sit in the window rather than on top of it.
             ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.regularMaterial)
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LinearGradient(colors: [Color.white.opacity(0.55),
-                                                  Color.white.opacity(0.30)],
-                                         startPoint: .top, endPoint: .bottom))
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.white.opacity(0.22))
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Palette.primaryInk.opacity(0.10), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.55), lineWidth: 0.9)
         }
-        .shadow(color: .black.opacity(0.18), radius: 30, y: 12)
+        .shadow(color: .black.opacity(0.16), radius: 34, y: 14)
         .opacity(appeared ? 1 : 0)
         .scaleEffect(appeared ? 1 : 0.97, anchor: .center)
         .offset(y: appeared ? 0 : 6)
@@ -391,7 +389,7 @@ struct QuillDialogCard<Content: View>: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             Text(title)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(Palette.primaryInk)
                 .lineLimit(2)
             Spacer(minLength: 12)
@@ -409,9 +407,9 @@ struct QuillDialogCard<Content: View>: View {
             .help("Close")
             .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 17)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 22)
+        .padding(.top, 19)
+        .padding(.bottom, 15)
     }
 
     private var footer: some View {
@@ -433,9 +431,9 @@ struct QuillDialogCard<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 18)
+        .padding(.horizontal, 22)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
     }
 }
 

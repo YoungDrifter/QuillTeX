@@ -1065,13 +1065,14 @@ private struct LibraryFolderRow: View {
                                                                            : (hovered ? Palette.chromeHoverOpacity : 0))))
         }
         .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
-        .overlay(alignment: .top) {
+        .overlay {
+            // Dropping onto a folder outlines the whole row in the native accent
+            // color, the same rounded box the reference file browser uses.
             if dropTargeted {
-                Rectangle()
-                    .fill(Color(nsColor: .controlAccentColor))
-                    .frame(height: 2)
-                    .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep + 6)
-                    .padding(.trailing, 6)
+                RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
+                    .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 1.5)
+                    .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep)
+                    .padding(.trailing, 2)
             }
         }
         .onHover { hovered = $0 }
