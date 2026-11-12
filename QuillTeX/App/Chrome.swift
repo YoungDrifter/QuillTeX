@@ -197,6 +197,15 @@ struct TopBar: View {
     @State private var hoveredTab: UUID?
     @State private var hoveringCloseTab: UUID?
     @State private var tabStripWidth: CGFloat = 0
+    /// Document controls slide/fade with a hand-driven 60 fps tween. SwiftUI
+    /// transitions and implicit opacity animations do not animate reliably in
+    /// this AppKit-hosted top bar, so the progress value is stepped explicitly;
+    /// that renders every intermediate frame on every tab switch, not just the
+    /// first time a document opens.
+    @State private var documentControlsRendered = false
+    @State private var documentControlsWidth: CGFloat = 0
+    @State private var documentControlsProgress: Double = 0
+    @State private var documentControlsTween: UUID?
     /// Tabs being closed fade out in place before they are removed. Insertion
     /// needs no state: the strip's single layout animation grows the capsule.
     @State private var closingTabIDs: Set<UUID> = []
@@ -267,7 +276,7 @@ struct TopBar: View {
                     tabStrip(maxWidth: .infinity)
                     newTabControl
                     Spacer(minLength: 8)
-                    if showsDocumentControls {
+                    if documentControlsRendered {
                         // Compile and pane controls sit together on the right, with a
                         // quiet rule separating them from the tabs. Non-document tabs
                         // (library home, New Tab, Templates, Settings) have no compile
@@ -289,11 +298,54 @@ struct TopBar: View {
                             .fixedSize()
                         }
                         .fixedSize(horizontal: true, vertical: false)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: DocumentControlsWidthKey.self, value: proxy.size.width)
+                            }
+                        }
+                        // Until the group has been measured once, show it at its
+                        // natural size: a missing measurement must never leave the
+                        // controls invisible after a tab switch.
+                        .frame(width: documentControlsWidth > 0 ? documentControlsWidth * documentControlsProgress : nil,
+                               alignment: .leading)
+                        .clipped()
+                        .opacity(documentControlsWidth > 0 ? documentControlsProgress : 1)
                         .layoutPriority(2)
-                        .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .trailing)))
                     }
                 }
-                .animation(reduceMotion ? nil : ChromeMotion.tab, value: showsDocumentControls)
+                .onAppear {
+                    documentControlsRendered = showsDocumentControls
+                    documentControlsProgress = showsDocumentControls ? 1 : 0
+                }
+                .onChange(of: showsDocumentControls) { _, shown in
+                    guard !reduceMotion else {
+                        documentControlsRendered = shown
+                        documentControlsProgress = shown ? 1 : 0
+                        documentControlsTween = nil
+                        return
+                    }
+                    if shown {
+                        documentControlsRendered = true
+                        documentControlsProgress = 0
+                        DispatchQueue.main.async {
+                            tweenDocumentControls(to: 1) {
+                                // Keep it visible if the measurement arrives late.
+                                if documentControlsProgress < 1 { documentControlsProgress = 1 }
+                            }
+                        }
+                    } else {
+                        tweenDocumentControls(to: 0) {
+                            guard !showsDocumentControls else { return }
+                            documentControlsRendered = false
+                        }
+                    }
+                }
+                .onPreferenceChange(DocumentControlsWidthKey.self) { width in
+                    // Never adopt a new measurement mid-tween: the collapse would
+                    // jump. The width is stable between switches anyway.
+                    guard width > 0, documentControlsTween == nil else { return }
+                    documentControlsWidth = width
+                }
                 .padding(.leading, store.sidebarVisible
                          ? 10
                          : (store.isFullScreen ? ChromeMetrics.controlsInsetFullScreen : ChromeMetrics.controlsInset))
@@ -488,6 +540,29 @@ struct TopBar: View {
         }
     }
 
+    /// Step the controls progress at ~60 fps. Stepping state by hand is the
+    /// only way to guarantee intermediate frames in this AppKit-hosted bar.
+    private func tweenDocumentControls(to target: Double, completion: @escaping () -> Void) {
+        let token = UUID()
+        documentControlsTween = token
+        let start = documentControlsProgress
+        let duration = 0.22
+        let steps = 13
+        for step in 1...steps {
+            let delay = duration * Double(step) / Double(steps)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard documentControlsTween == token else { return }
+                let t = Double(step) / Double(steps)
+                let eased = t * t * (3 - 2 * t)
+                documentControlsProgress = start + (target - start) * eased
+                if step == steps {
+                    documentControlsTween = nil
+                    completion()
+                }
+            }
+        }
+    }
+
     /// The close control stays quiet when the tab is not hovered, reads as a
     /// faint hint while the pointer is anywhere on the tab, and inks in fully
     /// only when the pointer is on the close control itself.
@@ -572,6 +647,11 @@ struct TopBar: View {
                 store.moveTab(tab.id, by: steps)
             }
     }
+}
+
+private struct DocumentControlsWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 private struct TabStripWidthKey: PreferenceKey {
