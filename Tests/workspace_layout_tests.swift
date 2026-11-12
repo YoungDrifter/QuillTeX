@@ -86,8 +86,8 @@ struct WorkspaceLayoutTests {
             check(veil != nil && abs(veil!.whiteComponent - 0.945) < 0.01 && veil!.alphaComponent > 0.99,
                   "reduced transparency uses the opaque light gray surface")
         } else {
-            check(veil != nil && abs(veil!.redComponent - 1) < 0.01 && abs(veil!.alphaComponent - 0.25) < 0.01,
-                  "backdrop uses the sidebar's 25% white veil")
+            check(veil != nil && abs(veil!.redComponent - 1) < 0.01 && veil!.alphaComponent < 0.01,
+                  "backdrop keeps the wallpaper tint unveiled instead of washing it with white")
         }
         check(abs(card.frame.minX - 8) < 0.5, "card is inset 8 points from the content leading edge")
         check(abs(card.frame.maxX - (columnBounds.width - 8)) < 0.5, "card is inset 8 points from the content trailing edge")

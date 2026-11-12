@@ -10,9 +10,10 @@ enum Palette {
     static let secondaryInk = Color(white: 0.46)
     static let subtleSurface = Color(white: 0.965)
     static let sidebarSurface = Color(white: 0.945)
-    /// Light veil over the blurred sidebar material; it keeps the desktop colour
-    /// without letting background text become legible.
-    static let sidebarVeil = Color.white.opacity(0.25)
+    /// The blurred sidebar material carries the desktop colour on its own. No
+    /// white veil is laid over it, so the wallpaper tint reads a little more
+    /// strongly while the material's blur keeps background text illegible.
+    static let sidebarVeil = Color.white.opacity(0.0)
     static let controlSurface = Color(white: 0.985)
     static let hairline = Color.black.opacity(0.085)
     /// Opaque separator for dividers that sit over a behind-window material.

@@ -192,11 +192,12 @@ final class WorkspaceDividerView: NSSplitView {
 }
 
 /// The content column's backdrop. It mirrors `SidebarBackdrop` from
-/// surface_styles.swift: the same behind-window sidebar material under a light
-/// white veil, or an opaque light gray surface when the system reduces
-/// transparency. The top bar and the white editor card are layered on top.
+/// surface_styles.swift: the same behind-window sidebar material showing the
+/// desktop tint without a white veil, or an opaque light gray surface when the
+/// system reduces transparency. The top bar and the white editor card are
+/// layered on top.
 final class WorkspaceBackdropView: NSVisualEffectView {
-    static let whiteVeil = NSColor.white.withAlphaComponent(0.25)
+    static let whiteVeil = NSColor.white.withAlphaComponent(0.0)
     /// Matches `Palette.sidebarSurface` used for the opaque sidebar variant.
     static let opaqueSurface = NSColor(white: 0.945, alpha: 1)
 
