@@ -353,12 +353,11 @@ struct QuillDialogCard<Content: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Palette.hairline).frame(height: 0.8)
+            Rectangle().fill(Palette.hairline.opacity(0.7)).frame(height: 0.8)
             VStack(alignment: .leading, spacing: 0) { content() }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Rectangle().fill(Palette.hairline).frame(height: 0.8)
             footer
         }
         .frame(width: width)
@@ -407,9 +406,9 @@ struct QuillDialogCard<Content: View>: View {
             .help("Close")
             .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 19)
-        .padding(.bottom, 15)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
     }
 
     private var footer: some View {
@@ -431,9 +430,9 @@ struct QuillDialogCard<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 14)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 16)
     }
 }
 
@@ -472,15 +471,11 @@ struct QuillDialogField<Content: View>: View {
     var body: some View {
         content()
             .font(.system(size: 13))
-            .padding(.horizontal, 11)
-            .frame(height: 34)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
             .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Palette.subtleSurface)
-            }
-            .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 0.8)
+                    .fill(Palette.primaryInk.opacity(0.05))
             }
     }
 }
@@ -491,7 +486,7 @@ struct QuillDialogRow<Content: View>: View {
     let label: String
     @ViewBuilder let content: () -> Content
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             Text(label)
                 .font(.system(size: 13))
                 .foregroundStyle(Palette.primaryInk)
@@ -500,7 +495,6 @@ struct QuillDialogRow<Content: View>: View {
         }
         .frame(minHeight: 42)
         .overlay(alignment: .top) {
-            Rectangle().fill(Palette.hairline.opacity(0.75)).frame(height: 0.8)
         }
     }
 }

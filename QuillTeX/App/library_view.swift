@@ -652,9 +652,11 @@ struct NewFolderDialog: View {
                                 .fill(option.tint)
                                 .frame(width: 18, height: 18)
                                 .overlay {
-                                    Circle().strokeBorder(color == option ? Palette.primaryInk : Color.clear,
-                                                          lineWidth: 1.5)
+                                    Circle().strokeBorder(Color.white,
+                                                          lineWidth: color == option ? 2 : 0)
                                 }
+                                .shadow(color: .black.opacity(color == option ? 0.14 : 0),
+                                        radius: color == option ? 2 : 0, y: 1)
                                 .frame(width: 28, height: 28)
                                 .contentShape(Circle())
                         }
@@ -665,7 +667,7 @@ struct NewFolderDialog: View {
                     }
                 }
             }
-            .padding(.top, 16)
+            .padding(.top, 10)
         }
     }
 
@@ -1062,7 +1064,7 @@ private struct LibraryFolderRow: View {
             RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
                 .fill(Palette.primaryInk.opacity(dropTargeted ? Palette.pressedOpacity
                                                              : (isSelected ? Palette.selectedOpacity
-                                                                           : (hovered ? Palette.chromeHoverOpacity : 0))))
+                                                                           : (hovered ? 0.07 : 0))))
         }
         .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
         .overlay {
@@ -1075,7 +1077,12 @@ private struct LibraryFolderRow: View {
                     .padding(.trailing, 2)
             }
         }
-        .onHover { hovered = $0 }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: hovered = true
+            case .ended: hovered = false
+            }
+        }
         .dropDestination(for: String.self) { payloads, _ in
             var handled = false
             for payload in payloads {
@@ -1197,7 +1204,7 @@ private struct LibrarySidebarDocumentRow: View {
         .contentShape(Rectangle())
         .background {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Palette.primaryInk.opacity(hovered ? Palette.chromeHoverOpacity : 0))
+                .fill(Palette.primaryInk.opacity(hovered ? 0.08 : 0))
                 .padding(.horizontal, 2)
         }
         .overlay(alignment: .top) {
@@ -1209,7 +1216,12 @@ private struct LibrarySidebarDocumentRow: View {
                     .padding(.trailing, 6)
             }
         }
-        .onHover { hovered = $0 }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: hovered = true
+            case .ended: hovered = false
+            }
+        }
         .dropDestination(for: String.self) { payloads, _ in
             // Same-level drag inserts the dragged document before this row.
             var handled = false
@@ -1738,7 +1750,13 @@ private struct LibraryBrowserRow: View {
                 .padding(.leading, LibraryLook.browserInset + LibraryLook.docTileSize.width + 11)
                 .padding(.trailing, LibraryLook.browserInset)
         }
-        .onHover { hovered = $0 }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: hovered = true
+            case .ended: hovered = false
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovered)
         .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
         .help(entry.path)
     }
