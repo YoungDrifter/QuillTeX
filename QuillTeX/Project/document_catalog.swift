@@ -3,6 +3,35 @@ import Combine
 
 /// Where the document library sidebar points: every document, starred documents,
 /// one library folder (nil is the built-in Unsorted group) or one tag.
+/// Drag payload for moving a library document into a sidebar folder. The entry
+/// is referenced by UUID so a drop never depends on a stale row value.
+enum LibraryEntryDragPayload {
+    static let prefix = "quilltex-library-entry:"
+
+    static func string(for id: UUID) -> String {
+        prefix + id.uuidString
+    }
+
+    static func entryID(from payload: String) -> UUID? {
+        guard payload.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(payload.dropFirst(prefix.count)))
+    }
+}
+
+/// Drag payload for manually reordering library folders in the sidebar.
+enum LibraryFolderDragPayload {
+    static let prefix = "quilltex-library-folder:"
+
+    static func string(for id: UUID) -> String {
+        prefix + id.uuidString
+    }
+
+    static func folderID(from payload: String) -> UUID? {
+        guard payload.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(payload.dropFirst(prefix.count)))
+    }
+}
+
 enum LibrarySelection: Hashable {
     case all
     case starred
@@ -531,6 +560,49 @@ final class DocumentCatalog: ObservableObject {
         // Deleting a folder never deletes documents; they fall back to Unsorted.
         for entryIndex in entries.indices where entries[entryIndex].folderID.map({ doomed.contains($0) }) == true {
             entries[entryIndex].folderID = nil
+        }
+        persistIfPossible()
+    }
+
+    /// Manual sidebar ordering: put `id` immediately before `targetID` among the
+    /// target's siblings. A nil target files the folder at the end of the top
+    /// level (used when dropping onto Unsorted).
+    func moveFolder(_ id: UUID, before targetID: UUID?) {
+        guard storageReadable, let dragged = folder(id: id) else { return }
+        guard targetID != id else { return }
+        if let targetID, let target = folder(id: targetID) {
+            // Never file a folder inside itself: reject a target in its subtree.
+            guard !descendantFolders(of: id).contains(where: { $0.id == targetID }) else { return }
+            folders.removeAll { $0.id == id }
+            var moved = dragged
+            moved.parentID = target.parentID
+            if let index = folders.firstIndex(where: { $0.id == targetID }) {
+                folders.insert(moved, at: index)
+            } else {
+                folders.append(moved)
+            }
+        } else {
+            folders.removeAll { $0.id == id }
+            var moved = dragged
+            moved.parentID = nil
+            folders.append(moved)
+        }
+        persistIfPossible()
+    }
+
+    /// Manual sidebar ordering for documents: put `id` immediately before the
+    /// target document inside the same folder. A nil target appends it to its
+    /// current folder.
+    func moveEntry(_ id: UUID, before targetID: UUID?) {
+        guard storageReadable, let entryIndex = entries.firstIndex(where: { $0.id == id }) else { return }
+        guard targetID != id else { return }
+        var moved = entries.remove(at: entryIndex)
+        if let targetID, let target = entry(id: targetID) {
+            moved.folderID = target.folderID
+            let insertIndex = entries.firstIndex(where: { $0.id == targetID }) ?? entries.endIndex
+            entries.insert(moved, at: insertIndex)
+        } else {
+            entries.append(moved)
         }
         persistIfPossible()
     }

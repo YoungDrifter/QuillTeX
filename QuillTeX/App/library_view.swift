@@ -1014,6 +1014,7 @@ private struct LibraryFolderRow: View {
     var onToggle: () -> Void
 
     @State private var hovered = false
+    @State private var dropTargeted = false
     @ObservedObject private var dialogs = LibraryDialogCenter.shared
 
     private var folderID: UUID? {
@@ -1021,7 +1022,25 @@ private struct LibraryFolderRow: View {
         return nil
     }
 
+    @ViewBuilder
     var body: some View {
+        if let folderID {
+            rowCore.draggable(LibraryFolderDragPayload.string(for: folderID)) {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                    Text(name).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        } else {
+            rowCore
+        }
+    }
+
+    private var rowCore: some View {
         HStack(spacing: 0) {
             Button(action: onToggle) {
                 QuillSidebarDisclosure(expanded: isExpanded)
@@ -1041,11 +1060,39 @@ private struct LibraryFolderRow: View {
         .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep)
         .background {
             RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
-                .fill(Palette.primaryInk.opacity(isSelected ? Palette.selectedOpacity
-                                                         : (hovered ? Palette.chromeHoverOpacity : 0)))
+                .fill(Palette.primaryInk.opacity(dropTargeted ? Palette.pressedOpacity
+                                                             : (isSelected ? Palette.selectedOpacity
+                                                                           : (hovered ? Palette.chromeHoverOpacity : 0))))
         }
         .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
+        .overlay(alignment: .top) {
+            if dropTargeted {
+                Rectangle()
+                    .fill(Palette.primaryInk.opacity(0.55))
+                    .frame(height: 2)
+                    .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep + 6)
+                    .padding(.trailing, 6)
+            }
+        }
         .onHover { hovered = $0 }
+        .dropDestination(for: String.self) { payloads, _ in
+            var handled = false
+            for payload in payloads {
+                if let entryID = LibraryEntryDragPayload.entryID(from: payload),
+                   let entry = catalog.entry(id: entryID) {
+                    catalog.setFolder(entry.id, folderID: folderID)
+                    handled = true
+                } else if let draggedFolderID = LibraryFolderDragPayload.folderID(from: payload) {
+                    // Dropping a folder onto another row orders it before that row;
+                    // dropping on Unsorted moves it to the top level.
+                    catalog.moveFolder(draggedFolderID, before: folderID)
+                    handled = true
+                }
+            }
+            return handled
+        } isTargeted: { targeted in
+            dropTargeted = targeted
+        }
         .contextMenu {
             Button("Open Documents", action: onSelect)
             Button("New Document in This Folder") { store.openNewDocumentSheet(folderID: folderID) }
@@ -1110,10 +1157,13 @@ private struct LibrarySidebarDocumentRow: View {
     @ObservedObject var catalog: DocumentCatalog
     let onOpen: () -> Void
 
+    @State private var dropTargeted = false
+
     var body: some View {
         let missing = catalog.isMissing(entry)
-        return Button(action: onOpen) {
-            HStack(spacing: 7) {
+        // A plain tap target instead of a Button: a Button's own tracking eats the
+        // press before SwiftUI's drag session can start, which broke drag-to-folder.
+        return HStack(spacing: 7) {
                 if missing {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 12, weight: .regular))
@@ -1141,9 +1191,47 @@ private struct LibrarySidebarDocumentRow: View {
             .padding(.trailing, 8)
             .frame(height: 28)
             .contentShape(Rectangle())
-        }
         .padding(.leading, indent)
-        .buttonStyle(QuillRowButtonStyle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .overlay(alignment: .top) {
+            if dropTargeted {
+                Rectangle()
+                    .fill(Palette.primaryInk.opacity(0.55))
+                    .frame(height: 2)
+                    .padding(.leading, indent + 6)
+                    .padding(.trailing, 6)
+            }
+        }
+        .dropDestination(for: String.self) { payloads, _ in
+            // Same-level drag inserts the dragged document before this row.
+            var handled = false
+            for payload in payloads {
+                if let draggedID = LibraryEntryDragPayload.entryID(from: payload) {
+                    catalog.moveEntry(draggedID, before: entry.id)
+                    handled = true
+                }
+            }
+            return handled
+        } isTargeted: { targeted in
+            dropTargeted = targeted
+        }
+        .onTapGesture(perform: onOpen)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onOpen() }
+        // Drag a sidebar document onto a folder row to file it there.
+        .draggable(LibraryEntryDragPayload.string(for: entry.id)) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                Text(entry.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
         .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
         .help(entry.path)
     }

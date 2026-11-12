@@ -437,6 +437,50 @@ struct DocumentCatalogTests {
         check(reloadedPreferences.newDocumentDirectory.standardizedFileURL == LibraryPreferences.defaultDirectory.standardizedFileURL,
               "resetToDefault returns the default path")
 
+        // MARK: - Manual folder order
+
+        let orderA = try catalog.createFolder(named: "Order A")
+        let orderB = try catalog.createFolder(named: "Order B")
+        catalog.moveFolder(orderB.id, before: orderA.id)
+        check(catalog.rootFolders.map(\.id).prefix(2) == [orderB.id, orderA.id],
+              "moveFolder orders a folder before its new sibling")
+        let orderContainer = try catalog.createFolder(named: "Order Container")
+        let orderInner = try catalog.createFolder(named: "Order Inner", parentID: orderContainer.id)
+        catalog.moveFolder(orderA.id, before: orderInner.id)
+        check(catalog.folder(id: orderA.id)?.parentID == orderContainer.id,
+              "dropping beside a nested folder adopts its parent")
+        catalog.moveFolder(orderContainer.id, before: orderInner.id)
+        check(catalog.folder(id: orderContainer.id)?.parentID == nil,
+              "a folder cannot be filed inside its own subtree")
+        catalog.moveFolder(orderContainer.id, before: nil)
+        check(catalog.rootFolders.contains { $0.id == orderContainer.id },
+              "dropping on Unsorted moves the folder back to the top level")
+        catalog.deleteFolder(orderContainer.id)
+        catalog.deleteFolder(orderB.id)
+
+        // MARK: - Manual document order
+
+        catalog.moveEntry(betaEntry.id, before: alphaEntry.id)
+        let betaIndex = catalog.entries.firstIndex { $0.id == betaEntry.id } ?? -1
+        let alphaIndex = catalog.entries.firstIndex { $0.id == alphaEntry.id } ?? -1
+        check(betaIndex >= 0 && alphaIndex > betaIndex, "moveEntry inserts a document before another one")
+        catalog.moveEntry(alphaEntry.id, before: betaEntry.id)
+        check((catalog.entries.firstIndex { $0.id == alphaEntry.id } ?? -1) < (catalog.entries.firstIndex { $0.id == betaEntry.id } ?? -1),
+              "moveEntry can reorder the other way")
+
+        // MARK: - Sidebar drag payload
+
+        let dragID = UUID()
+        check(LibraryEntryDragPayload.entryID(from: LibraryEntryDragPayload.string(for: dragID)) == dragID,
+              "sidebar drag payload round-trips the document id")
+        check(LibraryEntryDragPayload.entryID(from: "plain text") == nil,
+              "sidebar drop ignores unrelated text")
+        check(LibraryEntryDragPayload.entryID(from: LibraryEntryDragPayload.prefix + "not-a-uuid") == nil,
+              "sidebar drop rejects a malformed document id")
+        check(LibraryFolderDragPayload.folderID(from: LibraryFolderDragPayload.string(for: dragID)) == dragID
+              && LibraryFolderDragPayload.folderID(from: LibraryEntryDragPayload.string(for: dragID)) == nil,
+              "folder drag payload is distinct from the document payload")
+
         print("PASS: \(checks) document-catalog assertions")
     }
 }
