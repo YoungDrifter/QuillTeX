@@ -169,6 +169,23 @@ struct ChromeHoverFeedback: ViewModifier {
     }
 }
 
+/// Reports pointer hover through the same AppKit tracking layer as the top bar,
+/// without adding its own visual effect. SwiftUI's `onHover` and `Menu` labels
+/// do not receive reliable hover events in this hosting setup.
+struct ChromeHoverState: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+    func makeNSView(context: Context) -> ChromeHoverView { ChromeHoverView() }
+    func updateNSView(_ view: ChromeHoverView, context: Context) {
+        view.onChange = onChange
+        view.isControlEnabled = true
+        view.refreshHover()
+    }
+    static func dismantleNSView(_ view: ChromeHoverView, coordinator: ()) {
+        view.isControlEnabled = false
+        view.onChange = nil
+    }
+}
+
 private struct ChromeHoverTracker: NSViewRepresentable {
     let isEnabled: Bool
     let onChange: (Bool) -> Void

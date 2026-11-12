@@ -2019,18 +2019,17 @@ struct NewDocumentDialog: View {
                     .foregroundStyle(Palette.primaryInk)
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(Palette.primaryInk.opacity(templateHovered ? 0.08 : 0.035), in: Capsule())
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.8))
-                    .onHover { templateHovered = $0 }
+                    .background(Palette.primaryInk.opacity(templateHovered ? 0.09 : 0.035), in: Capsule())
+                    .overlay(Capsule().strokeBorder(
+                        Palette.primaryInk.opacity(templateHovered ? 0.16 : 0.10), lineWidth: 0.8))
                     .animation(.easeOut(duration: 0.12), value: templateHovered)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                // The menu owns the pointer tracking, so SwiftUI's onHover never
-                // fires for its label; the AppKit tracker used by the top bar also
-                // gives this picker a visible hover response.
-                .modifier(ChromeHoverFeedback())
+                // Menu labels swallow SwiftUI hover; the shared AppKit tracker only
+                // reports the state so hover can stay a quiet inner gray wash.
+                .background(ChromeHoverState { templateHovered = $0 }.allowsHitTesting(false))
             }
         }
     }
