@@ -282,6 +282,7 @@ struct QuillDialogButtonStyle: ButtonStyle {
                     .strokeBorder(role == .primary ? Color.clear : Palette.hairline, lineWidth: 0.8)
             }
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .modifier(DialogButtonHover())
             .scaleEffect(pressed && !reduceMotion ? 0.99 : 1)
             .animation(reduceMotion ? nil : ChromeMotion.press, value: pressed)
             .opacity(isEnabled ? 1 : 0.45)
@@ -304,6 +305,21 @@ struct QuillDialogButtonStyle: ButtonStyle {
         case .destructive:
             return Color.red.opacity(pressed ? 0.16 : 0.08)
         }
+    }
+}
+
+/// Quiet hover lift for dialog actions (Save/Create/Update and confirm buttons).
+struct DialogButtonHover: ViewModifier {
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.black.opacity(hovered ? 0.045 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { hovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovered)
     }
 }
 
@@ -331,7 +347,7 @@ struct QuillDialogTextButtonStyle: ButtonStyle {
 /// fields and one full-width primary action.
 struct QuillDialogCard<Content: View>: View {
     let title: String
-    var width: CGFloat = 500
+    var width: CGFloat = 380
     var cancelCode = 0
     let close: () -> Void
     @ViewBuilder let content: () -> Content
@@ -356,7 +372,7 @@ struct QuillDialogCard<Content: View>: View {
             Rectangle().fill(Palette.hairline.opacity(0.7)).frame(height: 0.8)
             VStack(alignment: .leading, spacing: 0) { content() }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 4)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             footer
         }
@@ -407,8 +423,8 @@ struct QuillDialogCard<Content: View>: View {
             .accessibilityLabel("Close")
         }
         .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
+        .padding(.top, 20)
+        .padding(.bottom, 14)
     }
 
     private var footer: some View {
@@ -431,8 +447,8 @@ struct QuillDialogCard<Content: View>: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 18)
     }
 }
 
@@ -730,7 +746,7 @@ struct QuillOverlayAlert: View {
             ZStack {
                 QuillDialogBackdrop()
                 QuillDialogCard(title: request.title,
-                                width: min(400, max(340, geometry.size.width * 0.66)),
+                                width: min(370, max(320, geometry.size.width * 0.56)),
                                 close: dismiss,
                                 content: {
                                     if let message = request.message, !message.isEmpty {
@@ -755,7 +771,7 @@ struct QuillOverlayConfirm: View {
             ZStack {
                 QuillDialogBackdrop()
                 QuillDialogCard(title: request.title,
-                                width: min(400, max(340, geometry.size.width * 0.66)),
+                                width: min(370, max(320, geometry.size.width * 0.56)),
                                 close: { finish(false) },
                                 content: {
                                     if let message = request.message, !message.isEmpty {
@@ -813,7 +829,7 @@ struct QuillOverlayPrompt: View {
             ZStack {
                 QuillDialogBackdrop()
                 QuillDialogCard(title: request.title,
-                                width: min(420, max(340, geometry.size.width * 0.66)),
+                                width: min(380, max(330, geometry.size.width * 0.56)),
                                 close: { finish(nil) },
                                 content: { form },
                                 actions: [.primary(request.confirmTitle)],
@@ -854,7 +870,7 @@ struct QuillOverlaySaveChanges: View {
             ZStack {
                 QuillDialogBackdrop()
                 QuillDialogCard(title: request.title,
-                                width: min(420, max(340, geometry.size.width * 0.66)),
+                                width: min(380, max(330, geometry.size.width * 0.56)),
                                 close: { finish(.cancel) },
                                 content: {
                                     if let detail = request.detail, !detail.isEmpty {

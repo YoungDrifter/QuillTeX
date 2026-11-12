@@ -606,7 +606,7 @@ struct NewFolderDialog: View {
                 QuillDialogBackdrop()
                     .onTapGesture(perform: onDismiss)
                 QuillDialogCard(title: title,
-                                width: min(400, max(340, geometry.size.width * 0.66)),
+                                width: min(370, max(320, geometry.size.width * 0.56)),
                                 close: onDismiss,
                                 content: { form },
                                 actions: [.primary(primaryTitle)],
@@ -1914,6 +1914,7 @@ struct NewDocumentDialog: View {
 
     @State private var name = "Untitled"
     @State private var selectedTemplateID: String?
+    @State private var templateHovered = false
     @State private var destination: URL
     @FocusState private var nameFocused: Bool
 
@@ -1945,7 +1946,7 @@ struct NewDocumentDialog: View {
                 QuillDialogBackdrop()
                     .onTapGesture(perform: onDismiss)
                 QuillDialogCard(title: "New Document",
-                                width: min(460, max(360, geometry.size.width * 0.66)),
+                                width: min(390, max(340, geometry.size.width * 0.56)),
                                 close: onDismiss,
                                 content: { form },
                                 actions: [.primary("Create")],
@@ -2018,8 +2019,10 @@ struct NewDocumentDialog: View {
                     .foregroundStyle(Palette.primaryInk)
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(Palette.primaryInk.opacity(0.035), in: Capsule())
+                    .background(Palette.primaryInk.opacity(templateHovered ? 0.08 : 0.035), in: Capsule())
                     .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.8))
+                    .onHover { templateHovered = $0 }
+                    .animation(.easeOut(duration: 0.12), value: templateHovered)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
