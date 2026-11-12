@@ -1296,7 +1296,8 @@ struct LibraryBrowser: View {
     @AppStorage("library.viewMode") private var viewMode: LibraryViewMode = .list
     @State private var newButtonHovered = false
     @State private var searchHovered = false
-    @State private var sortHovered = false
+    @FocusState private var searchFocused: Bool
+    @State private var searchFocusMonitor: Any?
     @State private var sortAscending = false
 
     private var totalEntries: [LibraryEntry] { catalog.entries(in: store.librarySelection) }
@@ -1477,6 +1478,7 @@ struct LibraryBrowser: View {
                 .foregroundStyle(Palette.secondaryInk)
             TextField("Search", text: $search)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
                 .font(.system(size: 13.5))
                 .foregroundStyle(Palette.primaryInk)
             if isSearching {
@@ -1498,8 +1500,9 @@ struct LibraryBrowser: View {
         .modifier(LibraryControlSurface())
         // Fill the whole pill on hover, not just the text area.
         .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
+            Capsule()
                 .fill(Palette.primaryInk.opacity(searchHovered ? 0.05 : 0))
+                .padding(4)
                 .allowsHitTesting(false)
         }
         .onHover { searchHovered = $0 }
@@ -1511,22 +1514,39 @@ struct LibraryBrowser: View {
                 if search.isEmpty { NSApp.keyWindow?.makeFirstResponder(nil) }
             }
         }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                if search.isEmpty { searchFocused = false }
+            }
+            if searchFocusMonitor == nil {
+                searchFocusMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { event in
+                    if searchFocused, let window = event.window,
+                       window.firstResponder is NSTextView,
+                       let hit = window.contentView?.hitTest(event.locationInWindow) {
+                        var clickedText = false
+                        var view: NSView? = hit
+                        while let current = view {
+                            if current is NSTextField || current is NSTextView { clickedText = true; break }
+                            view = current.superview
+                        }
+                        if !clickedText { searchFocused = false }
+                    }
+                    return event
+                }
+            }
+        }
+        .onDisappear {
+            if let monitor = searchFocusMonitor { NSEvent.removeMonitor(monitor) }
+            searchFocusMonitor = nil
+        }
         .help("Filter documents by name or path")
     }
 
     private var sortMenu: some View {
         // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
-            .overlay {
-                // Inset wash like the reference: the highlight stops a few points
-                // short of the button edge instead of filling the whole surface.
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
-                    .padding(3)
-                    .allowsHitTesting(false)
-            }
-            .onHover { sortHovered = $0 }
-            .animation(.easeOut(duration: 0.15), value: sortHovered)
+            // Same hover treatment as the neighbouring capsules.
+            .modifier(CapsuleHoverWash())
     }
 
     private var columnHeader: some View {
@@ -2105,7 +2125,6 @@ private struct TemplateSourcePreview: View {
 }
 
 private struct TemplatesBrowser: View {
-    @State private var sortHovered = false
     @ObservedObject var store: ProjectStore
     @ObservedObject var library: DocumentLibrary
 
@@ -2306,16 +2325,8 @@ private struct TemplatesBrowser: View {
     private var sortMenu: some View {
         // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
-            .overlay {
-                // Inset wash like the reference: the highlight stops a few points
-                // short of the button edge instead of filling the whole surface.
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
-                    .padding(3)
-                    .allowsHitTesting(false)
-            }
-            .onHover { sortHovered = $0 }
-            .animation(.easeOut(duration: 0.15), value: sortHovered)
+            // Same hover treatment as the neighbouring capsules.
+            .modifier(CapsuleHoverWash())
     }
 
     private var searchField: some View {

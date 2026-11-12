@@ -317,6 +317,7 @@ struct CapsuleHoverWash: ViewModifier {
             .overlay {
                 Capsule()
                     .fill(Color.black.opacity(hovered ? 0.05 : 0))
+                    .padding(3)
                     .allowsHitTesting(false)
             }
             .onHover { hovered = $0 }
