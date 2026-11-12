@@ -2012,28 +2012,26 @@ struct NewDocumentDialog: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(selectedTemplate?.displayTitle ?? "None")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Palette.primaryInk)
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Palette.secondaryInk)
                     }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.primaryInk)
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Palette.primaryInk.opacity(templateHovered ? 0.10 : 0.05)))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.black.opacity(templateHovered ? 0.30 : 0.22),
-                                          lineWidth: 1))
-                    .animation(.easeOut(duration: 0.12), value: templateHovered)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                // Menu labels swallow SwiftUI hover; the shared AppKit tracker only
-                // reports the state so hover can stay a quiet inner gray wash.
+                .padding(.horizontal, 12)
+                .frame(minHeight: 28)
+                // Exactly the Choose… capsule metrics: label-owned backgrounds are
+                // dropped by AppKit's menu rendering, so the wrapper draws it.
+                .background(Capsule().fill(Color.black.opacity(templateHovered ? 0.06 : 0.025)))
+                .overlay(Capsule().strokeBorder(Color.black.opacity(templateHovered ? 0.20 : 0.12),
+                                                lineWidth: 1))
+                .contentShape(Capsule())
                 .background(ChromeHoverState { templateHovered = $0 }.allowsHitTesting(false))
+                .animation(.easeOut(duration: 0.12), value: templateHovered)
             }
         }
     }
