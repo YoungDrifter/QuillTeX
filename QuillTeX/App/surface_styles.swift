@@ -308,6 +308,22 @@ struct QuillDialogButtonStyle: ButtonStyle {
     }
 }
 
+/// The one hover treatment for capsule controls: a quiet gray inner wash,
+/// never scale, underline or shadow changes.
+struct CapsuleHoverWash: ViewModifier {
+    @State private var hovered = false
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                Capsule()
+                    .fill(Color.black.opacity(hovered ? 0.05 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { hovered = $0 }
+            .animation(.easeOut(duration: 0.15), value: hovered)
+    }
+}
+
 /// Quiet hover lift for dialog actions (Save/Create/Update and confirm buttons).
 struct DialogButtonHover: ViewModifier {
     @State private var hovered = false

@@ -1296,6 +1296,7 @@ struct LibraryBrowser: View {
     @AppStorage("library.viewMode") private var viewMode: LibraryViewMode = .list
     @State private var newButtonHovered = false
     @State private var searchHovered = false
+    @State private var sortHovered = false
     @State private var sortAscending = false
 
     private var totalEntries: [LibraryEntry] { catalog.entries(in: store.librarySelection) }
@@ -1514,8 +1515,15 @@ struct LibraryBrowser: View {
     }
 
     private var sortMenu: some View {
+        // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
-            .modifier(ChromeHoverFeedback())
+            .overlay {
+                Circle()
+                    .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { sortHovered = $0 }
+            .animation(.easeOut(duration: 0.15), value: sortHovered)
     }
 
     private var columnHeader: some View {
@@ -2038,7 +2046,7 @@ struct NewDocumentDialog: View {
                 .background(Capsule().fill(Color.black.opacity(0.025)))
                 .overlay(Capsule().strokeBorder(Color.black.opacity(0.12), lineWidth: 1))
                 .contentShape(Capsule())
-                .modifier(ChromeHoverFeedback())
+                .modifier(CapsuleHoverWash())
             }
         }
     }
@@ -2094,6 +2102,7 @@ private struct TemplateSourcePreview: View {
 }
 
 private struct TemplatesBrowser: View {
+    @State private var sortHovered = false
     @ObservedObject var store: ProjectStore
     @ObservedObject var library: DocumentLibrary
 
@@ -2292,8 +2301,15 @@ private struct TemplatesBrowser: View {
     }
 
     private var sortMenu: some View {
+        // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
-            .modifier(ChromeHoverFeedback())
+            .overlay {
+                Circle()
+                    .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { sortHovered = $0 }
+            .animation(.easeOut(duration: 0.15), value: sortHovered)
     }
 
     private var searchField: some View {
