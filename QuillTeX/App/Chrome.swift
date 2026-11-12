@@ -64,6 +64,10 @@ enum ChromeMetrics {
     static let sidebarIconWidth: CGFloat = 18
     static let sidebarRowHeight: CGFloat = 30
     static let sidebarDisclosureWidth: CGFloat = 18
+    /// Small document page icon shared by the library sidebar and the tab strip:
+    /// near-square with a clearly rounded corner, instead of a tall page.
+    static let documentPageIconSize = CGSize(width: 20, height: 22)
+    static let documentPageIconCornerRadius: CGFloat = 5
     /// Both pane headers (breadcrumb and PDF title) share this height so their titles
     /// sit on one line and their bottom rules line up.
     static let paneHeaderHeight: CGFloat = 54
@@ -348,7 +352,7 @@ struct TopBar: View {
                     : (tab.path == nil ? store.showingLibrary && store.librarySelection == .newTab
                                        : !store.showingLibrary && !store.showingSettings)))
         let hovered = hoveredTab == tab.id
-        let leadingSlot: CGFloat = 18
+        let leadingSlot = ChromeMetrics.documentPageIconSize.width
         return ZStack(alignment: .leading) {
             Button { store.activateTab(tab) } label: {
                 HStack(spacing: 6) {
@@ -420,13 +424,25 @@ struct TopBar: View {
         .simultaneousGesture(tabDragGesture(tab))
     }
 
+    /// Library tabs reuse the sidebar's own symbol for their selection so the
+    /// tab strip and the sidebar never disagree (for example the Starred tab).
+    private func libraryTabSymbol(_ selection: LibrarySelection?) -> String {
+        switch selection {
+        case .starred: "star"
+        case .templates: "square.on.square"
+        case .tag: "tag"
+        case .folder: "folder"
+        case .all, .newTab, .none: "list.bullet.rectangle"
+        }
+    }
+
     /// The at-rest counterpart of the close control: the same document page
     /// thumbnail the library uses, falling back to a plain symbol.
     @ViewBuilder
     private func tabLeadingIcon(_ tab: WorkspaceTab, active: Bool) -> some View {
         let ink = active ? Palette.primaryInk : Palette.secondaryInk
         if tab.isLibrary {
-            Image(systemName: "folder")
+            Image(systemName: libraryTabSymbol(tab.selection))
                 .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(ink)
         } else if tab.isSettings {
@@ -439,8 +455,9 @@ struct TopBar: View {
                 .foregroundStyle(ink)
         } else if let path = tab.path,
                   let entry = (store.catalog ?? DocumentCatalog.shared).entry(forMainFile: path) {
-            LibraryDocumentThumbnail(entry: entry, size: CGSize(width: 16, height: 20),
-                                     cornerRadius: 4)
+            LibraryDocumentThumbnail(entry: entry,
+                                     size: ChromeMetrics.documentPageIconSize,
+                                     cornerRadius: ChromeMetrics.documentPageIconCornerRadius)
         } else {
             Image(systemName: "doc.text")
                 .font(.system(size: 11, weight: .regular))

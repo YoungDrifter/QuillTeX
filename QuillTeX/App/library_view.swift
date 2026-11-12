@@ -1120,9 +1120,10 @@ private struct LibrarySidebarDocumentRow: View {
                         .foregroundStyle(Color.orange)
                         .frame(width: ChromeMetrics.sidebarIconWidth)
                 } else {
-                    LibraryDocumentThumbnail(entry: entry, size: CGSize(width: 18, height: 22),
-                                             cornerRadius: 3)
-                        .frame(width: ChromeMetrics.sidebarIconWidth)
+                    LibraryDocumentThumbnail(entry: entry,
+                                             size: ChromeMetrics.documentPageIconSize,
+                                             cornerRadius: ChromeMetrics.documentPageIconCornerRadius)
+                        .frame(width: ChromeMetrics.documentPageIconSize.width)
                 }
                 Text(entry.displayName)
                     .font(.system(size: 12.5))
