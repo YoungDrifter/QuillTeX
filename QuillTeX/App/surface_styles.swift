@@ -308,6 +308,29 @@ struct QuillDialogButtonStyle: ButtonStyle {
     }
 }
 
+/// AppKit tooltips are window-level tracking: a dialog overlay does not stop the
+/// rows underneath from showing their `.help` tooltip. This gate blanks tooltips
+/// while a modal sheet is up.
+@MainActor
+final class QuillModalGate: ObservableObject {
+    static let shared = QuillModalGate()
+    @Published var active = false
+}
+
+extension View {
+    func quillHelp(_ text: String) -> some View {
+        modifier(QuillHelpModifier(text: text))
+    }
+}
+
+private struct QuillHelpModifier: ViewModifier {
+    let text: String
+    @ObservedObject private var gate = QuillModalGate.shared
+    func body(content: Content) -> some View {
+        content.help(gate.active ? "" : text)
+    }
+}
+
 /// The one hover treatment for capsule controls: a quiet gray inner wash,
 /// never scale, underline or shadow changes.
 struct CapsuleHoverWash: ViewModifier {

@@ -1253,7 +1253,7 @@ private struct LibrarySidebarDocumentRow: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
-        .help(entry.path)
+        .quillHelp(entry.path)
     }
 }
 
@@ -1539,7 +1539,7 @@ struct LibraryBrowser: View {
             if let monitor = searchFocusMonitor { NSEvent.removeMonitor(monitor) }
             searchFocusMonitor = nil
         }
-        .help("Filter documents by name or path")
+        .quillHelp("Filter documents by name or path")
     }
 
     private var sortMenu: some View {
@@ -1799,7 +1799,7 @@ private struct LibraryBrowserRow: View {
         }
         .animation(.easeOut(duration: 0.12), value: hovered)
         .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
-        .help(entry.path)
+        .quillHelp(entry.path)
     }
 
     private var rowLabel: some View {

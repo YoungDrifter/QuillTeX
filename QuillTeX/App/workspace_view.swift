@@ -10,6 +10,21 @@ struct WorkspaceView: View {
     @StateObject private var dialogCenter = QuillDialogCenter.shared
     @Environment(\.openWindow) private var openWindow
     var openURL: URL? = nil
+
+    /// While any dialog sheet is up, the content underneath must stop receiving
+    /// pointer events. AppKit tracking areas do not stop reporting hover just
+    /// because a transparent backdrop covers them, which lit up rows and controls
+    /// behind the dialog. Disabling hit testing on the base content removes those
+    /// hover targets entirely.
+    private var isModalPresented: Bool {
+        store.showNewDocument
+            || libraryDialogs.folderDialog != nil
+            || dialogCenter.alert != nil
+            || dialogCenter.confirmRequest != nil
+            || dialogCenter.promptRequest != nil
+            || dialogCenter.saveChanges != nil
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             // The window is one shell: the sidebar (library page 1 / project page 2)
@@ -29,6 +44,8 @@ struct WorkspaceView: View {
                 .padding(.trailing, 16)
             }
         }
+        .allowsHitTesting(!isModalPresented)
+        .disabled(isModalPresented)
         .frame(minWidth: ChromeMetrics.workspaceMinimumSize.width, maxWidth: .infinity,
                minHeight: ChromeMetrics.workspaceMinimumSize.height, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
@@ -86,6 +103,19 @@ struct WorkspaceView: View {
         .animation(.easeOut(duration: 0.18), value: dialogCenter.saveChanges?.id)
         .onChange(of: store.root) { _, root in
             store.sidebarPage = root == nil ? .library : .structure
+        }
+        .onChange(of: isModalPresented) { _, modal in
+            QuillModalGate.shared.active = modal
+        }
+        .onChange(of: isModalPresented) { _, modal in
+            QuillModalGate.shared.active = modal
+            if modal {
+                // The search field keeps its edit session (and caret) alive while a
+                // dialog is up; the modal card owns focus from here.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.checkExternalChanges()
