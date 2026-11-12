@@ -507,6 +507,7 @@ final class SyncPDFView: PDFView {
 /// The PDF pane: header, then either the built document or the empty state.
 struct PreviewPane: View {
     @ObservedObject var store: ProjectStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var build: BuildController
     @StateObject private var controls = PDFPreviewControls()
     @State private var zoomText = ""
@@ -645,6 +646,9 @@ struct PreviewPane: View {
                     PreviewPlaceholder().background(Palette.previewCanvas)
                 }
             }
+            // Match the editor's tab-switch cross-fade so both panes change together.
+            .id(store.activeTabID)
+            .transition(.opacity)
             VStack(spacing: 0) {
                 // Short hints (build state, SyncTeX notes) stay in the status
                 // capsule at the preview's top-left instead of adding a second row.
@@ -652,6 +656,7 @@ struct PreviewPane: View {
                 .quillPaneRow()
             }
         }
+        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: store.activeTabID)
         .background(Palette.previewCanvas)
         .focusedSceneValue(\.pdfPreviewControls, controls)
     }

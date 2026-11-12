@@ -102,16 +102,29 @@ final class ProjectStore: ObservableObject {
     private var maintainingRootDirectives = false
     private var pendingRootDirectives: Set<URL> = []
     var sourceDirectory: URL?
-    @Published var sidebarWidth: Double = 248
+    /// The sidebar width is window chrome rather than document state: the last
+    /// width the user dragged is kept as an app-wide preference so it survives
+    /// relaunch, including on the All Documents page where no project is open.
+    static let sidebarWidthDefaultsKey = "workspace.sidebarWidth"
+    static let defaultSidebarWidth: Double = 248
+    static func clampedSidebarWidth(_ width: Double) -> Double {
+        width.isFinite ? min(400, max(180, width)) : defaultSidebarWidth
+    }
+    @Published var sidebarWidth: Double = defaultSidebarWidth
     @Published var editorFraction: Double = 0.5
     @Published var pdfReadingState: PDFReadingState?
     @Published var syncStatusMessage: String?
     @Published var recoveryMessage: String?
-    init(library: DocumentLibrary? = nil, catalog: DocumentCatalog? = nil, maintainsRootDirectives: Bool = true) {
+    private let defaults: UserDefaults
+    init(library: DocumentLibrary? = nil, catalog: DocumentCatalog? = nil,
+         maintainsRootDirectives: Bool = true, defaults: UserDefaults = .standard) {
         self.maintainsRootDirectives = maintainsRootDirectives
         self.catalog = catalog
         let library = library ?? .shared
         self.library = library
+        self.defaults = defaults
+        let savedWidth = defaults.object(forKey: Self.sidebarWidthDefaultsKey) as? Double
+        sidebarWidth = Self.clampedSidebarWidth(savedWidth ?? Self.defaultSidebarWidth)
         sessionStore = WorkspaceSessionStore(directory: library.directory.appendingPathComponent("WorkspaceSessions"))
         build.$status.dropFirst().sink { [weak self] status in
             guard let self else { return }
@@ -258,6 +271,15 @@ final class ProjectStore: ObservableObject {
         pdfReadingState = state
         scheduleSessionSave()
     }
+    /// Store the width dragged in either the library page or a document. It is
+    /// shared by every window and restored at launch before any project opens.
+    func setSidebarWidth(_ width: Double) {
+        let clamped = Self.clampedSidebarWidth(width)
+        guard clamped != sidebarWidth else { return }
+        sidebarWidth = clamped
+        defaults.set(clamped, forKey: Self.sidebarWidthDefaultsKey)
+    }
+
     func scheduleSessionSave() {
         guard !restoringSession, !sessionClosed, root != nil else { return }
         sessionTask?.cancel()
@@ -333,7 +355,12 @@ final class ProjectStore: ObservableObject {
         sidebarMode = state.sidebarMode == "Subfiles" ? .tex : (SidebarMode(rawValue: state.sidebarMode) ?? .structure)
         paneMode = PaneMode(rawValue: state.paneMode) ?? .split
         expandedNodes = Set(state.expandedNodes)
-        sidebarWidth = state.sidebarWidth.isFinite ? min(400, max(180, state.sidebarWidth)) : 248
+        // Sidebar width is an app-wide preference now. Adopt the width stored with
+        // the session only while no app-wide value exists yet, so existing
+        // projects keep their layout once after upgrading.
+        if defaults.object(forKey: Self.sidebarWidthDefaultsKey) == nil {
+            sidebarWidth = Self.clampedSidebarWidth(state.sidebarWidth)
+        }
         // Every project opens with the editor and preview equal.
         editorFraction = 0.5
         pdfReadingState = state.pdf

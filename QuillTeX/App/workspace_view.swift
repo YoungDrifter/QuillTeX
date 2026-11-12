@@ -175,6 +175,7 @@ struct WorkspaceView: View {
 
 private struct EditorPane: View {
     @ObservedObject var store: ProjectStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .top) {
             Group {
@@ -192,6 +193,10 @@ private struct EditorPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // One quiet cross-fade shared with the tab strip: switching tabs
+            // replaces the pane content without a hard cut.
+            .id(store.activeTabID)
+            .transition(.opacity)
             if store.root != nil && !store.showingLibrary && !store.showingSettings {
             HStack(spacing: 8) {
                 Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
@@ -207,6 +212,7 @@ private struct EditorPane: View {
             }.quillPaneRow()
             }
         }
+        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: store.activeTabID)
         // The library, New Tab and Templates surfaces sit on the shared backdrop;
         // documents and the embedded Settings page get the white card.
         .background(store.root == nil || store.showingLibrary ? Color.clear : Color.white)
@@ -281,8 +287,12 @@ private struct WorkspaceSplit: NSViewRepresentable {
         controller.onLayoutChange = { [weak store] width, fraction in
             guard let store else { return }
             let snapped = abs(fraction - 0.5) < 0.01 ? 0.5 : fraction
-            if abs(store.sidebarWidth - width) > 0.5 || abs(store.editorFraction - snapped) > 0.001 {
-                store.sidebarWidth = width; store.editorFraction = snapped
+            if abs(store.sidebarWidth - width) > 0.5 {
+                store.setSidebarWidth(width)
+                store.scheduleSessionSave()
+            }
+            if abs(store.editorFraction - snapped) > 0.001 {
+                store.editorFraction = snapped
                 store.scheduleSessionSave()
             }
         }

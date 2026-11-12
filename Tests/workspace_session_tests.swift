@@ -8,6 +8,9 @@ struct WorkspaceSessionTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("QuillTeX-session-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
+        let defaultsSuite = "QuillTeX.WorkspaceSessionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
         let root = directory.appendingPathComponent("main.tex")
         let child = directory.appendingPathComponent("中文 child.tex")
         let missing = directory.appendingPathComponent("removed.tex")
@@ -21,7 +24,7 @@ struct WorkspaceSessionTests {
             guard condition() else { fatalError("FAILED: \(message)") }
             checks += 1
         }
-        let original = ProjectStore(library: library, maintainsRootDirectives: false)
+        let original = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         original.openProject(root, explicitRoot: true)
         original.openSource(child)
         original.openSource(missing)
@@ -43,7 +46,7 @@ struct WorkspaceSessionTests {
         original.sessionStore.flush()
         try "Changed externally".write(to: child, atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: missing)
-        let recovered = ProjectStore(library: library, maintainsRootDirectives: false)
+        let recovered = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         recovered.openProject(root, explicitRoot: true)
         check(recovered.documents.map(\.url) == [root, child, missing], "restore opened documents and recover a deleted dirty file")
         check(recovered.activeDocument?.url == child, "restore active file")
@@ -66,7 +69,7 @@ struct WorkspaceSessionTests {
         recovered.sessionStore.flush()
         check(recovered.sessionStore.load(root: root)?.documents.first { $0.path == child.path }?.draft == draft.text, "IME composition never replaces stable recovery data")
         recovered.finishClosing()
-        let reopened = ProjectStore(library: library, maintainsRootDirectives: false)
+        let reopened = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         reopened.openProject(root, explicitRoot: true)
         check(reopened.activeDocument?.text == "Changed externally", "normal close with discarded drafts restores disk contents")
         check(!reopened.documents.contains { $0.url == missing }, "missing clean tabs are skipped")
@@ -99,9 +102,22 @@ struct WorkspaceSessionTests {
         bounded.documents[0].selectionLength = Int.max
         reopened.sessionStore.save(bounded)
         reopened.sessionStore.flush()
-        let clamped = ProjectStore(library: library, maintainsRootDirectives: false)
+        let clamped = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         clamped.openProject(root, explicitRoot: true)
-        check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.5, "clamp the sidebar width and open the split equal")
+        check(clamped.sidebarWidth == 400 && clamped.editorFraction == 0.5, "clamp the legacy session sidebar width and open the split equal")
+        // The dragged width is an app-wide preference now: it wins over the
+        // width stored with an older project session and survives relaunch.
+        defaults.set(347, forKey: ProjectStore.sidebarWidthDefaultsKey)
+        let widthStore = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
+        check(widthStore.sidebarWidth == 347, "load the app-wide sidebar width at launch")
+        widthStore.openProject(root, explicitRoot: true)
+        check(widthStore.sidebarWidth == 347, "opening a project keeps the app-wide sidebar width")
+        widthStore.setSidebarWidth(1_000_000)
+        check(widthStore.sidebarWidth == 400 && defaults.double(forKey: ProjectStore.sidebarWidthDefaultsKey) == 400,
+              "clamp and persist a dragged sidebar width")
+        widthStore.setSidebarWidth(10)
+        check(widthStore.sidebarWidth == 180 && defaults.double(forKey: ProjectStore.sidebarWidthDefaultsKey) == 180,
+              "clamp tiny sidebar widths and persist them too")
         let main = clamped.documents.first!
         check(main.selection.location == (main.text as NSString).length && main.selection.length == 0, "clamp restored selection to current file")
         main.text += "\nUnsaved main draft"
@@ -109,7 +125,7 @@ struct WorkspaceSessionTests {
         clamped.sessionStore.flush()
         try FileManager.default.removeItem(at: root)
         check(clamped.sessionStore.lastWorkspace() == root, "a deleted main file with a draft remains recoverable at launch")
-        let deletedMain = ProjectStore(library: library, maintainsRootDirectives: false)
+        let deletedMain = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         deletedMain.openProject(root)
         check(deletedMain.root == root && deletedMain.documents.first?.text == main.text, "recover the deleted main buffer without reading its missing file")
         check(deletedMain.documents.first?.isDirty == true && !FileManager.default.fileExists(atPath: root.path), "deleted main recovery preserves the source and unsaved state")
@@ -117,7 +133,7 @@ struct WorkspaceSessionTests {
         let second = directory.appendingPathComponent("second.tex")
         try "First".write(to: first, atomically: true, encoding: .utf8)
         try "Second".write(to: second, atomically: true, encoding: .utf8)
-        let promoted = ProjectStore(library: library, maintainsRootDirectives: false)
+        let promoted = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         promoted.openProject(first, explicitRoot: true)
         promoted.activeDocument!.text += " unsaved"
         promoted.persistSession(); promoted.sessionStore.flush()
@@ -126,7 +142,7 @@ struct WorkspaceSessionTests {
         check(promoted.sessionStore.load(root: first)?.documents.first?.draft == "First unsaved", "a rejected main change keeps the original workspace draft")
         check(promoted.sessionStore.load(root: second) == nil && promoted.activeDocument?.text == "First unsaved", "a rejected main change creates no replacement session and preserves the active buffer")
         promoted.finishClosing()
-        let afterDiscard = ProjectStore(library: library, maintainsRootDirectives: false)
+        let afterDiscard = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         afterDiscard.openProject(first, explicitRoot: true)
         check(afterDiscard.activeDocument?.text == "First" && afterDiscard.activeDocument?.isDirty == false, "discard after a rejected main change clears the original draft")
         afterDiscard.openProject(second, explicitRoot: true)
@@ -135,7 +151,7 @@ struct WorkspaceSessionTests {
         let previousMode = BuildSettings.shared.mode
         BuildSettings.shared.mode = .manual
         defer { BuildSettings.shared.mode = previousMode }
-        let revisionStore = ProjectStore(library: library, maintainsRootDirectives: false)
+        let revisionStore = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         revisionStore.openProject(first, explicitRoot: true)
         let fakeEngine = directory.appendingPathComponent("delayed-engine")
         try "#!/bin/sh\nsleep 0.3\necho done\n".write(to: fakeEngine, atomically: true, encoding: .utf8)
@@ -172,7 +188,7 @@ struct WorkspaceSessionTests {
         try Data("pdf".utf8).write(to: directory.appendingPathComponent("rename-main.pdf"))
         try Data("aux".utf8).write(to: directory.appendingPathComponent("rename-main.aux"))
         try Data("sync".utf8).write(to: directory.appendingPathComponent("rename-main.synctex.gz"))
-        let renameStore = ProjectStore(library: library, maintainsRootDirectives: false)
+        let renameStore = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
         renameStore.openProject(renameRoot, explicitRoot: true)
         let renamedMain = directory.appendingPathComponent("renamed-main.tex")
         try renameStore.updateActiveFile(renamedMain, tags: [])

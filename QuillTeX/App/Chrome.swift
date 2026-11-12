@@ -102,6 +102,10 @@ enum ChromeMotion {
     static let feedback = Animation.easeOut(duration: 0.14)
     static let press = Animation.spring(response: 0.24, dampingFraction: 0.82)
     static let transition = Animation.smooth(duration: 0.24)
+    /// One tab-change motion shared by the tab strip and the pane content: a
+    /// quiet cross-fade for the content and a matching layout pass for pills.
+    static let tabSwitch = Animation.easeInOut(duration: 0.18)
+    static let tabInsertionScale: CGFloat = 0.94
 }
 
 extension View {
@@ -187,6 +191,7 @@ private struct OptionalCapsule: ViewModifier {
 }
 struct TopBar: View {
     @ObservedObject var store: ProjectStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredTab: UUID?
     @State private var hoveringCloseTab: UUID?
     @State private var tabStripWidth: CGFloat = 0
@@ -310,7 +315,7 @@ struct TopBar: View {
                     }
                 }
             }
-            .animation(.smooth(duration: 0.24), value: scrollableTabs.map(\.id))
+            .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: scrollableTabs.map(\.id))
             .padding(.vertical, 2)
             .background {
                 GeometryReader { proxy in
@@ -422,7 +427,10 @@ struct TopBar: View {
                 Capsule().strokeBorder(Palette.hairline, lineWidth: 0.9)
             }
         }
-        .animation(.smooth(duration: 0.18), value: active)
+        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: active)
+        .transition(reduceMotion ? .identity : .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: ChromeMotion.tabInsertionScale, anchor: .leading)),
+            removal: .opacity.combined(with: .scale(scale: ChromeMotion.tabInsertionScale, anchor: .leading))))
         .onContinuousHover { phase in
             switch phase {
             case .active:
