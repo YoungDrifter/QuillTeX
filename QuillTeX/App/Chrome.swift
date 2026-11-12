@@ -104,8 +104,10 @@ enum ChromeMotion {
     static let transition = Animation.smooth(duration: 0.24)
     /// One tab-change motion shared by the tab strip and the pane content: a
     /// quiet cross-fade for the content and a matching layout pass for pills.
-    static let tabSwitch = Animation.easeInOut(duration: 0.18)
-    static let tabInsertionScale: CGFloat = 0.94
+    /// The single animation for every tab operation: switching, adding,
+    /// closing and the New Tab -> document morph. Only layout and opacity use
+    /// it; the tab strip's visual design is unchanged.
+    static let tab = Animation.easeInOut(duration: 0.22)
 }
 
 extension View {
@@ -195,6 +197,9 @@ struct TopBar: View {
     @State private var hoveredTab: UUID?
     @State private var hoveringCloseTab: UUID?
     @State private var tabStripWidth: CGFloat = 0
+    /// Tabs being closed fade out in place before they are removed. Insertion
+    /// needs no state: the strip's single layout animation grows the capsule.
+    @State private var closingTabIDs: Set<UUID> = []
     @State private var tabDragOffsets: [UUID: CGFloat] = [:]
     @State private var tabDragSource: UUID?
     @State private var tabDragStartIndex = 0
@@ -266,27 +271,29 @@ struct TopBar: View {
                         // Compile and pane controls sit together on the right, with a
                         // quiet rule separating them from the tabs. Non-document tabs
                         // (library home, New Tab, Templates, Settings) have no compile
-                        // context, so the group slides away towards the trailing edge.
-                        Rectangle().fill(Palette.hairline)
-                            .frame(width: 1, height: 18)
-                            .padding(.horizontal, 7)
-                        BuildControls(store: store).fixedSize(horizontal: true, vertical: false)
-                        ChromeSegmentedGroup(selection: store.paneMode) { paneSelection in
-                            ChromeButton(icon: "rectangle", label: "Editor Only", selected: store.paneMode == .editor,
-                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .editor }
-                            ChromeButton(icon: store.paneMode == .split ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled", label: "Editor and PDF", selected: store.paneMode == .split,
-                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.showEditorAndPDF() }
-                            ChromeButton(icon: "rectangle.fill", label: "PDF Only", selected: store.paneMode == .preview,
-                                         width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .preview }
-                        }.padding(.horizontal, ChromeMetrics.chromeGroupInset).quillCapsule().chromeControlGroup()
-                        .fixedSize()
+                        // context, so the group cross-fades and slides on the same clock
+                        // as the tabs instead of popping in and out.
+                        HStack(spacing: compact ? 4 : 6) {
+                            Rectangle().fill(Palette.hairline)
+                                .frame(width: 1, height: 18)
+                                .padding(.horizontal, 7)
+                            BuildControls(store: store).fixedSize(horizontal: true, vertical: false)
+                            ChromeSegmentedGroup(selection: store.paneMode) { paneSelection in
+                                ChromeButton(icon: "rectangle", label: "Editor Only", selected: store.paneMode == .editor,
+                                             width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .editor }
+                                ChromeButton(icon: store.paneMode == .split ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled", label: "Editor and PDF", selected: store.paneMode == .split,
+                                             width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.showEditorAndPDF() }
+                                ChromeButton(icon: "rectangle.fill", label: "PDF Only", selected: store.paneMode == .preview,
+                                             width: ChromeMetrics.segmentedButtonWidth, selectionNamespace: paneSelection) { store.paneMode = .preview }
+                            }.padding(.horizontal, ChromeMetrics.chromeGroupInset).quillCapsule().chromeControlGroup()
+                            .fixedSize()
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
                         .layoutPriority(2)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)))
+                        .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .trailing)))
                     }
                 }
-                .animation(.smooth(duration: 0.24), value: showsDocumentControls)
+                .animation(reduceMotion ? nil : ChromeMotion.tab, value: showsDocumentControls)
                 .padding(.leading, store.sidebarVisible
                          ? 10
                          : (store.isFullScreen ? ChromeMetrics.controlsInsetFullScreen : ChromeMetrics.controlsInset))
@@ -299,8 +306,17 @@ struct TopBar: View {
 
     // MARK: - Tabs
 
+    /// Compact identity of the tab layout: ids, titles, kind and the selected
+    /// tab. Watching it lets one animation cover switching, adding, closing and
+    /// the New Tab -> document morph without touching the pill design.
+    private var tabLayoutSignature: [String] {
+        store.tabs.map { tab in
+            "\(tab.id.uuidString)|\(tab.title)|\(tab.path != nil)|\(tab.isLibrary)|\(tab.isSettings)|\(store.activeTabID == tab.id)"
+        }
+    }
+
     private func tabStrip(maxWidth: CGFloat) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(spacing: 4) {
                 ForEach(tabStripItems) { item in
                     switch item {
@@ -315,7 +331,7 @@ struct TopBar: View {
                     }
                 }
             }
-            .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: scrollableTabs.map(\.id))
+            .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabLayoutSignature)
             .padding(.vertical, 2)
             .background {
                 GeometryReader { proxy in
@@ -323,10 +339,14 @@ struct TopBar: View {
                 }
             }
         }
+        .scrollIndicators(.hidden)
         // Hug the tabs so the add control follows the last one. maxWidth-only is
         // flexible: HStack shrinks this strip only when the tabs would reach the
         // fixed compile controls on the right.
         .frame(maxWidth: max(tabStripWidth, 0), alignment: .leading)
+        // The strip (and the New Tab button behind it) resize on the same clock,
+        // so a new or closing tab never leaves the rest of the bar jumping.
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabStripWidth)
         .layoutPriority(0)
         .onPreferenceChange(TabStripWidthKey.self) { tabStripWidth = $0 }
     }
@@ -377,6 +397,7 @@ struct TopBar: View {
                         .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .contentTransition(.opacity)
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 9)
@@ -389,7 +410,7 @@ struct TopBar: View {
             .help(tab.isLibrary ? "Library" : (tab.path?.path ?? "New Tab"))
 
             if showsClose {
-                Button { store.closeTab(tab) } label: {
+                Button { closeTabAnimated(tab) } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8.5, weight: .bold))
                         .foregroundStyle(closeControlInk(hovered: hovered, onClose: hoveringClose))
@@ -427,10 +448,10 @@ struct TopBar: View {
                 Capsule().strokeBorder(Palette.hairline, lineWidth: 0.9)
             }
         }
-        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: active)
-        .transition(reduceMotion ? .identity : .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: ChromeMotion.tabInsertionScale, anchor: .leading)),
-            removal: .opacity.combined(with: .scale(scale: ChromeMotion.tabInsertionScale, anchor: .leading))))
+        .opacity(closingTabIDs.contains(tab.id) ? 0 : 1)
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: active)
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: tab.title)
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: closingTabIDs.contains(tab.id))
         .onContinuousHover { phase in
             switch phase {
             case .active:
@@ -447,6 +468,24 @@ struct TopBar: View {
         .zIndex(tabDragOffsets[tab.id] == nil ? 0 : 1)
         .animation(.easeOut(duration: 0.14), value: hovered)
         .simultaneousGesture(tabDragGesture(tab))
+    }
+
+    /// Fade the capsule out in place, then remove the tab. Keeping the fade on
+    /// the existing layout (instead of a removal transition) means the strip
+    /// never renders a clipped edge while it reflows.
+    private func closeTabAnimated(_ tab: WorkspaceTab) {
+        let isDirty = tab.path.map { path in
+            store.documents.contains { $0.url.standardizedFileURL == path.standardizedFileURL && $0.isDirty }
+        } ?? false
+        guard !isDirty, !reduceMotion, !closingTabIDs.contains(tab.id) else {
+            store.closeTab(tab)
+            return
+        }
+        closingTabIDs.insert(tab.id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            closingTabIDs.remove(tab.id)
+            store.closeTab(tab)
+        }
     }
 
     /// The close control stays quiet when the tab is not hovered, reads as a

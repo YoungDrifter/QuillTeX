@@ -656,7 +656,7 @@ struct PreviewPane: View {
                 .quillPaneRow()
             }
         }
-        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: store.activeTabID)
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: store.activeTabID)
         .background(Palette.previewCanvas)
         .focusedSceneValue(\.pdfPreviewControls, controls)
     }

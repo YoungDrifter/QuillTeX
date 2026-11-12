@@ -212,7 +212,7 @@ private struct EditorPane: View {
             }.quillPaneRow()
             }
         }
-        .animation(reduceMotion ? nil : ChromeMotion.tabSwitch, value: store.activeTabID)
+        .animation(reduceMotion ? nil : ChromeMotion.tab, value: store.activeTabID)
         // The library, New Tab and Templates surfaces sit on the shared backdrop;
         // documents and the embedded Settings page get the white card.
         .background(store.root == nil || store.showingLibrary ? Color.clear : Color.white)
