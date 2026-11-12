@@ -188,6 +188,7 @@ private struct OptionalCapsule: ViewModifier {
 struct TopBar: View {
     @ObservedObject var store: ProjectStore
     @State private var hoveredTab: UUID?
+    @State private var hoveringCloseTab: UUID?
     @State private var tabStripWidth: CGFloat = 0
     @State private var tabDragOffsets: [UUID: CGFloat] = [:]
     @State private var tabDragSource: UUID?
@@ -343,9 +344,13 @@ struct TopBar: View {
         }
     }
 
-    /// A tab keeps a fixed leading slot. At rest it shows the document's page
-    /// icon; hovering turns that same slot into the close control, so the title
-    /// never shifts and the bar stays quiet when the pointer is elsewhere.
+    /// A tab keeps a fixed leading slot. All Documents is the pinned home page
+    /// and cannot be closed, so it never offers a close control. The transient
+    /// New Tab page is the same: switching tabs removes it and opening a
+    /// document turns it into that document's tab. The selected tab shows the
+    /// close control directly in place of its page preview; unselected tabs keep
+    /// the preview at rest and swap it for a faint close on hover, which inks in
+    /// fully only while the pointer is on the close control itself.
     private func tabPill(_ tab: WorkspaceTab) -> some View {
         let active = store.activeTabID == tab.id
             && (tab.isSettings ? store.showingSettings
@@ -353,6 +358,10 @@ struct TopBar: View {
                     : (tab.path == nil ? store.showingLibrary && store.librarySelection == .newTab
                                        : !store.showingLibrary && !store.showingSettings)))
         let hovered = hoveredTab == tab.id
+        let hoveringClose = hoveringCloseTab == tab.id
+        let isNewTabPage = tab.path == nil && !tab.isSettings && !tab.isLibrary
+        let closable = !(tab.isLibrary && tab.selection == .all) && !isNewTabPage
+        let showsClose = closable && (active || hovered)
         let leadingSlot = ChromeMetrics.documentPageIconSize.width
         return ZStack(alignment: .leading) {
             Button { store.activateTab(tab) } label: {
@@ -374,17 +383,20 @@ struct TopBar: View {
             .chromeControlBoundary()
             .help(tab.isLibrary ? "Library" : (tab.path?.path ?? "New Tab"))
 
-            if hovered {
+            if showsClose {
                 Button { store.closeTab(tab) } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(Palette.secondaryInk)
+                        .foregroundStyle(closeControlInk(hovered: hovered, onClose: hoveringClose))
                         .frame(width: leadingSlot, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .chromeControlBoundary()
                 .padding(.leading, 9)
+                .background(ChromeHoverState { inside in
+                    setCloseHover(inside, for: tab.id)
+                }.allowsHitTesting(false))
                 .transition(.opacity)
                 .help("Close Tab")
                 .accessibilityLabel("Close \(tab.title)")
@@ -414,15 +426,35 @@ struct TopBar: View {
         .onContinuousHover { phase in
             switch phase {
             case .active:
-                if hoveredTab != tab.id { hoveredTab = tab.id }
+                if hoveredTab != tab.id {
+                    hoveredTab = tab.id
+                    hoveringCloseTab = nil
+                }
             case .ended:
                 if hoveredTab == tab.id { hoveredTab = nil }
+                if hoveringCloseTab == tab.id { hoveringCloseTab = nil }
             }
         }
         .offset(x: tabDragOffsets[tab.id] ?? 0)
         .zIndex(tabDragOffsets[tab.id] == nil ? 0 : 1)
         .animation(.easeOut(duration: 0.14), value: hovered)
         .simultaneousGesture(tabDragGesture(tab))
+    }
+
+    /// The close control stays quiet when the tab is not hovered, reads as a
+    /// faint hint while the pointer is anywhere on the tab, and inks in fully
+    /// only when the pointer is on the close control itself.
+    private func closeControlInk(hovered: Bool, onClose: Bool) -> Color {
+        if onClose { return Palette.primaryInk }
+        return hovered ? Palette.secondaryInk : Palette.secondaryInk.opacity(0.5)
+    }
+
+    private func setCloseHover(_ inside: Bool, for id: UUID) {
+        if inside {
+            if hoveringCloseTab != id { hoveringCloseTab = id }
+        } else if hoveringCloseTab == id {
+            hoveringCloseTab = nil
+        }
     }
 
     /// Library tabs reuse the sidebar's own symbol for their selection so the
@@ -437,8 +469,11 @@ struct TopBar: View {
         }
     }
 
-    /// The at-rest counterpart of the close control: the same document page
-    /// thumbnail the library uses, falling back to a plain symbol.
+    /// The at-rest counterpart of the close control. Unselected document tabs
+    /// show the same rounded page preview the library uses, falling back to a
+    /// plain document symbol; library pages reuse the sidebar's own symbol,
+    /// Settings uses its gear and the New Tab page keeps the plus. Only the
+    /// selected tab replaces the preview with the close control directly.
     @ViewBuilder
     private func tabLeadingIcon(_ tab: WorkspaceTab, active: Bool) -> some View {
         let ink = active ? Palette.primaryInk : Palette.secondaryInk
