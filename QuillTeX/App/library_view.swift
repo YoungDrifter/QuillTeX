@@ -2027,6 +2027,10 @@ struct NewDocumentDialog: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                // The menu owns the pointer tracking, so SwiftUI's onHover never
+                // fires for its label; the AppKit tracker used by the top bar also
+                // gives this picker a visible hover response.
+                .modifier(ChromeHoverFeedback())
             }
         }
     }
