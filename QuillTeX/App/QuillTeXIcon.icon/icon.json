@@ -1,0 +1,22 @@
+{
+  "fill" : {
+    "solid" : "extended-srgb:0.98039,0.98039,0.98431,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "Quill.png",
+          "name" : "Quill and Paper"
+        }
+      ],
+      "name" : "Artwork"
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

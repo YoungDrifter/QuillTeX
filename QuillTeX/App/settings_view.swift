@@ -16,7 +16,7 @@ struct SettingsView: View {
     var embedded = false
     private enum Field { case texBin, output }
     private var version: String { AppUpdater.currentDisplayVersion }
-    private var icon: NSImage { NSImage(named: "AppIcon") ?? NSApp.applicationIconImage }
+    private var icon: NSImage { NSApp.applicationIconImage }
 
     init(settings: BuildSettings = .shared, initialSection: Section = .compilation, embedded: Bool = false) {
         _settings = ObservedObject(wrappedValue: settings)
