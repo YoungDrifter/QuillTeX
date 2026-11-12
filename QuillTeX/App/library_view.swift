@@ -1518,8 +1518,11 @@ struct LibraryBrowser: View {
         // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
             .overlay {
-                Circle()
+                // Inset wash like the reference: the highlight stops a few points
+                // short of the button edge instead of filling the whole surface.
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
+                    .padding(3)
                     .allowsHitTesting(false)
             }
             .onHover { sortHovered = $0 }
@@ -2304,8 +2307,11 @@ private struct TemplatesBrowser: View {
         // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
             .overlay {
-                Circle()
+                // Inset wash like the reference: the highlight stops a few points
+                // short of the button edge instead of filling the whole surface.
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(Palette.primaryInk.opacity(sortHovered ? 0.05 : 0))
+                    .padding(3)
                     .allowsHitTesting(false)
             }
             .onHover { sortHovered = $0 }
