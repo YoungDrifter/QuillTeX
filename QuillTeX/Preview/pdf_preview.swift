@@ -646,21 +646,10 @@ struct PreviewPane: View {
                 }
             }
             VStack(spacing: 0) {
+                // Short hints (build state, SyncTeX notes) stay in the status
+                // capsule at the preview's top-left instead of adding a second row.
                 previewHeader
                 .quillPaneRow()
-                if let message = store.syncStatusMessage {
-                    HStack(alignment: .center, spacing: 6) {
-                        Image(systemName: "info.circle")
-                        Text(message).lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 18)
-                    .frame(height: ChromeMetrics.syncBannerHeight)
-                    .background(Palette.subtleSurface)
-                    .help(message)
-                    Divider()
-                }
             }
         }
         .background(Palette.previewCanvas)

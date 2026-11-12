@@ -67,8 +67,6 @@ enum ChromeMetrics {
     /// Both pane headers (breadcrumb and PDF title) share this height so their titles
     /// sit on one line and their bottom rules line up.
     static let paneHeaderHeight: CGFloat = 54
-    /// One-line SyncTeX notice that floats under the preview header.
-    static let syncBannerHeight: CGFloat = 28
     static let previewControlHeight: CGFloat = 28
     static let previewActionWidth: CGFloat = 30
     static let zoomInputWidth: CGFloat = 60
@@ -340,6 +338,9 @@ struct TopBar: View {
         }
     }
 
+    /// A tab keeps a fixed leading slot. At rest it shows the document's page
+    /// icon; hovering turns that same slot into the close control, so the title
+    /// never shifts and the bar stays quiet when the pointer is elsewhere.
     private func tabPill(_ tab: WorkspaceTab) -> some View {
         let active = store.activeTabID == tab.id
             && (tab.isSettings ? store.showingSettings
@@ -347,52 +348,47 @@ struct TopBar: View {
                     : (tab.path == nil ? store.showingLibrary && store.librarySelection == .newTab
                                        : !store.showingLibrary && !store.showingSettings)))
         let hovered = hoveredTab == tab.id
-        return HStack(spacing: 4) {
+        let leadingSlot: CGFloat = 18
+        return ZStack(alignment: .leading) {
             Button { store.activateTab(tab) } label: {
                 HStack(spacing: 6) {
-                    if tab.isLibrary {
-                        Image(systemName: "folder")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
-                    } else if tab.isSettings {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
-                    } else if tab.path == nil {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
-                    }
+                    Color.clear.frame(width: leadingSlot, height: 1)
                     Text(tab.title)
                         .font(.system(size: 12.5, weight: active ? .semibold : .regular))
                         .foregroundStyle(active ? Palette.primaryInk : Palette.secondaryInk)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    Spacer(minLength: 0)
                 }
-                .padding(.leading, 12)
-                .padding(.trailing, active || hovered ? 2 : 12)
+                .padding(.leading, 9)
+                .padding(.trailing, 10)
                 .frame(height: 30)
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .chromeControlBoundary()
-            .transition(.opacity)
             .help(tab.isLibrary ? "Library" : (tab.path?.path ?? "New Tab"))
 
-            if active || hovered {
+            if hovered {
                 Button { store.closeTab(tab) } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8.5, weight: .bold))
                         .foregroundStyle(Palette.secondaryInk)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Circle())
+                        .frame(width: leadingSlot, height: 30)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .chromeControlBoundary()
-                .padding(.trailing, 6)
+                .padding(.leading, 9)
                 .transition(.opacity)
                 .help("Close Tab")
                 .accessibilityLabel("Close \(tab.title)")
+            } else {
+                tabLeadingIcon(tab, active: active)
+                    .frame(width: leadingSlot, height: 30)
+                    .padding(.leading, 9)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: 210)
@@ -422,6 +418,34 @@ struct TopBar: View {
         .zIndex(tabDragOffsets[tab.id] == nil ? 0 : 1)
         .animation(.easeOut(duration: 0.14), value: hovered)
         .simultaneousGesture(tabDragGesture(tab))
+    }
+
+    /// The at-rest counterpart of the close control: the same document page
+    /// thumbnail the library uses, falling back to a plain symbol.
+    @ViewBuilder
+    private func tabLeadingIcon(_ tab: WorkspaceTab, active: Bool) -> some View {
+        let ink = active ? Palette.primaryInk : Palette.secondaryInk
+        if tab.isLibrary {
+            Image(systemName: "folder")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(ink)
+        } else if tab.isSettings {
+            Image(systemName: "gearshape")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(ink)
+        } else if tab.path == nil {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ink)
+        } else if let path = tab.path,
+                  let entry = (store.catalog ?? DocumentCatalog.shared).entry(forMainFile: path) {
+            LibraryDocumentThumbnail(entry: entry, size: CGSize(width: 16, height: 20),
+                                     cornerRadius: 4)
+        } else {
+            Image(systemName: "doc.text")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(ink)
+        }
     }
 
     /// Home stays pinned; every other tab can be dragged to a new position.

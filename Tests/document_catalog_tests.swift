@@ -181,6 +181,36 @@ struct DocumentCatalogTests {
         check(catalog.folder(id: coloredFolder.id)?.color == nil, "folder accent can be reset to the default")
         catalog.deleteFolder(coloredFolder.id)
 
+        // Subfolders nest inside their parent, reject sibling duplicates, and are
+        // removed with the parent while their documents fall back to Unsorted.
+        let research = try catalog.createFolder(named: "Research")
+        let notes = try catalog.createFolder(named: "Notes", parentID: research.id)
+        check(catalog.folder(id: notes.id)?.parentID == research.id, "createFolder files a subfolder under its parent")
+        check(catalog.rootFolders.map(\.id) == [papers.id, research.id], "rootFolders keeps the top level only")
+        check(catalog.childFolders(of: research.id).map(\.id) == [notes.id], "childFolders returns direct subfolders")
+        check(catalog.descendantFolders(of: research.id).map(\.id) == [notes.id], "descendantFolders walks the subtree")
+        let treeOrder = catalog.foldersInTreeOrder()
+        check(treeOrder.first { $0.folder.id == research.id }?.depth == 0
+              && treeOrder.first { $0.folder.id == notes.id }?.depth == 1,
+              "foldersInTreeOrder tags nesting depth")
+        _ = expectFailure("sibling folders cannot share a name") {
+            _ = try catalog.createFolder(named: "notes", parentID: research.id)
+        }
+        let otherNotes = try catalog.createFolder(named: "Notes")
+        check(catalog.rootFolders.contains { $0.id == otherNotes.id }, "the same name can be reused in another parent")
+        catalog.deleteFolder(otherNotes.id)
+        _ = expectFailure("a subfolder needs an existing parent") {
+            _ = try catalog.createFolder(named: "Orphan", parentID: UUID())
+        }
+        let nestedReload = DocumentCatalog(directory: dataDirectory)
+        check(nestedReload.folder(id: notes.id)?.parentID == research.id, "subfolder nesting persists across instances")
+        catalog.setFolder(alphaEntry.id, folderID: notes.id)
+        check(catalog.entries(inFolder: notes.id).map(\.id) == [alphaEntry.id], "entries(inFolder:) reads a nested folder")
+        catalog.deleteFolder(research.id)
+        check(catalog.folder(id: notes.id) == nil, "deleting a parent removes its subfolders")
+        check(catalog.entry(id: alphaEntry.id)?.folderID == nil, "documents of removed subfolders fall back to Unsorted")
+        catalog.setFolder(alphaEntry.id, folderID: papers.id)
+
         catalog.setFolder(alphaEntry.id, folderID: UUID())
         check(catalog.entry(id: alphaEntry.id)?.folderID == nil, "setFolder falls back to Unsorted for unknown folders")
         check(catalog.unsortedEntries.count == 2, "unknown folder places the entry in Unsorted")

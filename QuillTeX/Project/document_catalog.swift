@@ -41,6 +41,8 @@ struct LibraryFolder: Codable, Identifiable, Equatable {
     var name: String
     var createdAt: Date = Date()
     var color: LibraryFolderColor?
+    /// nil for a top-level folder; set to the containing folder for a subfolder.
+    var parentID: UUID? = nil
 }
 
 /// A link to a local document. The library never owns or moves the file: it only
@@ -252,6 +254,45 @@ final class DocumentCatalog: ObservableObject {
         folders.first { $0.id == id }
     }
 
+    /// Top-level folders, in creation order. A folder whose parent no longer
+    /// exists is treated as top-level so it can never drop out of the sidebar.
+    var rootFolders: [LibraryFolder] {
+        let ids = Set(folders.map(\.id))
+        return folders.filter { folder in
+            guard let parentID = folder.parentID else { return true }
+            return !ids.contains(parentID)
+        }
+    }
+
+    /// Folders directly inside `parentID` (nil = top level), in creation order.
+    func childFolders(of parentID: UUID?) -> [LibraryFolder] {
+        folders.filter { $0.parentID == parentID }
+    }
+
+    /// Every folder below `id`, parents before children.
+    func descendantFolders(of id: UUID) -> [LibraryFolder] {
+        var result: [LibraryFolder] = []
+        func append(_ parent: UUID) {
+            for child in childFolders(of: parent) {
+                result.append(child)
+                append(child.id)
+            }
+        }
+        append(id)
+        return result
+    }
+
+    /// Folders in sidebar order with their nesting depth (depth-first).
+    func foldersInTreeOrder() -> [(folder: LibraryFolder, depth: Int)] {
+        var result: [(LibraryFolder, Int)] = []
+        func append(_ folder: LibraryFolder, depth: Int) {
+            result.append((folder, depth))
+            for child in childFolders(of: folder.id) { append(child, depth: depth + 1) }
+        }
+        for folder in rootFolders { append(folder, depth: 0) }
+        return result
+    }
+
     func entry(id: UUID) -> LibraryEntry? {
         entries.first { $0.id == id }
     }
@@ -422,16 +463,24 @@ final class DocumentCatalog: ObservableObject {
     }
 
     @discardableResult
-    func createFolder(named name: String, color: LibraryFolderColor? = nil) throws -> LibraryFolder {
+    func createFolder(named name: String, color: LibraryFolderColor? = nil,
+                      parentID: UUID? = nil) throws -> LibraryFolder {
         try requireReadableStorage()
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw libraryError("The folder name cannot be empty.")
         }
-        guard !folders.contains(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) else {
-            throw libraryError("A folder named \"\(trimmed)\" already exists.")
+        if let parentID, folder(id: parentID) == nil {
+            throw libraryError("The containing folder could not be found.")
         }
-        let folder = LibraryFolder(name: trimmed, color: color)
+        // Sibling folders cannot share a name; the same name may be reused in
+        // different parents, just like folders on disk.
+        guard !folders.contains(where: {
+            $0.parentID == parentID && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        }) else {
+            throw libraryError("A folder named \"\(trimmed)\" already exists here.")
+        }
+        let folder = LibraryFolder(name: trimmed, color: color, parentID: parentID)
         folders.append(folder)
         try persist()
         return folder
@@ -455,18 +504,32 @@ final class DocumentCatalog: ObservableObject {
         guard !trimmed.isEmpty else {
             throw libraryError("The folder name cannot be empty.")
         }
-        guard !folders.contains(where: { $0.id != id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) else {
-            throw libraryError("A folder named \"\(trimmed)\" already exists.")
+        let parentID = folders[index].parentID
+        guard !folders.contains(where: {
+            $0.id != id && $0.parentID == parentID && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        }) else {
+            throw libraryError("A folder named \"\(trimmed)\" already exists here.")
         }
         folders[index].name = trimmed
         try persist()
     }
 
     func deleteFolder(_ id: UUID) {
-        guard storageReadable, let index = folders.firstIndex(where: { $0.id == id }) else { return }
-        folders.remove(at: index)
+        guard storageReadable, folders.contains(where: { $0.id == id }) else { return }
+        // Deleting a folder removes the subfolders that live inside it as well.
+        var doomed: Set<UUID> = [id]
+        var added = true
+        while added {
+            added = false
+            for folder in folders where folder.parentID.map({ doomed.contains($0) }) == true
+                                      && !doomed.contains(folder.id) {
+                doomed.insert(folder.id)
+                added = true
+            }
+        }
+        folders.removeAll { doomed.contains($0.id) }
         // Deleting a folder never deletes documents; they fall back to Unsorted.
-        for entryIndex in entries.indices where entries[entryIndex].folderID == id {
+        for entryIndex in entries.indices where entries[entryIndex].folderID.map({ doomed.contains($0) }) == true {
             entries[entryIndex].folderID = nil
         }
         persistIfPossible()

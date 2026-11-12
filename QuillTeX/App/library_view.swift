@@ -10,6 +10,11 @@ import PDFKit
 private enum LibraryLook {
     static let sidebarRowHeight: CGFloat = 30
     static let sidebarCorner: CGFloat = 7
+    /// Extra indent for a folder's documents: they read as children of the
+    /// folder's name instead of lining up with another folder row.
+    static let sidebarDocumentIndent: CGFloat = 44
+    /// One nesting step for subfolders and for documents one level deeper.
+    static let sidebarIndentStep: CGFloat = 18
     static let browserInset: CGFloat = 24
     static let dateColumnWidth: CGFloat = 96
     static let rowActionsWidth: CGFloat = 58
@@ -492,14 +497,15 @@ private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatal
                 Text(DocumentCatalog.unsortedTitle)
             }
         }
-        ForEach(catalog.folders) { folder in
+        ForEach(catalog.foldersInTreeOrder(), id: \.folder.id) { item in
             Button {
-                catalog.setFolder(entry.id, folderID: folder.id)
+                catalog.setFolder(entry.id, folderID: item.folder.id)
             } label: {
-                if entry.folderID == folder.id {
-                    Label(folder.name, systemImage: "checkmark")
+                let title = String(repeating: "    ", count: item.depth) + item.folder.name
+                if entry.folderID == item.folder.id {
+                    Label(title, systemImage: "checkmark")
                 } else {
-                    Text(folder.name)
+                    Text(title)
                 }
             }
         }
@@ -533,6 +539,8 @@ private struct LibraryEntryContextMenu: ViewModifier {
 struct LibraryFolderDialogRequest: Identifiable {
     let id = UUID()
     var folderID: UUID?
+    /// Folder that receives a newly created folder; nil creates a top-level one.
+    var parentID: UUID?
     var name: String
     var color: LibraryFolderColor
 }
@@ -543,13 +551,14 @@ final class LibraryDialogCenter: ObservableObject {
     @Published var folderDialog: LibraryFolderDialogRequest?
     @Published var createdFolderID: UUID?
 
-    func presentNewFolder(color: LibraryFolderColor) {
-        folderDialog = LibraryFolderDialogRequest(folderID: nil, name: "", color: color)
+    func presentNewFolder(color: LibraryFolderColor, parentID: UUID? = nil) {
+        folderDialog = LibraryFolderDialogRequest(folderID: nil, parentID: parentID,
+                                                  name: "", color: color)
     }
 
     func presentEdit(_ folder: LibraryFolder) {
-        folderDialog = LibraryFolderDialogRequest(folderID: folder.id, name: folder.name,
-                                                 color: folder.color ?? .blue)
+        folderDialog = LibraryFolderDialogRequest(folderID: folder.id, parentID: folder.parentID,
+                                                 name: folder.name, color: folder.color ?? .blue)
     }
 }
 
@@ -582,7 +591,8 @@ struct NewFolderDialog: View {
     private var duplicate: Bool {
         guard !trimmedName.isEmpty else { return false }
         return catalog.folders.contains {
-            $0.id != editingID && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
+            $0.id != editingID && $0.parentID == request.parentID
+                && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
         }
     }
 
@@ -666,7 +676,8 @@ struct NewFolderDialog: View {
                 try catalog.renameFolder(editingID, to: trimmedName)
                 catalog.setFolderColor(editingID, color: color)
             } else {
-                let folder = try catalog.createFolder(named: trimmedName, color: color)
+                let folder = try catalog.createFolder(named: trimmedName, color: color,
+                                                     parentID: request.parentID)
                 LibraryDialogCenter.shared.createdFolderID = folder.id
             }
             onDismiss()
@@ -713,7 +724,12 @@ struct LibrarySidebarContent: View {
             guard let id else { return }
             withAnimation(reduceMotion ? nil : ChromeMotion.transition) {
                 foldersExpanded = true
-                expandedFolders.insert(.folder(id))
+                // Reveal the new folder together with every containing folder.
+                var reveal: UUID? = id
+                while let folderID = reveal {
+                    expandedFolders.insert(.folder(folderID))
+                    reveal = catalog.folder(id: folderID)?.parentID
+                }
             }
             dialogs.createdFolderID = nil
         }
@@ -831,14 +847,57 @@ struct LibrarySidebarContent: View {
 
     private var folderList: some View {
         VStack(alignment: .leading, spacing: 1) {
+            ForEach(folderNodes) { node in
+                switch node.kind {
+                case .folder(let item):
+                    folderRow(item, depth: node.depth)
+                case .document(let entry):
+                    LibrarySidebarDocumentRow(
+                        entry: entry,
+                        indent: LibraryLook.sidebarDocumentIndent
+                            + CGFloat(max(0, node.depth - 1)) * LibraryLook.sidebarIndentStep,
+                        store: store, catalog: catalog,
+                        onOpen: { onOpenEntry(entry) })
+                }
+            }
+        }
+    }
+
+    /// Visible sidebar tree rows in depth-first order. Expanding a folder shows
+    /// its subfolders first, then the documents filed directly inside it.
+    private var folderNodes: [LibraryFolderNode] {
+        var nodes: [LibraryFolderNode] = []
+        nodes.append(LibraryFolderNode(id: "folder-unsorted", kind: .folder(.unsorted), depth: 0))
+        if expandedFolders.contains(.unsorted) {
+            for entry in catalog.unsortedEntries {
+                nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: 1))
+            }
+        }
+        func append(_ folder: LibraryFolder, depth: Int) {
+            nodes.append(LibraryFolderNode(id: "folder-\(folder.id)", kind: .folder(.folder(folder)), depth: depth))
+            guard expandedFolders.contains(.folder(folder.id)) else { return }
+            for child in catalog.childFolders(of: folder.id) { append(child, depth: depth + 1) }
+            for entry in catalog.entries(inFolder: folder.id) {
+                nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: depth + 1))
+            }
+        }
+        for folder in catalog.rootFolders { append(folder, depth: 0) }
+        return nodes
+    }
+
+    @ViewBuilder
+    private func folderRow(_ item: LibraryFolderItem, depth: Int) -> some View {
+        switch item {
+        case .unsorted:
             LibraryFolderRow(
                 key: .unsorted,
                 name: DocumentCatalog.unsortedTitle,
                 symbol: "tray",
                 tint: .gray,
-                accent: nil,
                 count: catalog.unsortedEntries.count,
                 entries: catalog.unsortedEntries,
+                hasChildren: !catalog.unsortedEntries.isEmpty,
+                depth: depth,
                 isSelected: store.librarySelection == .folder(nil),
                 isExpanded: expandedFolders.contains(.unsorted),
                 store: store,
@@ -846,29 +905,29 @@ struct LibrarySidebarContent: View {
                 onSelect: {
                     store.showLibrary(selection: .folder(nil), title: DocumentCatalog.unsortedTitle)
                 },
-                onToggle: { toggleFolder(.unsorted) },
-                onOpenEntry: onOpenEntry
+                onToggle: { toggleFolder(.unsorted) }
             )
-            ForEach(Array(catalog.folders.enumerated()), id: \.element.id) { index, folder in
-                LibraryFolderRow(
-                    key: .folder(folder.id),
-                    name: folder.name,
-                    symbol: "folder",
-                    tint: folder.color?.tint ?? LibraryLook.folderTints[index % LibraryLook.folderTints.count],
-                    accent: folder.color ?? LibraryFolderColor.allCases[index % LibraryFolderColor.allCases.count],
-                    count: catalog.entries(inFolder: folder.id).count,
-                    entries: catalog.entries(inFolder: folder.id),
-                    isSelected: store.librarySelection == .folder(folder.id),
-                    isExpanded: expandedFolders.contains(.folder(folder.id)),
-                    store: store,
-                    catalog: catalog,
-                    onSelect: {
-                        store.showLibrary(selection: .folder(folder.id), title: folder.name)
-                    },
-                    onToggle: { toggleFolder(.folder(folder.id)) },
-                    onOpenEntry: onOpenEntry
-                )
-            }
+        case .folder(let folder):
+            let index = catalog.folders.firstIndex(where: { $0.id == folder.id }) ?? 0
+            let entries = catalog.entries(inFolder: folder.id)
+            LibraryFolderRow(
+                key: .folder(folder.id),
+                name: folder.name,
+                symbol: "folder",
+                tint: folder.color?.tint ?? LibraryLook.folderTints[index % LibraryLook.folderTints.count],
+                count: entries.count,
+                entries: entries,
+                hasChildren: !entries.isEmpty || !catalog.childFolders(of: folder.id).isEmpty,
+                depth: depth,
+                isSelected: store.librarySelection == .folder(folder.id),
+                isExpanded: expandedFolders.contains(.folder(folder.id)),
+                store: store,
+                catalog: catalog,
+                onSelect: {
+                    store.showLibrary(selection: .folder(folder.id), title: folder.name)
+                },
+                onToggle: { toggleFolder(.folder(folder.id)) }
+            )
         }
     }
 
@@ -936,24 +995,26 @@ private struct LibraryIconButton: View {
     }
 }
 
+/// Sidebar row for one folder. Child folders and documents are emitted by the
+/// sidebar as separate depth-tagged rows, so nesting never has to recurse here.
 private struct LibraryFolderRow: View {
     let key: LibraryFolderKey
     let name: String
     let symbol: String
     let tint: Color
-    let accent: LibraryFolderColor?
     let count: Int
     let entries: [LibraryEntry]
+    let hasChildren: Bool
+    let depth: Int
     let isSelected: Bool
     let isExpanded: Bool
     @ObservedObject var store: ProjectStore
     @ObservedObject var catalog: DocumentCatalog
     var onSelect: () -> Void
     var onToggle: () -> Void
-    var onOpenEntry: (LibraryEntry) -> Void
 
     @State private var hovered = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var dialogs = LibraryDialogCenter.shared
 
     private var folderID: UUID? {
         if case .folder(let id) = key { return id }
@@ -961,74 +1022,55 @@ private struct LibraryFolderRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 0) {
-                Button(action: onToggle) {
-                    QuillSidebarDisclosure(expanded: isExpanded)
-                        .opacity(entries.isEmpty ? 0 : 1)
-                }
-                .buttonStyle(.plain)
-                .disabled(entries.isEmpty)
-                .help(entries.isEmpty ? "" : (isExpanded ? "Collapse" : "Expand"))
-                .accessibilityLabel(isExpanded ? "Collapse \(name)" : "Expand \(name)")
+        HStack(spacing: 0) {
+            Button(action: onToggle) {
+                QuillSidebarDisclosure(expanded: isExpanded)
+                    .opacity(hasChildren ? 1 : 0)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasChildren)
+            .help(hasChildren ? (isExpanded ? "Collapse" : "Expand") : "")
+            .accessibilityLabel(isExpanded ? "Collapse \(name)" : "Expand \(name)")
 
-                Button(action: onSelect) {
-                    folderLabel
+            Button(action: onSelect) {
+                folderLabel
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+        }
+        .padding(.leading, CGFloat(depth) * LibraryLook.sidebarIndentStep)
+        .background {
+            RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
+                .fill(Palette.primaryInk.opacity(isSelected ? Palette.selectedOpacity
+                                                         : (hovered ? Palette.chromeHoverOpacity : 0)))
+        }
+        .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
+        .onHover { hovered = $0 }
+        .contextMenu {
+            Button("Open Documents", action: onSelect)
+            Button("New Document in This Folder") { store.openNewDocumentSheet(folderID: folderID) }
+            if let folderID {
+                Button("New Folder in This Folder") {
+                    dialogs.presentNewFolder(
+                        color: LibraryFolderColor.allCases[catalog.folders.count % LibraryFolderColor.allCases.count],
+                        parentID: folderID)
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
-            .background {
-                RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
-                    .fill(Palette.primaryInk.opacity(isSelected ? Palette.selectedOpacity
-                                                             : (hovered ? Palette.chromeHoverOpacity : 0)))
-            }
-            .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
-            .onHover { hovered = $0 }
-            .contextMenu {
-                Button("Open Documents", action: onSelect)
-                Button("New Document in This Folder") { store.openNewDocumentSheet(folderID: folderID) }
-                Button("Export PDFs from This Folder") { LibraryPDFExporter.export(entries) }
-                if let folderID {
-                    Divider()
-                    Menu("Folder Color") {
-                        ForEach(LibraryFolderColor.allCases) { color in
-                            Button {
-                                catalog.setFolderColor(folderID, color: color)
-                            } label: {
-                                if (catalog.folder(id: folderID)?.color ?? accent) == color {
-                                    Label(color.title, systemImage: "checkmark")
-                                } else {
-                                    Text(color.title)
-                                }
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("Edit…") {
-                        guard let folder = catalog.folder(id: folderID) else { return }
-                        LibraryDialogCenter.shared.presentEdit(folder)
-                    }
-                    Button("Delete Folder", role: .destructive) {
-                        LibraryDialogs.deleteFolder(id: folderID, name: name, catalog: catalog, store: store) {
-                            if store.librarySelection == .folder(folderID) {
-                                store.librarySelection = .folder(nil)
-                            }
+            Button("Export PDFs from This Folder") { LibraryPDFExporter.export(entries) }
+            if let folderID {
+                Divider()
+                Button("Edit…") {
+                    guard let folder = catalog.folder(id: folderID) else { return }
+                    LibraryDialogCenter.shared.presentEdit(folder)
+                }
+                Button("Delete Folder", role: .destructive) {
+                    let deletedIDs = Set<UUID?>([folderID] + catalog.descendantFolders(of: folderID).map(\.id))
+                    LibraryDialogs.deleteFolder(id: folderID, name: name, catalog: catalog, store: store) {
+                        if case .folder(let selected) = store.librarySelection, deletedIDs.contains(selected) {
+                            store.librarySelection = .folder(nil)
                         }
                     }
                 }
-            }
-            if isExpanded && !entries.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(entries) { entry in
-                        documentRow(entry)
-                    }
-                }
-                .padding(.leading, 18)
-                .padding(.top, 1)
-                .transition(reduceMotion ? .identity
-                            : .modifier(active: QuillBranchReveal(progress: 0),
-                                        identity: QuillBranchReveal(progress: 1)))
             }
         }
     }
@@ -1057,12 +1099,20 @@ private struct LibraryFolderRow: View {
         .frame(height: LibraryLook.sidebarRowHeight)
         .contentShape(Rectangle())
     }
+}
 
-    private func documentRow(_ entry: LibraryEntry) -> some View {
+/// A document filed in a folder. Its indent comes from the sidebar tree so a
+/// subfolder's documents step in one more level than the subfolder itself.
+private struct LibrarySidebarDocumentRow: View {
+    let entry: LibraryEntry
+    let indent: CGFloat
+    @ObservedObject var store: ProjectStore
+    @ObservedObject var catalog: DocumentCatalog
+    let onOpen: () -> Void
+
+    var body: some View {
         let missing = catalog.isMissing(entry)
-        return Button {
-            onOpenEntry(entry)
-        } label: {
+        return Button(action: onOpen) {
             HStack(spacing: 7) {
                 if missing {
                     Image(systemName: "exclamationmark.triangle")
@@ -1091,11 +1141,34 @@ private struct LibraryFolderRow: View {
             .frame(height: 28)
             .contentShape(Rectangle())
         }
+        .padding(.leading, indent)
         .buttonStyle(QuillRowButtonStyle(cornerRadius: 6))
-        .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry,
-                                          onOpen: { onOpenEntry(entry) }))
+        .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
         .help(entry.path)
     }
+}
+
+/// One row of the sidebar tree: a folder or a document, tagged with its depth.
+private enum LibraryFolderItem {
+    case unsorted
+    case folder(LibraryFolder)
+
+    var key: LibraryFolderKey {
+        switch self {
+        case .unsorted: .unsorted
+        case .folder(let folder): .folder(folder.id)
+        }
+    }
+}
+
+private struct LibraryFolderNode: Identifiable {
+    enum Kind {
+        case folder(LibraryFolderItem)
+        case document(LibraryEntry)
+    }
+    let id: String
+    let kind: Kind
+    let depth: Int
 }
 
 // MARK: - Browser

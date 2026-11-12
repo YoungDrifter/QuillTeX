@@ -1499,8 +1499,8 @@ final class ProjectStore: ObservableObject {
     /// harmless before the first compile.
     func syncSourceToPDF(line: Int) {
         guard let document = activeDocument else { return }
-        guard let pdf = build.pdfURL else { syncStatusMessage = "Compile the document before locating it in the PDF."; return }
-        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX was not found in the configured TeX folder."; return }
+        guard let pdf = build.pdfURL else { syncStatusMessage = "Build the PDF first"; return }
+        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX tool not configured"; return }
         syncTask?.cancel(); syncStatusMessage = "Locating in PDF…"
         let source = document.url, main = root, version = build.pdfVersion
         syncTask = Task { [weak self] in
@@ -1519,8 +1519,8 @@ final class ProjectStore: ObservableObject {
 
     /// ⌘-click in the PDF: open the matching source line.
     func syncPDFToSource(page: Int, point: CGPoint) {
-        guard let pdf = build.pdfURL else { syncStatusMessage = "Compile the document before locating its source."; return }
-        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX was not found in the configured TeX folder."; return }
+        guard let pdf = build.pdfURL else { syncStatusMessage = "Build the PDF first"; return }
+        guard let synctex = BuildSettings.shared.synctexPath else { syncStatusMessage = "SyncTeX tool not configured"; return }
         syncTask?.cancel(); syncStatusMessage = "Locating source…"
         let main = root, version = build.pdfVersion, sourceDirectory = directory
         syncTask = Task { [weak self] in
