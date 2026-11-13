@@ -237,16 +237,8 @@ private struct EditorPane: View {
                         }
                     }
             }
-            Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
-                  systemImage: "square.and.pencil")
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
-                .fixedSize()
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .quillFloatingCapsule()
-                .help(store.activeDocument?.isDirty == true ? "Unsaved changes" : "All changes saved")
             Spacer(minLength: 8)
-            if let document = store.activeDocument { EditorHistoryButtons(document: document) }
+            if let document = store.activeDocument { EditorStatusCapsule(document: document) }
         }.quillPaneRow()
     }
 
@@ -266,17 +258,29 @@ private struct EditorPane: View {
     }
 }
 
-private struct EditorHistoryButtons: View {
+private struct EditorStatusCapsule: View {
     @ObservedObject var document: SourceDocument
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
+            Label(document.isDirty ? "Unsaved" : "Saved", systemImage: "square.and.pencil")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.primaryInk)
+                .padding(.horizontal, 10)
+                .help(document.isDirty ? "Unsaved changes" : "All changes saved")
+            Rectangle().fill(Palette.hairline).frame(width: 1, height: 12).padding(.horizontal, 2)
+                .accessibilityHidden(true)
             historyButton("arrow.uturn.backward", title: "Undo", shortcut: "⌘Z", enabled: document.undoManager.canUndo) {
                 document.undoManager.undo()
             }
             historyButton("arrow.uturn.forward", title: "Redo", shortcut: "⇧⌘Z", enabled: document.undoManager.canRedo) {
                 document.undoManager.redo()
             }
-        }.padding(2).quillFloatingCapsule()
+        }
+        .padding(.horizontal, 2)
+        .frame(height: 30)
+        .quillFloatingCapsule()
+        .fixedSize()
+        .layoutPriority(1)
     }
     private func historyButton(_ icon: String, title: String, shortcut: String, enabled: Bool,
                                action: @escaping () -> Void) -> some View {
