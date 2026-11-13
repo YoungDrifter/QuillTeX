@@ -459,7 +459,12 @@ struct TopBar: View {
             }
             .buttonStyle(.plain)
             .chromeControlBoundary()
-            .help(tab.isLibrary ? "Library" : (tab.path?.path ?? "New Tab"))
+            .help(tab.isLibrary ? "Library" : (tab.path?.deletingLastPathComponent().path ?? "New Tab"))
+            .contextMenu {
+                if let path = tab.path, !tab.isTemplate {
+                    Button("Rename Project…") { store.requestRenameProject(path) }
+                }
+            }
 
             if showsClose {
                 Button { closeTabAnimated(tab) } label: {

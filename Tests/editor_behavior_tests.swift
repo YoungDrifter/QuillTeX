@@ -991,6 +991,17 @@ struct EditorBehaviorTests {
         tabDocA.selection = NSRange(location: 4, length: 2)
         check(tabDocA.isDirty, "tab A holds unsaved edits")
         tabStore.openLibraryEntry(LibraryEntry(path: documentB.standardizedFileURL.path, displayName: "B"))
+        check(tabStore.projectNamePrompt?.initial == "main", "opening a new project suggests the source filename")
+        let canceledOpen = tabStore.projectNamePrompt
+        tabStore.projectNamePrompt = nil
+        canceledOpen?.completion(nil)
+        check(tabStore.root == documentA && tabCatalog.entry(forMainFile: documentB) == nil,
+              "canceling the project name leaves the current tab and catalog intact")
+        tabStore.requestOpenProject(documentB)
+        tabStore.projectNamePrompt?.completion("Custom Project B")
+        tabStore.projectNamePrompt = nil
+        check(tabCatalog.entry(forMainFile: documentB)?.displayName == "Custom Project B"
+            && tabStore.tabs.last?.title == "Custom Project B", "the custom name is saved and shown on the tab")
         check(closePrompts == 0, "switching tabs never asks to close the current tab")
         check(tabStore.root == documentB && tabStore.tabs.count == 2,
               "opening another library document adds a tab instead of closing")
@@ -1003,6 +1014,31 @@ struct EditorBehaviorTests {
               "returning to tab A restores its draft")
         check(tabStore.activeDocument?.isDirty == true && tabStore.activeDocument?.selection == tabDocA.selection,
               "restored drafts keep their dirty state and selection")
+        if let bTab = tabStore.tabs.first(where: { $0.path == documentB }) {
+            tabStore.activateTab(bTab)
+            check(tabStore.tabs.first(where: { $0.id == bTab.id })?.title == "Custom Project B",
+                  "switching back to a project preserves its custom title")
+            tabStore.requestOpenProject(documentB)
+            check(tabStore.projectNamePrompt == nil && tabStore.root == documentB,
+                  "reopening a named project skips the prompt")
+            tabStore.requestRenameProject(documentB)
+            check(tabStore.projectNamePrompt?.initial == "Custom Project B", "rename starts with the saved title")
+            tabStore.projectNamePrompt?.completion("Renamed Project B")
+            tabStore.projectNamePrompt = nil
+            check(tabCatalog.entry(forMainFile: documentB)?.displayName == "Renamed Project B"
+                && tabStore.tabs.first(where: { $0.id == bTab.id })?.title == "Renamed Project B"
+                && FileManager.default.fileExists(atPath: documentB.path),
+                  "renaming updates the catalog and open tab while keeping the source path")
+            tabStore.activateTab(aTab)
+        }
+        let newProjectStore = ProjectStore(library: tabLibrary, catalog: tabCatalog)
+        newProjectStore.createNewDocument(named: "source", projectName: "Project Title", template: nil, in: tabBase)
+        let createdSource = tabBase.appendingPathComponent("source/source.tex")
+        check(newProjectStore.root == createdSource && FileManager.default.fileExists(atPath: createdSource.path),
+              "creating with a project title keeps the chosen filename on disk")
+        check(newProjectStore.tabs.last?.title == "Project Title"
+            && tabCatalog.entry(forMainFile: createdSource)?.displayName == "Project Title",
+              "a new document uses its custom project title in the tab and catalog")
         // Closing a tab is a real close intent, so the confirmation still applies.
         tabStore.closeTab(aTab)
         check(closePrompts == 1 && tabStore.tabs.contains { $0.id == aTab.id },

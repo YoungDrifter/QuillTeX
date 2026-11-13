@@ -158,11 +158,14 @@ struct ProjectCommands: Commands {
             let url = incoming.standardizedFileURL
             let stores = Self.stores.values.compactMap(\.value)
             let resolved = try? ProjectStore.resolveMainFile(url)
-            if let existing = stores.first(where: { (resolved != nil && $0.root == resolved?.url) || $0.documents.contains(where: { $0.url == url }) }) {
-                existing.openSource(url)
+            if let existing = stores.first(where: { store in
+                store.projectNamePrompt == nil && ((resolved != nil && store.root == resolved?.url)
+                    || store.documents.contains(where: { $0.url == url }))
+            }) {
+                existing.requestOpenProject(url)
                 existing.window?.makeKeyAndOrderFront(nil)
-            } else if let welcome = stores.first(where: { $0.root == nil }) {
-                welcome.openProject(url)
+            } else if let welcome = stores.first(where: { $0.root == nil && $0.projectNamePrompt == nil }) {
+                welcome.requestOpenProject(url)
                 welcome.window?.makeKeyAndOrderFront(nil)
             } else if let openWorkspace = Self.openWorkspace {
                 openWorkspace(url)

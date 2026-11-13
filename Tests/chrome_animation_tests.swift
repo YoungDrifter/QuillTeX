@@ -116,8 +116,20 @@ private struct ObservedTitlebar: View {
         let first = sidebarSelection()
         store.sidebarMode = .tex; settle(0.5)
         let second = sidebarSelection()
-        store.sidebarMode = .result; settle(0.5)
+        store.sidebarMode = .result
+        var sidebarCenters: [CGFloat] = []
+        for _ in 0..<10 {
+            settle(0.025)
+            let frame = sidebarSelection()
+            check(frame.width > 20, "sidebar selection stays visible while moving between modes")
+            sidebarCenters.append(frame.center)
+        }
+        settle(0.35)
         let last = sidebarSelection()
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            check(sidebarCenters.contains { $0 > second.center + 5 && $0 < last.center - 5 },
+                  "sidebar selection slides through intermediate positions")
+        }
         // TeX Project is a native feature now, so the picker always has all four
         // modes and flows from the leading to the trailing edge.
         check(first.width > 20, "sidebar mode targets keep a usable width")
@@ -128,6 +140,47 @@ private struct ObservedTitlebar: View {
         let narrow = sidebarSelection()
         check(narrow.width > 12 && narrow.center + narrow.width / 2 < 180,
               "four sidebar modes fit inside the minimum sidebar width")
+        let pages = NSHostingView(rootView: ProjectSidebar(store: store))
+        let pagesWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 560),
+                                   styleMask: [.titled], backing: .buffered, defer: false)
+        pagesWindow.isReleasedWhenClosed = false
+        pagesWindow.contentView = pages
+        pagesWindow.orderFront(nil)
+        defer { pagesWindow.close() }
+        func widestDarkRunOnPage() -> Int {
+            pages.layoutSubtreeIfNeeded()
+            let bitmap = pages.bitmapImageRepForCachingDisplay(in: pages.bounds)!
+            pages.cacheDisplay(in: pages.bounds, to: bitmap)
+            let scale = CGFloat(bitmap.pixelsWide) / pages.bounds.width
+            var widest = 0
+            // Restrict sampling to the upper sidebar, where the mode picker lives.
+            for y in 0..<Int(180 * scale) {
+                var run = 0
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                          color.alphaComponent > 0.8,
+                          max(color.redComponent, color.greenComponent, color.blueComponent) < 0.35 else {
+                        run = 0
+                        continue
+                    }
+                    run += 1
+                    widest = max(widest, run)
+                }
+            }
+            return widest
+        }
+        store.sidebarPage = .library
+        settle(0.6)
+        let libraryRun = widestDarkRunOnPage()
+        store.sidebarPage = .structure
+        store.sidebarMode = .structure
+        settle(0.6)
+        check(widestDarkRunOnPage() > libraryRun + 10, "the project page renders its dark mode capsule")
+        store.sidebarMode = .result
+        settle(0.035)
+        store.sidebarPage = .library
+        settle(0.4)
+        check(widestDarkRunOnPage() <= libraryRun + 2, "the mode capsule does not linger on the library page")
         print("PASS: \(checks) chrome-animation assertions")
     }
 }

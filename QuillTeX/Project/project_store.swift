@@ -149,6 +149,9 @@ final class ProjectStore: ObservableObject {
             }
             self.objectWillChange.send()
         }.store(in: &buildObservers)
+        catalog?.$entries.dropFirst().sink { [weak self] entries in
+            self?.updateProjectTitles(from: entries)
+        }.store(in: &buildObservers)
         BuildSettings.shared.$outputDirectory.dropFirst().sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateFileMonitoring()
@@ -156,7 +159,9 @@ final class ProjectStore: ObservableObject {
             }
         }.store(in: &buildObservers)
     }
-    /// The New Document dialog (name + template, no save panel).
+    @Published var projectNamePrompt: QuillPromptRequest?
+
+    /// The New Document dialog.
     @Published var showNewDocument = false
     /// Open tabs in this window; a nil path is the New Tab page.
     @Published var tabs: [WorkspaceTab] = []
@@ -726,11 +731,7 @@ final class ProjectStore: ObservableObject {
             showError("Document Not Found", "“\(entry.displayName)” is no longer at \(entry.path).\nIt stays in the library until you remove it.")
             return
         }
-        openProject(entry.url, explicitRoot: true)
-        if root?.standardizedFileURL == entry.url.standardizedFileURL {
-            sidebarPage = .structure
-            catalog?.touch(entry.id)
-        }
+        requestOpenProject(entry.url, explicitRoot: true)
     }
 
     // MARK: - Tabs and the library surface
@@ -870,15 +871,51 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private func tabTitle(for path: URL) -> String {
-        path.lastPathComponent == "main.tex"
-            ? path.deletingLastPathComponent().lastPathComponent
-            : path.deletingPathExtension().lastPathComponent
+    func projectTitle(for path: URL) -> String {
+        if !openingTemplate, let entry = catalog?.entry(forMainFile: path) {
+            return entry.displayName
+        }
+        return path.deletingPathExtension().lastPathComponent
+    }
+
+    private func updateProjectTitles(from entries: [LibraryEntry]) {
+        for index in tabs.indices where !tabs[index].isTemplate {
+            guard let path = tabs[index].path?.standardizedFileURL.path,
+                  let name = entries.first(where: { $0.path == path })?.displayName,
+                  tabs[index].title != name else { continue }
+            tabs[index].title = name
+        }
+        if !isEditingTemplate, let path = root?.standardizedFileURL.path,
+           let name = entries.first(where: { $0.path == path })?.displayName {
+            window?.title = "QuillTeX — \(name)"
+        }
+    }
+
+    func requestRenameProject(_ main: URL) {
+        guard let catalog else { return }
+        projectNamePrompt = QuillPromptRequest(
+            title: "Rename Project",
+            message: main.deletingLastPathComponent().path,
+            initial: projectTitle(for: main),
+            placeholder: "Project Name",
+            confirmTitle: "Rename"
+        ) { [weak self] name in
+            guard let name else { return }
+            do {
+                if let entry = catalog.entry(forMainFile: main) {
+                    try catalog.rename(entry.id, to: name)
+                } else {
+                    try catalog.link(main, displayName: name)
+                }
+            } catch {
+                self?.showError("Could Not Rename Project", error.localizedDescription)
+            }
+        }
     }
 
     /// Convert the active New Tab / library tab into a document tab, or add one.
     private func registerDocumentTab(for main: URL) {
-        let title = tabTitle(for: main)
+        let title = projectTitle(for: main)
         let normalized = main.standardizedFileURL
         let matches = tabs.indices.filter { index in
             tabs[index].path?.standardizedFileURL == normalized
@@ -896,6 +933,9 @@ final class ProjectStore: ObservableObject {
                let index = tabs.firstIndex(where: { $0.id == active }),
                tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
                 tabs.remove(at: index)
+            }
+            if let index = tabs.firstIndex(where: { $0.id == keepID }) {
+                tabs[index].title = title
             }
             activeTabID = keepID
             showingLibrary = false
@@ -1171,12 +1211,12 @@ final class ProjectStore: ObservableObject {
 
     /// Create a new document from the dialog: one folder named after the document,
     /// with a same-named main .tex inside the configured default location.
-    func createNewDocument(named name: String, template: DocumentTemplate?, in chosenDirectory: URL? = nil) {
+    func createNewDocument(named name: String, projectName: String? = nil, template: DocumentTemplate?, in chosenDirectory: URL? = nil) {
         do {
             let source = template.flatMap { try? library.source(for: $0) } ?? ""
             let directory = chosenDirectory ?? LibraryPreferences.shared.newDocumentDirectory
             let main = try LibraryDocumentCreator.create(named: name, templateSource: source, in: directory)
-            let entry = try catalog?.link(main)
+            let entry = try catalog?.link(main, displayName: projectName ?? name)
             if let entry {
                 if let folder = pendingNewDocumentFolder { catalog?.setFolder(entry.id, folderID: folder) }
                 catalog?.touch(entry.id)
@@ -1197,16 +1237,34 @@ final class ProjectStore: ObservableObject {
         panel.message = folder ? "Choose the project folder." : "Choose a LaTeX file."
         if !folder { panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText] }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        prepareToLeaveCurrentTab()
-        if folder { openFolder(url) } else { openProject(url) }
+        if folder { openFolder(url) } else { requestOpenProject(url) }
     }
     /// Adopt an existing folder as the project: use its `main.tex`, or ask which file
     /// is the main one. Used by the breadcrumb's parent-folder menu.
     func openFolder(_ url: URL) {
         let candidate = url.appendingPathComponent("main.tex")
-        if FileManager.default.fileExists(atPath: candidate.path) { openProject(candidate) }
-        else if let selected = chooseRoot(directory: url) { openProject(selected, explicitRoot: true) }
+        if FileManager.default.fileExists(atPath: candidate.path) { requestOpenProject(candidate) }
+        else if let selected = chooseRoot(directory: url) { requestOpenProject(selected, explicitRoot: true) }
     }
+    /// User-initiated opens name the project. Tab activation and recovery open it directly.
+    func requestOpenProject(_ incoming: URL, explicitRoot: Bool = false) {
+        let main = explicitRoot ? incoming : (try? Self.resolveMainFile(incoming).url) ?? incoming
+        if catalog?.entry(forMainFile: main) != nil {
+            openProject(incoming, explicitRoot: explicitRoot)
+            return
+        }
+        projectNamePrompt = QuillPromptRequest(
+            title: "Open Project",
+            message: main.deletingLastPathComponent().path,
+            initial: incoming.deletingPathExtension().lastPathComponent,
+            placeholder: "Project Name",
+            confirmTitle: "Open"
+        ) { [weak self] name in
+            guard let name else { return }
+            self?.openProject(incoming, explicitRoot: explicitRoot, projectName: name)
+        }
+    }
+
     private func chooseRoot(directory: URL) -> URL? {
         let panel = NSOpenPanel(); panel.directoryURL = directory
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
@@ -1322,7 +1380,7 @@ final class ProjectStore: ObservableObject {
         previewIsOutdated = documents.contains { $0.isDirty }
         activeID = document.id
         index = ProjectIndex(); expandedNodes = []; selectedNodes = [:]; selectedFolder = nil; folderExpansionOrder = []
-        window?.title = "QuillTeX — \(main.deletingPathExtension().lastPathComponent)"
+        window?.title = "QuillTeX — \(projectTitle(for: main))"
         window?.representedURL = main
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         verifyFolderAccess()
@@ -1332,10 +1390,9 @@ final class ProjectStore: ObservableObject {
         if !openingTemplate {
             do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
         }
-        // Make every opened document part of the link library, including a normal
-        // open (which runs through the restoring path too). The catalog is optional
-        // so isolated tests never write to a real user library.
-        if !openingTemplate, let catalog, let entry = try? catalog.link(main) { catalog.touch(entry.id) }
+        if !restoringSession, !openingTemplate, let catalog, let entry = try? catalog.link(main) {
+            catalog.touch(entry.id)
+        }
         sidebarPage = openingTemplate ? .library : .structure
         if !restoringSession { persistSession(force: true); sessionStore.flush() }
         scheduleSessionSave()
@@ -1349,7 +1406,7 @@ final class ProjectStore: ObservableObject {
     /// root-directive maintenance, history and catalog links for the template file.
     @discardableResult
     func openProject(_ incoming: URL, explicitRoot: Bool = false, closeIntent: Bool = false,
-                     asTemplate: Bool = false) -> Bool {
+                     asTemplate: Bool = false, projectName: String? = nil) -> Bool {
         guard commitSidebarNameEdit() else { return false }
         let incoming = incoming.standardizedFileURL
         let wasOpeningTemplate = openingTemplate
@@ -1396,7 +1453,15 @@ final class ProjectStore: ObservableObject {
             }
             if !openingTemplate { maintainProjectRootDirectives(replacingExisting: explicitRoot) }
             if let warning = resolution.warning { showError("Main File Directive", warning) }
-            if !openingTemplate, let catalog, let entry = try? catalog.link(main) { catalog.touch(entry.id) }
+            if !openingTemplate, let catalog {
+                do {
+                    let entry = try catalog.link(main, displayName: projectName)
+                    catalog.touch(entry.id)
+                } catch {
+                    if projectName != nil { showError("Project Name Not Saved", error.localizedDescription) }
+                }
+            }
+            window?.title = "QuillTeX — \(projectTitle(for: main))"
             registerDocumentTab(for: main)
             return true
         } catch {

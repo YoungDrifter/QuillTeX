@@ -70,7 +70,7 @@ struct DocumentCatalogTests {
         let standardizedLink = try catalog.link(messyPath)
         check(catalog.entries.count == 1, "standardized paths deduplicate")
         check(standardizedLink.id == alphaEntry.id, "standardized relink keeps identity")
-        check(standardizedLink.displayName == "alpha", "relinking without a name restores the derived name")
+        check(standardizedLink.displayName == "Alpha Draft", "relinking without a name preserves the custom name")
 
         let missingError = expectFailure("linking a missing file throws") {
             _ = try catalog.link(documents.appendingPathComponent("does-not-exist.tex"))
@@ -90,7 +90,7 @@ struct DocumentCatalogTests {
         let persistedCatalog = DocumentCatalog(directory: dataDirectory)
         check(persistedCatalog.entries.count == 1, "entries persist across instances")
         check(persistedCatalog.entries.first?.id == alphaEntry.id, "entry identity persists")
-        check(persistedCatalog.entries.first?.displayName == "alpha", "display name persists")
+        check(persistedCatalog.entries.first?.displayName == "Alpha Draft", "custom display name persists")
 
         try catalog.setTags(alphaEntry.id, tags: ["  Draft ", "draft", "Research", "", "   "])
         check(catalog.entry(id: alphaEntry.id)?.tags == ["Draft", "Research"],

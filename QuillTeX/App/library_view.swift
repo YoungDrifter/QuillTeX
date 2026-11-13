@@ -486,6 +486,7 @@ private enum LibraryDialogs {
 private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatalog,
                                      entry: LibraryEntry, onOpen: @escaping () -> Void) -> some View {
     Button("Open Document", action: onOpen)
+    Button("Rename Project…") { store.requestRenameProject(entry.url) }
     Button(entry.starred ? "Remove Star" : "Star Document") { catalog.toggleStar(entry.id) }
     Menu("Move to Folder") {
         Button {
@@ -1951,16 +1952,17 @@ struct NewDocumentDialog: View {
     let templates: [DocumentTemplate]
     let directory: URL
     let onDismiss: () -> Void
-    let onCreate: (String, DocumentTemplate?, URL) -> Void
+    let onCreate: (String, String, DocumentTemplate?, URL) -> Void
 
     @State private var name = "Untitled"
+    @State private var projectName = ""
     @State private var selectedTemplateID: String?
     @State private var destination: URL
     @FocusState private var nameFocused: Bool
 
     init(templates: [DocumentTemplate], directory: URL,
          onDismiss: @escaping () -> Void,
-         onCreate: @escaping (String, DocumentTemplate?, URL) -> Void) {
+         onCreate: @escaping (String, String, DocumentTemplate?, URL) -> Void) {
         self.templates = templates
         self.directory = directory
         self.onDismiss = onDismiss
@@ -1972,12 +1974,17 @@ struct NewDocumentDialog: View {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var fileBaseName: String {
+        trimmedName.lowercased().hasSuffix(".tex")
+            ? (trimmedName as NSString).deletingPathExtension : trimmedName
+    }
+
     private var selectedTemplate: DocumentTemplate? {
         templates.first { $0.id == selectedTemplateID }
     }
 
     private var canCreate: Bool {
-        !trimmedName.isEmpty
+        !fileBaseName.isEmpty
     }
 
     var body: some View {
@@ -2007,11 +2014,21 @@ struct NewDocumentDialog: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 0) {
-            QuillDialogFieldLabel("Name")
+            QuillDialogFieldLabel("File Name")
             QuillDialogField {
-                TextField("Document name", text: $name)
+                TextField("File name", text: $name)
                     .textFieldStyle(.plain)
                     .focused($nameFocused)
+                    .onSubmit(create)
+            }
+            .padding(.top, 7)
+
+            QuillDialogFieldLabel("Project Name")
+                .padding(.top, 16)
+            QuillDialogField {
+                TextField(fileBaseName.isEmpty ? "Project name" : fileBaseName,
+                          text: $projectName)
+                    .textFieldStyle(.plain)
                     .onSubmit(create)
             }
             .padding(.top, 7)
@@ -2089,7 +2106,8 @@ struct NewDocumentDialog: View {
     private func create() {
         guard canCreate else { return }
         LibraryPreferences.shared.rememberLastDocumentDirectory(destination)
-        onCreate(trimmedName, selectedTemplate, destination)
+        let customName = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        onCreate(fileBaseName, customName.isEmpty ? fileBaseName : customName, selectedTemplate, destination)
         onDismiss()
     }
 }
@@ -2555,7 +2573,7 @@ private struct NewTabPage: View {
                                         VStack(alignment: .leading, spacing: 1) {
                                             Text(entry.displayName).font(.system(size: 12.5, weight: .medium))
                                                 .foregroundStyle(Palette.primaryInk).lineLimit(1)
-                                            Text(entry.path).font(.system(size: 10))
+                                            Text(libraryEntrySubtitle(entry, catalog: catalog)).font(.system(size: 10))
                                                 .foregroundStyle(Palette.secondaryInk).lineLimit(1)
                                                 .truncationMode(.middle)
                                         }
@@ -2565,6 +2583,9 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
+                                .contextMenu {
+                                    Button("Rename Project…") { store.requestRenameProject(entry.url) }
+                                }
                             }
                         }
                         .padding(.top, 4)
@@ -2590,7 +2611,7 @@ private struct NewTabPage: View {
                                             Text(entry.displayName)
                                                 .font(.system(size: 13, weight: .medium))
                                                 .foregroundStyle(Palette.primaryInk).lineLimit(1)
-                                            Text(entry.folderURL.lastPathComponent)
+                                            Text(libraryEntrySubtitle(entry, catalog: catalog))
                                                 .font(.system(size: 10.5))
                                                 .foregroundStyle(Palette.secondaryInk).lineLimit(1)
                                                 .truncationMode(.middle)
@@ -2604,6 +2625,9 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
+                                .contextMenu {
+                                    Button("Rename Project…") { store.requestRenameProject(entry.url) }
+                                }
                             }
                         }
                     }

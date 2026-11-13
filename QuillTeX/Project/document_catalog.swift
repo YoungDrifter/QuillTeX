@@ -423,7 +423,9 @@ final class DocumentCatalog: ObservableObject {
             // Relinking refreshes presentation and disk facts but keeps the user's
             // position in the library: identity, date added, folder, star, tags and
             // the last-viewed stamp are all preserved.
-            entry.displayName = name
+            if let displayName, !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                entry.displayName = name
+            }
             entry.kind = kind
             let metadata = diskMetadata(for: standardized, kind: kind)
             entry.updatedAt = metadata.updatedAt

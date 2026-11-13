@@ -18,6 +18,7 @@ struct WorkspaceView: View {
     /// hover targets entirely.
     private var isModalPresented: Bool {
         store.showNewDocument
+            || store.projectNamePrompt != nil
             || libraryDialogs.folderDialog != nil
             || dialogCenter.alert != nil
             || dialogCenter.confirmRequest != nil
@@ -60,11 +61,17 @@ struct WorkspaceView: View {
                                       onDismiss: {
                                           store.showNewDocument = false
                                           store.pendingNewDocumentFolder = nil
-                                      }) { name, template, directory in
-                        store.createNewDocument(named: name, template: template, in: directory)
+                                      }) { name, projectName, template, directory in
+                        store.createNewDocument(named: name, projectName: projectName, template: template, in: directory)
                     }
                     .transition(.opacity)
                     .zIndex(20)
+                }
+                if let request = store.projectNamePrompt {
+                    QuillOverlayPrompt(request: request, dismiss: { store.projectNamePrompt = nil })
+                        .id(request.id)
+                        .transition(.opacity)
+                        .zIndex(20)
                 }
                 if let request = libraryDialogs.folderDialog {
                     NewFolderDialog(catalog: .shared,
@@ -96,6 +103,7 @@ struct WorkspaceView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: store.showNewDocument)
+        .animation(.easeOut(duration: 0.18), value: store.projectNamePrompt?.id)
         .animation(.easeOut(duration: 0.18), value: libraryDialogs.folderDialog?.id)
         .animation(.easeOut(duration: 0.18), value: dialogCenter.alert?.id)
         .animation(.easeOut(duration: 0.18), value: dialogCenter.confirmRequest?.id)
@@ -109,7 +117,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: isModalPresented) { _, modal in
             QuillModalGate.shared.active = modal
-            if modal {
+            if modal && store.projectNamePrompt == nil {
                 // The search field keeps its edit session (and caret) alive while a
                 // dialog is up; the modal card owns focus from here.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -136,12 +144,12 @@ struct WorkspaceView: View {
             guard url.isFileURL else { return }
             // SwiftUI owns the application delegate and can deliver Finder opens
             // through this scene rather than the legacy AppKit openFiles callback.
-            if store.root == nil { store.openProject(url) }
+            if store.root == nil, store.projectNamePrompt == nil { store.requestOpenProject(url) }
             else { AppDelegate.openDocuments([url]) }
         }
         .onAppear {
             AppDelegate.openWorkspace = { url in openWindow(id: "workspace", value: url) }
-            if store.root == nil, let openURL { store.openProject(openURL) }
+            if store.root == nil, store.projectNamePrompt == nil, let openURL { store.requestOpenProject(openURL) }
 
             if AppDelegate.pendingNewDocument {
                 AppDelegate.pendingNewDocument = false; store.openNewDocumentSheet()
@@ -149,7 +157,7 @@ struct WorkspaceView: View {
             let pending = AppDelegate.pendingOpenURLs
             AppDelegate.pendingOpenURLs = []
             for url in pending {
-                if store.root == nil { store.openProject(url) }
+                if store.root == nil, store.projectNamePrompt == nil { store.requestOpenProject(url) }
                 else { openWindow(id: "workspace", value: url) }
             }
             if let folder = AppDelegate.pendingOpenPanel {
@@ -158,7 +166,9 @@ struct WorkspaceView: View {
             }
             // The command-line document belongs to the launch window only. Reading it
             // here on every appearance made each new window reopen the same project.
-            if store.root == nil, let url = AppDelegate.consumeLaunchDocument() { store.openProject(url) }
+            if store.root == nil, store.projectNamePrompt == nil, let url = AppDelegate.consumeLaunchDocument() {
+                store.requestOpenProject(url)
+            }
             if AppDelegate.pendingSettings {
                 AppDelegate.pendingSettings = false
                 store.openSettingsTab()
@@ -198,18 +208,7 @@ private struct EditorPane: View {
             .id(store.activeTabID)
             .transition(.opacity)
             if store.root != nil && !store.showingLibrary && !store.showingSettings {
-            HStack(spacing: 8) {
-                Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
-                      systemImage: "square.and.pencil")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .quillFloatingCapsule()
-                    .help(store.activeDocument?.isDirty == true ? "Unsaved changes" : "All changes saved")
-                Spacer(minLength: 8)
-                if let document = store.activeDocument { EditorHistoryButtons(document: document) }
-            }.quillPaneRow()
+                editorHeader
             }
         }
         .animation(reduceMotion ? nil : ChromeMotion.tab, value: store.activeTabID)
@@ -218,6 +217,39 @@ private struct EditorPane: View {
         .background(store.root == nil || store.showingLibrary ? Color.clear : Color.white)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
+    private var editorHeader: some View {
+        HStack(spacing: 8) {
+            if let document = store.activeDocument, !store.isEditingTemplate {
+                let role = document.url == store.root ? "Main" : "Sub"
+                let title = "\(role): \(document.url.deletingPathExtension().lastPathComponent)"
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.primaryInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .quillFloatingCapsule()
+                    .help(document.url.lastPathComponent)
+                    .contextMenu {
+                        if let root = store.root {
+                            Button("Rename Project…") { store.requestRenameProject(root) }
+                        }
+                    }
+            }
+            Label(store.activeDocument?.isDirty == true ? "Unsaved" : "Saved",
+                  systemImage: "square.and.pencil")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.primaryInk)
+                .fixedSize()
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .quillFloatingCapsule()
+                .help(store.activeDocument?.isDirty == true ? "Unsaved changes" : "All changes saved")
+            Spacer(minLength: 8)
+            if let document = store.activeDocument { EditorHistoryButtons(document: document) }
+        }.quillPaneRow()
+    }
+
     private var emptyState: some View {
         VStack(spacing: 16) {
             Spacer()
@@ -386,7 +418,7 @@ private final class WindowHook: NSView, NSWindowDelegate {
         window.appearance = NSAppearance(named: .aqua)
         window.isMovableByWindowBackground = true
         window.delegate = self
-        window.title = store.root.map { "QuillTeX — \($0.deletingPathExtension().lastPathComponent)" } ?? "QuillTeX"
+        window.title = store.root.map { "QuillTeX — \(store.projectTitle(for: $0))" } ?? "QuillTeX"
         store.window = window
         AppDelegate.stores[ObjectIdentifier(window)] = WeakProject(store)
         // AppKit re-lays out the title bar for reasons of its own (tiling, focus,

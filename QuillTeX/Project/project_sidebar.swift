@@ -36,6 +36,10 @@ struct ProjectSidebar: View {
                                 }
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
+                            // Composite the project page before moving the strip so its
+                            // animated selection stays inside the page's own clip.
+                            .clipped()
+                            .compositingGroup()
                         }
                         .offset(x: -CGFloat(pageIndex) * geometry.size.width)
                         .animation(.smooth(duration: 0.26), value: pageIndex)
@@ -127,7 +131,8 @@ struct ProjectSidebar: View {
     private var structurePage: some View {
         VStack(spacing: 0) {
             DocumentSidebarHeader(store: store)
-            SidebarModePicker(store: store).padding(.top, 8).padding(.bottom, 12)
+            SidebarModePicker(store: store, animatesSelection: pageIndex == 1)
+                .padding(.top, 8).padding(.bottom, 12)
             if store.sidebarMode != .result {
                 HStack {
                     Text(store.sidebarMode.rawValue).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
@@ -254,10 +259,7 @@ private struct DocumentSidebarHeader: View {
     }
     private var title: String {
         guard let root = store.root else { return "Document" }
-        // A main.tex project is named after its folder, matching the library.
-        return root.lastPathComponent == "main.tex"
-            ? root.deletingLastPathComponent().lastPathComponent
-            : root.deletingPathExtension().lastPathComponent
+        return store.projectTitle(for: root)
     }
     private var lastModified: Date? {
         guard let main = store.root else { return nil }
@@ -306,6 +308,11 @@ private struct DocumentSidebarHeader: View {
                 .padding(.horizontal, 12)
         }
         .accessibilityElement(children: .combine)
+        .contextMenu {
+            if let root = store.root {
+                Button("Rename Project…") { store.requestRenameProject(root) }
+            }
+        }
     }
 }
 
@@ -465,6 +472,9 @@ private struct OutlineRow: View {
             .contextMenu {
                 if let url = node.url {
                     if mode != .folder {
+                        if node.kind != .resource, let root = store.root {
+                            Button("Rename Project…") { store.requestRenameProject(root) }
+                        }
                         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                         if node.kind == .resource { Button("Open with Default App") { NSWorkspace.shared.open(url) } }
                     }
@@ -549,6 +559,12 @@ private struct FolderRowActions: ViewModifier {
                                     action("New Folder", icon: "folder.badge.plus") {
                                         showing = false
                                         DispatchQueue.main.async { store.beginSidebarCreation(folder: true, in: url) }
+                                    }
+                                }
+                                if node.kind == .source, let root = store.root {
+                                    action("Rename Project…", icon: "pencil") {
+                                        showing = false
+                                        DispatchQueue.main.async { store.requestRenameProject(root) }
                                     }
                                 }
                                 if node.kind == .source || node.kind == .resource {
@@ -743,17 +759,23 @@ private final class SidebarSecondaryClickView: NSView {
 
 struct SidebarModePicker: View {
     @ObservedObject var store: ProjectStore
+    var animatesSelection = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var modes: [SidebarMode] { SidebarMode.allCases.filter { $0 != .tex || store.texProjectEnabled } }
     var body: some View {
-        ChromeSegmentedGroup(selection: store.sidebarMode) { _ in
+        ChromeSegmentedGroup(selection: store.sidebarMode) { selection in
             ForEach(modes) { mode in
-                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode) {
+                SidebarModeButton(mode: mode, selected: store.sidebarMode == mode, selectionNamespace: animatesSelection ? selection : nil) {
                     store.sidebarMode = mode
                 }
             }
         }
+        // End any in-flight selection animation when the project page leaves.
+        .id(animatesSelection)
+        .transition(.identity)
         .padding(3).quillCapsule()
+        .clipped()
+        .compositingGroup()
         .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : ChromeMotion.feedback, value: modes.count)
         .padding(.horizontal, 10)
@@ -763,6 +785,7 @@ struct SidebarModePicker: View {
 private struct SidebarModeButton: View {
     let mode: SidebarMode
     let selected: Bool
+    let selectionNamespace: Namespace.ID?
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -770,10 +793,7 @@ private struct SidebarModeButton: View {
                 .font(.system(size: ChromeMetrics.chromeIconSize, weight: .regular))
                 .frame(maxWidth: .infinity).frame(height: 34).contentShape(Capsule())
         }
-        // Each button carries its own capsule. A shared sliding capsule is
-        // positioned through a GeometryReader preference, and while the whole
-        // sidebar page slides it escaped its page and hovered over the other one.
-        .buttonStyle(ChromeButtonStyle(selected: selected))
+        .buttonStyle(ChromeButtonStyle(selected: selected, selectionNamespace: selectionNamespace))
         .modifier(ChromeHoverFeedback(selected: selected))
         .help(mode.rawValue).accessibilityLabel(mode.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])
