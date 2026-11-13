@@ -206,6 +206,15 @@ struct DocumentCatalogTests {
         check(nestedReload.folder(id: notes.id)?.parentID == research.id, "subfolder nesting persists across instances")
         catalog.setFolder(alphaEntry.id, folderID: notes.id)
         check(catalog.entries(inFolder: notes.id).map(\.id) == [alphaEntry.id], "entries(inFolder:) reads a nested folder")
+        let drafts = try catalog.createFolder(named: "Drafts", parentID: notes.id)
+        catalog.setFolder(alphaEntry.id, folderID: drafts.id)
+        check(catalog.entries(in: .folder(research.id)).map(\.id) == [alphaEntry.id],
+              "an otherwise empty parent shows documents from deeper folders without including unrelated entries")
+        catalog.setFolder(betaEntry.id, folderID: research.id)
+        check(Set(catalog.entries(in: .folder(research.id)).map(\.id)) == [alphaEntry.id, betaEntry.id],
+              "the folder selection includes both direct and descendant documents")
+        check(catalog.entries(inFolder: research.id).map(\.id) == [betaEntry.id],
+              "direct folder membership stays available for the sidebar tree")
         catalog.deleteFolder(research.id)
         check(catalog.folder(id: notes.id) == nil, "deleting a parent removes its subfolders")
         check(catalog.entry(id: alphaEntry.id)?.folderID == nil, "documents of removed subfolders fall back to Unsorted")

@@ -352,7 +352,13 @@ final class DocumentCatalog: ObservableObject {
         case .templates, .newTab:
             return []
         case .folder(let id):
-            return entries(inFolder: id)
+            guard let id else { return unsortedEntries }
+            var folderIDs = Set(descendantFolders(of: id).map(\.id))
+            folderIDs.insert(id)
+            return entries.filter { entry in
+                guard let folderID = entry.folderID else { return false }
+                return folderIDs.contains(folderID)
+            }
         case .tag(let tag):
             let key = tag.lowercased()
             return entries.filter { entry in
