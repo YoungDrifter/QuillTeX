@@ -1107,7 +1107,14 @@ private struct LibraryFolderRow: View {
             dropTargeted = targeted
         }
         .contextMenu {
-            Button("Open Documents", action: onSelect)
+            // Unsorted has no folder page worth opening when it is empty: its
+            // "Open Documents" is the local file chooser, so documents picked
+            // here are opened from disk and land back in Unsorted.
+            if folderID == nil {
+                Button("Open Documents…") { store.openPanel() }
+            } else {
+                Button("Open Documents", action: onSelect)
+            }
             Button("New Document in This Folder") { store.openNewDocumentSheet(folderID: folderID) }
             if let folderID {
                 Button("New Folder in This Folder") {
@@ -1147,17 +1154,17 @@ private struct LibraryFolderRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
-            if count > 0 {
-                // The count is a hover affordance: it stays out of the resting
-                // sidebar and appears only for the folder under the pointer.
-                Text("\(count)")
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(Palette.secondaryInk)
-                    .opacity(hovered ? 1 : 0)
-                    .animation(.easeOut(duration: 0.12), value: hovered)
-                    .accessibilityHidden(!hovered)
-            }
+            // The count is a hover affordance: it stays out of the resting
+            // sidebar and appears only for the folder under the pointer. Zero
+            // is shown too, so an empty folder reads as empty rather than as a
+            // broken count.
+            Text("\(count)")
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(Palette.secondaryInk)
+                .opacity(hovered ? 1 : 0)
+                .animation(.easeOut(duration: 0.12), value: hovered)
+                .accessibilityHidden(!hovered)
         }
         .padding(.leading, 2)
         .padding(.trailing, 8)
