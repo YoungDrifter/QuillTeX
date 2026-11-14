@@ -913,12 +913,16 @@ struct LibrarySidebarContent: View {
         case .folder(let folder):
             let index = catalog.folders.firstIndex(where: { $0.id == folder.id }) ?? 0
             let entries = catalog.entries(inFolder: folder.id)
+            // The row's count is the folder's whole subtree, matching what
+            // opening the folder shows; direct files alone read as 0 for a
+            // folder that only holds subfolders.
+            let subtreeEntries = catalog.entries(in: .folder(folder.id))
             LibraryFolderRow(
                 key: .folder(folder.id),
                 name: folder.name,
                 symbol: "folder",
                 tint: folder.color?.tint ?? LibraryLook.folderTints[index % LibraryLook.folderTints.count],
-                count: entries.count,
+                count: subtreeEntries.count,
                 entries: entries,
                 hasChildren: !entries.isEmpty || !catalog.childFolders(of: folder.id).isEmpty,
                 depth: depth,
@@ -1144,10 +1148,15 @@ private struct LibraryFolderRow: View {
                 .truncationMode(.middle)
             Spacer(minLength: 4)
             if count > 0 {
+                // The count is a hover affordance: it stays out of the resting
+                // sidebar and appears only for the folder under the pointer.
                 Text("\(count)")
                     .font(.system(size: 10))
                     .monospacedDigit()
                     .foregroundStyle(Palette.secondaryInk)
+                    .opacity(hovered ? 1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: hovered)
+                    .accessibilityHidden(!hovered)
             }
         }
         .padding(.leading, 2)
