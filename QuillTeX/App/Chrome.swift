@@ -340,6 +340,15 @@ struct TopBar: View {
                         }
                     }
                 }
+                .onChange(of: store.fadingTabIDs) { _, ids in
+                    // Remove a faded New Tab after the same 0.22s the capsule
+                    // uses, so its layout never collapses while still visible.
+                    for id in ids {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                            store.finishFadingTab(id)
+                        }
+                    }
+                }
                 .onPreferenceChange(DocumentControlsWidthKey.self) { width in
                     // Never adopt a new measurement mid-tween: the collapse would
                     // jump. The width is stable between switches anyway.
@@ -462,7 +471,8 @@ struct TopBar: View {
             .help(tab.isLibrary ? "Library" : (tab.path?.deletingLastPathComponent().path ?? "New Tab"))
             .contextMenu {
                 if let path = tab.path, !tab.isTemplate {
-                    Button("Rename Project…") { store.requestRenameProject(path) }
+                    Button("Rename Project") { store.requestRenameProject(path) }
+                    Button("Rename Main File") { store.requestRenameFile(path) }
                     Button("Export PDF…") {
                         if let pdf = store.build.pdfURL {
                             LibraryPDFExporter.export(pdf: pdf, displayName: tab.title)
@@ -513,10 +523,14 @@ struct TopBar: View {
                 Capsule().strokeBorder(Palette.hairline, lineWidth: 0.9)
             }
         }
-        .opacity(closingTabIDs.contains(tab.id) ? 0 : 1)
+        // A removed pill must not animate its frame down to zero: that leftover
+        // edge is the thin line that used to linger in the strip.
+        .transition(.identity)
+        .opacity(closingTabIDs.contains(tab.id) || store.fadingTabIDs.contains(tab.id) ? 0 : 1)
         .animation(reduceMotion ? nil : ChromeMotion.tab, value: active)
         .animation(reduceMotion ? nil : ChromeMotion.tab, value: tab.title)
-        .animation(reduceMotion ? nil : ChromeMotion.tab, value: closingTabIDs.contains(tab.id))
+        .animation(reduceMotion ? nil : ChromeMotion.tab,
+                   value: closingTabIDs.contains(tab.id) || store.fadingTabIDs.contains(tab.id))
         .onContinuousHover { phase in
             switch phase {
             case .active:
@@ -548,8 +562,8 @@ struct TopBar: View {
         }
         closingTabIDs.insert(tab.id)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-            closingTabIDs.remove(tab.id)
             store.closeTab(tab)
+            closingTabIDs.remove(tab.id)
         }
     }
 

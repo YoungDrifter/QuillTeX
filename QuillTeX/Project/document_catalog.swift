@@ -535,6 +535,17 @@ final class DocumentCatalog: ObservableObject {
         try persist()
     }
 
+    /// Keep the library entry attached to its file after a disk rename. Only an
+    /// unchanged default label follows the new file name; a custom display name
+    /// stays put.
+    func relocate(_ id: UUID, to path: String, displayName: String? = nil) throws {
+        try requireReadableStorage()
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].path = path
+        if let displayName { entries[index].displayName = displayName }
+        try persist()
+    }
+
     func rename(_ id: UUID, to name: String) throws {
         try requireReadableStorage()
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

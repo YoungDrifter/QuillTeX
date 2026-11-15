@@ -8,7 +8,6 @@ struct QuillTeXApp: App {
         // Each window owns one writing workspace, so system window tabbing is not part
         // of the document workflow and its automatic View-menu commands stay hidden.
         NSWindow.allowsAutomaticWindowTabbing = false
-        _ = PluginManager.shared
         AppUpdater.shared.start()
     }
     var body: some Scene {
@@ -22,7 +21,6 @@ struct QuillTeXApp: App {
 }
 
 struct ProjectCommands: Commands {
-    @ObservedObject private var plugins = PluginManager.shared
     @ObservedObject private var updater = AppUpdater.shared
     @FocusedObject private var store: ProjectStore?
     @FocusedValue(\.pdfPreviewControls) private var pdfControls
@@ -45,7 +43,7 @@ struct ProjectCommands: Commands {
         }
         CommandGroup(after: .textEditing) {
             Button("Show Completions") { (NSApp.keyWindow?.firstResponder as? SourceTextView)?.complete(nil) }
-                .keyboardShortcut(plugins.completionShortcut.equivalent, modifiers: plugins.completionShortcut.swiftModifiers)
+                .keyboardShortcut(CompletionShortcut.standard.equivalent, modifiers: [])
                 .disabled(store?.activeDocument == nil)
         }
         CommandGroup(replacing: .appSettings) {
@@ -69,6 +67,10 @@ struct ProjectCommands: Commands {
             }.disabled(store?.root == nil)
         }
         CommandGroup(replacing: .saveItem) {
+            Button("Rename…") {
+                if let url = store?.activeDocument?.url { store?.requestRenameFile(url) }
+            }.keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(store?.activeDocument == nil || store?.root == nil)
             Button("Save") { store?.saveActive() }.keyboardShortcut("s").disabled(store?.activeDocument == nil)
             Button("Save All") { store?.saveAllFromCommand() }.keyboardShortcut("s", modifiers: [.command, .option]).disabled(store?.root == nil)
         }
@@ -134,7 +136,6 @@ struct ProjectCommands: Commands {
     }
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
-        _ = PluginManager.shared
         AppUpdater.shared.start()
     }
     func applicationDidFinishLaunching(_ notification: Notification) {

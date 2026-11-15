@@ -513,7 +513,8 @@ private enum LibraryDialogs {
 private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatalog,
                                      entry: LibraryEntry, onOpen: @escaping () -> Void) -> some View {
     Button("Open Document", action: onOpen)
-    Button("Rename Project…") { store.requestRenameProject(entry.url) }
+    Button("Rename Project") { store.requestRenameProject(entry.url) }
+    Button("Rename Main File") { store.requestRenameFile(entry.url) }
     Button(entry.starred ? "Remove Star" : "Star Document") { catalog.toggleStar(entry.id) }
     Menu("Move to Folder") {
         Button {
@@ -2669,9 +2670,7 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
-                                .contextMenu {
-                                    Button("Rename Project…") { store.requestRenameProject(entry.url) }
-                                }
+
                             }
                         }
                         .padding(.top, 4)
@@ -2711,9 +2710,7 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
-                                .contextMenu {
-                                    Button("Rename Project…") { store.requestRenameProject(entry.url) }
-                                }
+
                             }
                         }
                     }

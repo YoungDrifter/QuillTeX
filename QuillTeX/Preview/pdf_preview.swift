@@ -54,6 +54,7 @@ final class PDFPreviewControls: ObservableObject {
     }
     func actualSize() { view?.actualSize(nil) }
     func fitWidth() { view?.fitWidth() }
+    func fitHeight() { view?.fitHeight() }
 }
 
 private struct PDFPreviewControlsKey: FocusedValueKey { typealias Value = PDFPreviewControls }
@@ -259,6 +260,7 @@ final class SyncPDFView: PDFView {
     @objc func actualSize(_ sender: Any?) { setManualScale(1) }
     func setZoomPercentage(_ percent: CGFloat) { setManualScale(percent / 100) }
     @objc private func fitWidthFromMenu(_ sender: Any?) { fitWidth() }
+    @objc private func fitHeightFromMenu(_ sender: Any?) { fitHeight() }
 
     private func setManualScale(_ scale: CGFloat) {
         guard document != nil else { return }
@@ -273,7 +275,8 @@ final class SyncPDFView: PDFView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
         for (title, action) in [("Zoom In", #selector(zoomIn(_:))), ("Zoom Out", #selector(zoomOut(_:))),
-                                ("Actual Size", #selector(actualSize(_:))), ("Fit Width", #selector(fitWidthFromMenu(_:)))] {
+                                ("Actual Size", #selector(actualSize(_:))), ("Fit Width", #selector(fitWidthFromMenu(_:))),
+                                ("Fit Height", #selector(fitHeightFromMenu(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.isEnabled = document != nil
@@ -292,6 +295,21 @@ final class SyncPDFView: PDFView {
         super.layout()
         configureHorizontalScrolling()
         // Like PaperLens, Fit commands apply once. Resizing preserves the scale.
+    }
+
+    /// Fit the current page's height to the visible pane.
+    func fitHeight() {
+        guard let size = pageSize, size.height > 0 else { return }
+        zoomMode = .manual
+        autoScales = false
+        pageBreakMargins = NSEdgeInsets(top: 0, left: 0, bottom: 4, right: 0)
+        configureHorizontalScrolling()
+        let availableHeight = bounds.height - topContentInset
+        guard availableHeight > 0 else { return }
+        scaleFactor = min(maxScaleFactor, max(minScaleFactor, availableHeight / size.height))
+        layoutDocumentView()
+        centerHorizontally()
+        scheduleReadingStateReport()
     }
 
     func fitWidth() {
@@ -555,14 +573,14 @@ struct PreviewPane: View {
         Rectangle().fill(Palette.hairline).frame(width: 1, height: 12).padding(.horizontal, 2)
     }
 
-    private func zoomButton(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {
+    private func zoomButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button { performZoom(action); zoomFocused = false } label: {
             Image(systemName: symbol).font(.system(size: 13, weight: .medium))
                 .frame(width: ChromeMetrics.previewActionWidth, height: ChromeMetrics.previewControlHeight - 2)
                 .contentShape(Circle())
         }
         .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback())
-        .help(title).accessibilityLabel(title)
+        .help(help).accessibilityLabel(help)
     }
 
     /// Short build state for the preview capsule. Transient SyncTeX notes and
@@ -603,9 +621,11 @@ struct PreviewPane: View {
         HStack(spacing: 0) {
             zoomInput
             zoomDivider
-            zoomButton("1.square", title: "Actual Size (100%)", action: controls.actualSize)
+            zoomButton("1.square", help: "Actual Size (100%)", action: controls.actualSize)
             zoomDivider
-            zoomButton("arrow.left.and.right", title: "Fit Width", action: controls.fitWidth)
+            zoomButton("arrow.left.and.right", help: "Fit Width", action: controls.fitWidth)
+            zoomDivider
+            zoomButton("arrow.up.and.down", help: "Fit Height", action: controls.fitHeight)
         }
         .padding(.horizontal, 2)
         .frame(height: ChromeMetrics.previewControlHeight)

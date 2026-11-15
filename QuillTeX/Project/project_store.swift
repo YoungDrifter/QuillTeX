@@ -147,13 +147,6 @@ final class ProjectStore: ObservableObject {
             self?.observedPDFData = self?.build.pdfURL.flatMap { try? Data(contentsOf: $0) }
             self?.updateFileMonitoring()
         }.store(in: &buildObservers)
-        NotificationCenter.default.publisher(for: PluginManager.texProjectChanged).sink { [weak self] notification in
-            guard let self else { return }
-            if notification.object as? Bool == false {
-                if self.sidebarMode == .tex { self.sidebarMode = .folder }
-            }
-            self.objectWillChange.send()
-        }.store(in: &buildObservers)
         catalog?.$entries.dropFirst().sink { [weak self] entries in
             self?.updateProjectTitles(from: entries)
         }.store(in: &buildObservers)
@@ -204,10 +197,10 @@ final class ProjectStore: ObservableObject {
     @Published var paneMode: PaneMode = .split
     @Published private(set) var splitLayoutVersion = 0
     func showEditorAndPDF() {
-        // The pane buttons are mode switches, not an "equalize" command. While the
-        // split is already visible a click must leave the user's divider exactly
-        // where it is; only entering the split from a single pane equalizes once.
-        guard paneMode != .split else { return }
+        // Clicking the split button (from either single pane or with an
+        // off-centre divider) asks for the two panes to be equal again. The split
+        // controller still ignores a click when the divider is already at 50/50,
+        // so an already-even layout never nudges by a pixel.
         paneMode = .split
         splitLayoutVersion += 1
     }
@@ -480,9 +473,11 @@ final class ProjectStore: ObservableObject {
     func beginSidebarRename(_ url: URL) {
         guard commitSidebarNameEdit(), let directory, ProjectIndexer.isWithin(url, directory: directory),
               FileManager.default.fileExists(atPath: url.path) else { return }
-        sidebarMode = .folder
         sidebarNameEdit = SidebarNameEdit(kind: .rename, parent: url.deletingLastPathComponent(),
             originalURL: url, defaultName: url.lastPathComponent, text: url.lastPathComponent)
+        // TeX and Folder rename in place; Structure/Result have no file rows,
+        // so show the editor on the Folder page instead of doing nothing.
+        if sidebarMode != .folder && sidebarMode != .tex { sidebarMode = .folder }
         selectedNodes[.folder] = "file:" + url.path
     }
 
@@ -800,6 +795,7 @@ final class ProjectStore: ObservableObject {
     func showNewTabPage() {
         discardHomeTab()
         if let existing = tabs.first(where: { $0.path == nil && !$0.isSettings && !$0.isLibrary }) {
+            fadingTabIDs.remove(existing.id)
             activateTab(existing)
         } else {
             let tab = WorkspaceTab(path: nil, title: "New Tab")
@@ -811,14 +807,26 @@ final class ProjectStore: ObservableObject {
         sidebarPage = .library
     }
 
+    /// Tabs that are fading out in the top bar. The UI removes them after the
+    /// 0.22s fade; keeping them in `tabs` until then lets every exit path
+    /// (sidebar, menu, tab click) share the same non-squashing animation.
+    @Published private(set) var fadingTabIDs: Set<UUID> = []
+
     /// A New Tab page is ephemeral: leaving it without creating or opening a
     /// document removes the tab, so the "+ New Tab" control comes back.
     private func discardUnusedNewTab() {
         guard let id = activeTabID,
               let tab = tabs.first(where: { $0.id == id }),
               tab.path == nil, !tab.isSettings, !tab.isLibrary else { return }
-        tabs.removeAll { $0.id == tab.id }
-        activeTabID = tabs.last?.id
+        fadingTabIDs.insert(tab.id)
+    }
+
+    /// Called by the top bar once the fade has finished.
+    func finishFadingTab(_ id: UUID) {
+        guard fadingTabIDs.contains(id) else { return }
+        tabs.removeAll { $0.id == id }
+        fadingTabIDs.remove(id)
+        if activeTabID == id { activeTabID = tabs.last?.id }
     }
 
     /// Only All Documents is the ephemeral "home" tab. Starred, Templates and folder
@@ -918,6 +926,29 @@ final class ProjectStore: ObservableObject {
             } catch {
                 self?.showError("Could Not Rename Project", error.localizedDescription)
             }
+        }
+    }
+
+    /// Rename the file on disk, unlike `requestRenameProject` which only edits
+    /// the library/tab display label.
+    func requestRenameFile(_ url: URL) {
+        guard let directory, ProjectIndexer.isWithin(url, directory: directory) else {
+            showError("Could Not Rename File", "Choose a file inside this project.")
+            return
+        }
+        let initial = url.deletingPathExtension().lastPathComponent
+        let isMainFile = root?.standardizedFileURL == url.standardizedFileURL
+            || catalog?.entry(forMainFile: url) != nil
+        projectNamePrompt = QuillPromptRequest(
+            title: isMainFile ? "Rename Main File" : "Rename File",
+            message: url.deletingLastPathComponent().path,
+            initial: initial,
+            placeholder: "File Name",
+            confirmTitle: "Rename"
+        ) { [weak self] name in
+            guard let name else { return }
+            do { _ = try self?.renameProjectFile(url, to: name) }
+            catch { self?.showError("Could Not Rename File", error.localizedDescription) }
         }
     }
 
@@ -1500,11 +1531,6 @@ final class ProjectStore: ObservableObject {
             else { doc = SourceDocument(url: url, text: try String(contentsOf: url, encoding: .utf8)); documents.append(doc) }
             activeID = doc.id
             scheduleSessionSave()
-            // Jumping to a source offset normally reveals the editor. Structure
-            // navigation (Table of Contents / Labels / Figures) is different: it
-            // is read-only wayfinding, so it keeps the reader's current pane mode
-            // instead of forcing a split and hiding a PDF-only view.
-            if paneMode == .preview, !preserveDisplayMode { paneMode = .split }
             if let offset {
                 doc.restoresEditorPosition = false
                 doc.selection = NSRange(location: min(max(0, offset), (doc.text as NSString).length), length: 0)
@@ -1612,7 +1638,6 @@ final class ProjectStore: ObservableObject {
             do {
                 let found = try await SyncTeXService.forward(line: line, file: source, pdf: pdf, executable: synctex)
                 guard !Task.isCancelled, let self, self.root == main, self.build.pdfVersion == version else { return }
-                if self.paneMode == .editor { self.paneMode = .split }
                 self.build.highlight(page: found.page, point: found.point, width: found.width, height: found.height)
                 self.syncStatusMessage = nil
             } catch {
@@ -1779,6 +1804,8 @@ final class ProjectStore: ObservableObject {
         let destination = url.deletingLastPathComponent().appendingPathComponent(filename).standardizedFileURL
         guard destination != url else { return url }
         let previousProjectFiles = projectTeXFiles
+        let oldStem = url.deletingPathExtension().lastPathComponent
+        let entry = catalog?.entry(forMainFile: url)
         let doc = documents.first { $0.url == url }
         guard doc?.hasMarkedText != true else { throw ProjectError.message("Finish the current input method composition before renaming.") }
         let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
@@ -1797,6 +1824,11 @@ final class ProjectStore: ObservableObject {
         if root == destination {
             maintainProjectRootDirectives(replacingExisting: true,
                 additionalFiles: previousProjectFiles.filter { $0 != url } + [destination])
+        }
+        if let entry {
+            let newStem = destination.deletingPathExtension().lastPathComponent
+            try? catalog?.relocate(entry.id, to: destination.standardizedFileURL.path,
+                                   displayName: entry.displayName == oldStem ? newStem : nil)
         }
         refreshIndex(immediate: true); persistSession(force: true); sessionStore.flush()
         return destination

@@ -6,13 +6,13 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 2.0.1** · macOS 14+ · Apple Silicon
+**Version 2.0.2** · macOS 14+ · Apple Silicon
 
-[下载 2.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.1)
+[下载 2.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.2)
 
-![QuillTeX 2.0.1 · 文档库](docs/demo/document-library.png)
+![QuillTeX 2.0.2 · 文档库](docs/demo/document-library.png)
 
-![QuillTeX 2.0.1 · 写作工作区](docs/demo/writing-workspace.png)
+![QuillTeX 2.0.2 · 写作工作区](docs/demo/writing-workspace.png)
 
 ## 功能
 
@@ -37,7 +37,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.1) 下载 `QuillTeX-2.0.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.2) 下载 `QuillTeX-2.0.2.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -109,13 +109,19 @@ TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主�
 
 以本地文档库作为启动主页：自动收录打开的 `.tex`，支持文件夹、Star、搜索、文件夹颜色、列表与 PDF 卡片视图、日期属性与排序方向切换，并可右键导出 PDF。All Documents、Starred、Templates 和文件夹以标签打开；All Documents 是临时主页标签，关闭最后一个标签会进入 New Tab。标签可拖动排序与关闭；Templates 可在应用内新建与编辑，无 PDF 预览与编译按钮；新建文档不选模板即为空白，并可设置保存位置，默认新建位置可在设置 → Library 中修改。设置改为标签，侧栏第 2 页显示设置分类；Completion 与 TeX Project 转为内置功能，无需单独启用。界面统一按钮、胶囊与卡片的玻璃材质及动画；新建文档、文件夹与确认弹窗改为简洁的浮动卡片。
 
-[更新说明](docs/versions/2.0.0.md) · [下载 2.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.1)
+[更新说明](docs/versions/2.0.0.md) · [下载 2.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.2)
 
 ### 2.0.1 · 文档排序与结构导航
 
 文件夹右键新增 Sort By 并持久保存排序，拖动文档后自动切为 Manual；Structure 目录跳转显示灰色行高亮且只影响当前窗格，不再自动切换编辑 / PDF 模式；PDF 导出、移入废纸篓、从文档库移除和打开文档时显示自动消失的玻璃小提示；文档标签右键可导出 PDF；编辑区插入光标缩短至字形高度；Structure 目录读取编译生成的 `.toc`，自定义环境（如第 N 题）也会显示。
 
-[更新说明](docs/versions/2.0.1.md) · [下载 2.0.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.1)
+[更新说明](docs/versions/2.0.1.md) · [下载 2.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.2)
+
+### 2.0.2 · 窗格保持与缩放
+
+打开文件或切换标签不再自动改变编辑 / PDF 窗格，重开工作区恢复上次模式；点击 Editor + PDF 重新等分两栏；PDF 缩放新增 Fit Height，Actual Size 为真正 100%；修复 New Tab 切换到其它标签时胶囊被压成细线的问题；Completion 与 TeX Project 不再作为插件，始终启用且无需配置，Esc 打开补全候选；设置保留 Compilation 与 About。
+
+[更新说明](docs/versions/2.0.2.md) · [下载 2.0.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.0.2)
 
 ## 本地构建
 

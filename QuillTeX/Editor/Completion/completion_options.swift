@@ -44,20 +44,10 @@ enum CompletionPaths {
     }
 }
 
-extension PluginManager {
-    var completionOptions: CompletionOptions {
-        let id = Self.completionID
-        return CompletionOptions(automatic: option("automatic", for: id), pairs: option("pairs", for: id),
-            environmentEnd: option("environmentEnd", for: id),
-            disabledCategories: Set(["commands", "environments", "packages", "classes", "labels", "citations", "paths"].filter { !option($0, for: id) }))
-    }
-
-}
-
 struct CompletionShortcut: Codable, Equatable {
     var key: String
     var modifiers: UInt
-    static let standard = CompletionShortcut(key: "\u{1b}", modifiers: NSEvent.ModifierFlags.option.rawValue)
+    static let standard = CompletionShortcut(key: "\u{1b}", modifiers: 0)
     var eventModifiers: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: modifiers) }
     var swiftModifiers: EventModifiers {
         var result: EventModifiers = []
@@ -75,8 +65,7 @@ struct CompletionShortcut: Codable, Equatable {
             (key == "\u{1b}" ? "Esc" : key == " " ? "Space" : key.uppercased())
     }
     var isValid: Bool {
-        key.count == 1 && !eventModifiers.intersection([.command, .control, .option]).isEmpty &&
-            !["\t", "\r", "\u{7f}"].contains(key)
+        key.count == 1 && !["\t", "\r", "\u{7f}"].contains(key)
     }
     init(key: String, modifiers: UInt) { self.key = key; self.modifiers = modifiers }
     init?(event: NSEvent) {
@@ -93,17 +82,5 @@ struct CompletionShortcut: Codable, Equatable {
             if let conflict = conflict(in: item.submenu) { return conflict }
         }
         return nil
-    }
-}
-
-extension PluginManager {
-    var completionShortcut: CompletionShortcut {
-        guard let value = stringPreference("shortcut", for: Self.completionID), let data = value.data(using: .utf8),
-              let shortcut = try? JSONDecoder().decode(CompletionShortcut.self, from: data), shortcut.isValid else { return .standard }
-        return shortcut
-    }
-    func setCompletionShortcut(_ shortcut: CompletionShortcut) {
-        guard shortcut.isValid, let data = try? JSONEncoder().encode(shortcut) else { return }
-        setStringPreference(String(data: data, encoding: .utf8), name: "shortcut", for: Self.completionID)
     }
 }

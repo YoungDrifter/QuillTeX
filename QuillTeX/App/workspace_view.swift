@@ -232,9 +232,7 @@ private struct EditorPane: View {
                     .quillFloatingCapsule()
                     .help(document.url.lastPathComponent)
                     .contextMenu {
-                        if let root = store.root {
-                            Button("Rename Project…") { store.requestRenameProject(root) }
-                        }
+                        Button("Rename") { store.requestRenameFile(document.url) }
                     }
             }
             Spacer(minLength: 8)

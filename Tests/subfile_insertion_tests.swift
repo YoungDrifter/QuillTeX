@@ -18,15 +18,6 @@ struct TeXProjectTests {
         try "Other\n".write(to: other, atomically: true, encoding: .utf8)
         try "% !TeX root = ../main.tex\nNested\n".write(to: nested, atomically: true, encoding: .utf8)
 
-        let plugin = PluginManager.shared
-        let previousEnabled = plugin.isEnabled(PluginManager.texProjectID)
-        let previousSetting = UserDefaults.standard.object(forKey: "plugins.subfiles.enabled")
-        defer {
-            plugin.setEnabled(previousEnabled, for: PluginManager.texProjectID)
-            if previousSetting == nil { UserDefaults.standard.removeObject(forKey: "plugins.subfiles.enabled") }
-        }
-        plugin.setEnabled(true, for: PluginManager.texProjectID)
-
         let store = ProjectStore(library: DocumentLibrary(directory: directory.appendingPathComponent("Library")),
                                  maintainsRootDirectives: false)
         store.openProject(root, explicitRoot: true)

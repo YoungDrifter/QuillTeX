@@ -8,7 +8,6 @@ private struct TeXRoleBounds: PreferenceKey {
 }
 
 struct TeXProjectList: View {
-    @ObservedObject private var plugins = PluginManager.shared
     @ObservedObject var store: ProjectStore
     @State private var dragged: URL?
     @State private var target: ProjectStore.TeXFileRole?
@@ -78,8 +77,7 @@ struct TeXProjectList: View {
             HStack(spacing: 7) {
                 Image(systemName: role == .main ? "scope" : "doc.text")
                     .font(.system(size: 12)).frame(width: ChromeMetrics.sidebarIconWidth)
-                Text(plugins.option("extensions", for: PluginManager.texProjectID)
-                     ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent)
+                Text(url.deletingPathExtension().lastPathComponent)
                     .font(.system(size: 12)).lineLimit(2).truncationMode(.middle)
                 Spacer(minLength: 0)
             }
@@ -90,9 +88,8 @@ struct TeXProjectList: View {
         .opacity(dragged == url ? 0.45 : 1)
         .help(store.relativePath(url))
         .contextMenu {
-            if let root = store.root {
-                Button("Rename Project…") { store.requestRenameProject(root) }
-            }
+            Button("Rename") { store.requestRenameFile(url) }
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
         .highPriorityGesture(DragGesture(minimumDistance: 6, coordinateSpace: .named("texRoleList"))
             .onChanged { value in

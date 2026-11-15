@@ -6,7 +6,7 @@ enum SettingsStyle {
     static let windowSize = CGSize(width: 780, height: 600)
     static let minimumSize = CGSize(width: 720, height: 560)
     static let sidebarWidth: CGFloat = 184
-    static let padding: CGFloat = 28
+    static let padding: CGFloat = 24
     static let rowHeight: CGFloat = 40
     static let surface = Color.white
     static let secondarySurface = Palette.subtleSurface
@@ -22,16 +22,12 @@ struct SettingsCategory<ID: Hashable>: Identifiable {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case compilation = "Compilation"
-    case automation = "Automation"
-    case library = "Library"
     case about = "About"
     var id: String { rawValue }
     var title: String { rawValue }
     var symbol: String {
         switch self {
         case .compilation: "hammer"
-        case .automation: "clock"
-        case .library: "books.vertical"
         case .about: "info.circle"
         }
     }
@@ -105,11 +101,11 @@ private struct SettingsCategoryButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 14)).frame(width: 18)
+                Image(systemName: symbol).font(.system(size: 13)).frame(width: 18)
                 Text(title).font(.system(size: 13, weight: selected ? .medium : .regular))
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10).frame(height: 36)
+            .padding(.horizontal, 10).frame(height: 32)
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(QuillRowButtonStyle(selected: selected))
@@ -127,7 +123,7 @@ struct SettingsPage<Content: View>: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(title).font(.system(size: 24, weight: .semibold))
+                    Text(title).font(.system(size: 20, weight: .semibold))
                     if let subtitle {
                         Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

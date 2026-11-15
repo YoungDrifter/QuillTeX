@@ -23,6 +23,18 @@ struct AboutSettingsPane: View {
             }
             .frame(maxWidth: .infinity).padding(.vertical, 8)
 
+            SettingsCard(title: "Links") {
+                SettingsRow(title: "GitHub", subtitle: "Source code, releases and issue reports.") {
+                    Button {
+                        if let url = URL(string: "https://github.com/YoungDrifter/QuillTeX") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    } label: {
+                        Label("YoungDrifter/QuillTeX", systemImage: "arrow.up.right")
+                    }.buttonStyle(SettingsActionStyle())
+                }
+            }
+
             SettingsCard(title: "Updates") {
                 SettingsRow(title: "Latest version") {
                     HStack(spacing: 16) {

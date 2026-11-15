@@ -88,8 +88,32 @@ struct WorkspaceSessionTests {
               "PDF Only to Editor + PDF requests the split once")
         let versionWhileSplit = reopened.splitLayoutVersion
         reopened.showEditorAndPDF()
-        check(reopened.paneMode == .split && reopened.splitLayoutVersion == versionWhileSplit,
-              "clicking the active Editor + PDF never re-equalizes the divider")
+        check(reopened.paneMode == .split && reopened.splitLayoutVersion == versionWhileSplit + 1,
+              "clicking Editor + PDF asks the split to equalize again")
+        // Opening a file must not move the reader out of the pane they chose.
+        reopened.paneMode = .preview
+        reopened.openSource(child)
+        check(reopened.paneMode == .preview, "opening a file keeps the current pane mode")
+        reopened.persistSession()
+        reopened.sessionStore.flush()
+        let previewRestored = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
+        previewRestored.openProject(root, explicitRoot: true)
+        check(previewRestored.paneMode == .preview, "PDF-only survives reopening the workspace")
+        // Leaving the New Tab page keeps its capsule in the strip until the top
+        // bar finishes the fade, so the layout never squashes it into a line.
+        let documentTab = WorkspaceTab(path: root, title: "main")
+        reopened.tabs.append(documentTab)
+        reopened.showNewTabPage()
+        let newTabID = reopened.tabs.first { $0.path == nil && !$0.isSettings && !$0.isLibrary }?.id
+        check(newTabID != nil, "the New Tab page opens a transient tab")
+        reopened.activateTab(documentTab)
+        if let newTabID {
+            check(reopened.fadingTabIDs.contains(newTabID), "leaving New Tab marks the capsule for fading")
+            check(reopened.tabs.contains { $0.id == newTabID }, "the fading capsule stays until the fade ends")
+            reopened.finishFadingTab(newTabID)
+            check(!reopened.tabs.contains { $0.id == newTabID }, "finishing the fade removes the tab")
+        }
+
         let session = reopened.sessionStore.load(root: root)!
         var invalid = session
         invalid.version = 99

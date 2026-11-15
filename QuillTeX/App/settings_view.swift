@@ -6,7 +6,6 @@ struct SettingsView: View {
 
     @ObservedObject private var settings: BuildSettings
     @ObservedObject private var navigation = SettingsNavigation.shared
-    @State private var libraryDirectory: URL?
     @FocusState private var focused: Field?
     @State private var showingCustomStrategy = false
     @State private var draftName = ""
@@ -30,8 +29,6 @@ struct SettingsView: View {
                        showsSidebar: !embedded) {
             switch navigation.section {
             case .compilation: compilation
-            case .automation: automation
-            case .library: library
             case .about: about
             }
         }
@@ -107,15 +104,10 @@ struct SettingsView: View {
                     Spacer()
                 }.padding(.vertical, 10)
             }
-        }
-    }
-
-    private var automation: some View {
-        SettingsPage(title: "Automation", subtitle: "Configure saving and compilation.") {
-            SettingsCard(title: "Manual mode") {
+            SettingsCard(title: "After saving") {
                 SettingsRow(title: "Compile after saving", subtitle: "Compile the current document target after Save or Save All.") {
                     Toggle("Compile after saving", isOn: $settings.compileOnSave)
-                        .labelsHidden().toggleStyle(.switch)
+                        .labelsHidden().toggleStyle(.switch).tint(.blue)
                 }
             }
             SettingsCard(title: "After typing") {
@@ -132,26 +124,6 @@ struct SettingsView: View {
                 }
             }
         }
-    }
-
-    private var library: some View {
-        SettingsPage(title: "Library", subtitle: "Choose where new documents are created.") {
-            SettingsCard(title: "New documents") {
-                SettingsRow(title: "Default location",
-                            subtitle: (libraryDirectory ?? LibraryPreferences.shared.newDocumentDirectory).path) {
-                    HStack(spacing: 8) {
-                        Button("Choose…") { chooseLibraryFolder() }
-                            .buttonStyle(SettingsActionStyle())
-                        Button("Reset") {
-                            LibraryPreferences.shared.resetToDefault()
-                            libraryDirectory = LibraryPreferences.shared.newDocumentDirectory
-                        }
-                        .buttonStyle(SettingsActionStyle())
-                    }
-                }
-            }
-        }
-        .onAppear { libraryDirectory = LibraryPreferences.shared.newDocumentDirectory }
     }
 
     private var about: some View {
@@ -206,20 +178,5 @@ struct SettingsView: View {
         panel.message = "Choose the folder that contains latexmk"
         panel.prompt = "Use Folder"
         if panel.runModal() == .OK, let url = panel.url { settings.texBinDirectory = url.path }
-    }
-
-    private func chooseLibraryFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = libraryDirectory ?? LibraryPreferences.shared.newDocumentDirectory
-        panel.message = "Choose where new documents are created"
-        panel.prompt = "Use Folder"
-        if panel.runModal() == .OK, let url = panel.url {
-            LibraryPreferences.shared.setDirectory(url)
-            libraryDirectory = url
-        }
     }
 }

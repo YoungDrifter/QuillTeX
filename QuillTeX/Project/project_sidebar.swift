@@ -97,7 +97,7 @@ struct ProjectSidebar: View {
             .padding(.horizontal, 16)
             .padding(.top, 18)
             .padding(.bottom, 16)
-            ForEach(SettingsSection.allCases.filter { $0 != .about }) { section in
+            ForEach(SettingsSection.allCases) { section in
                 let selected = settingsNavigation.section == section
                 Button {
                     settingsNavigation.section = section
@@ -308,11 +308,6 @@ private struct DocumentSidebarHeader: View {
                 .padding(.horizontal, 12)
         }
         .accessibilityElement(children: .combine)
-        .contextMenu {
-            if let root = store.root {
-                Button("Rename Project…") { store.requestRenameProject(root) }
-            }
-        }
     }
 }
 
@@ -472,9 +467,6 @@ private struct OutlineRow: View {
             .contextMenu {
                 if let url = node.url {
                     if mode != .folder {
-                        if node.kind != .resource, let root = store.root {
-                            Button("Rename Project…") { store.requestRenameProject(root) }
-                        }
                         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                         if node.kind == .resource { Button("Open with Default App") { NSWorkspace.shared.open(url) } }
                     }
@@ -561,16 +553,10 @@ private struct FolderRowActions: ViewModifier {
                                         DispatchQueue.main.async { store.beginSidebarCreation(folder: true, in: url) }
                                     }
                                 }
-                                if node.kind == .source, let root = store.root {
-                                    action("Rename Project…", icon: "pencil") {
-                                        showing = false
-                                        DispatchQueue.main.async { store.requestRenameProject(root) }
-                                    }
-                                }
                                 if node.kind == .source || node.kind == .resource {
                                     action("Rename", icon: "pencil") {
                                         showing = false
-                                        DispatchQueue.main.async { store.beginSidebarRename(url) }
+                                        DispatchQueue.main.async { store.requestRenameFile(url) }
                                     }
                                     action("Move to Trash", icon: "trash") { deleting = true }
                                 }
@@ -648,7 +634,7 @@ private struct SidebarNameBounds: PreferenceKey {
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
 }
 
-private struct SidebarInlineNameEditor: View {
+struct SidebarInlineNameEditor: View {
     @ObservedObject var store: ProjectStore
     let id: UUID
     var body: some View {

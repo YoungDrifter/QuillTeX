@@ -57,11 +57,6 @@ extension SourceTextView {
     var insertingCompletion: Bool { get { completionSession.insertingCompletion } set { completionSession.insertingCompletion = newValue } }
     /// Completion is a native part of the editor now.
     var completionEnabled: Bool { true }
-    @objc func completionSettingsChanged(_ notification: Notification) {
-        guard notification.object as? String == PluginManager.completionID else { return }
-        closeCandidates(); dismissCompletions(); endSnippet()
-        if completionEnabled { refreshInlineHint() }
-    }
     func closeCandidates() {
         wantsCandidates = false; popupSuggestion = nil; completionPopup?.close()
     }
@@ -107,10 +102,7 @@ extension SourceTextView {
     }
 
     func completionViewDidMoveToWindow() {
-        NotificationCenter.default.removeObserver(self, name: PluginManager.settingsChanged, object: nil)
-        if window != nil {
-            NotificationCenter.default.addObserver(self, selector: #selector(completionSettingsChanged(_:)), name: PluginManager.settingsChanged, object: nil)
-        } else { closeCandidates(); dismissCompletions(); endSnippet() }
+        if window == nil { closeCandidates(); dismissCompletions(); endSnippet() }
     }
     // MARK: - Inline completion
 
@@ -129,7 +121,7 @@ extension SourceTextView {
             dismissCompletions()
             return
         }
-        let options = PluginManager.shared.completionOptions
+        let options = CompletionOptions()
         let root = completionRoot()
         let text = string, caret = selectedRange()
         if let previous = completionRequest, previous.caret == caret, previous.revision == contentRevision, previous.length == (text as NSString).length { return }
@@ -245,7 +237,7 @@ extension SourceTextView {
 
     @discardableResult
     func insert(candidate: String, suggestion: LaTeXCompletion.Suggestion) -> Bool {
-        guard completionEnabled, !hasMarkedText(), PluginManager.shared.completionOptions.allows(suggestion.context) else { return false }
+        guard completionEnabled, !hasMarkedText(), CompletionOptions().allows(suggestion.context) else { return false }
         let insertion = LaTeXCompletion.insertion(for: candidate, suggestion: suggestion, in: string)
         dismissCompletions(); endSnippet()
         let expected = NSMutableString(string: string)
@@ -272,11 +264,11 @@ extension SourceTextView {
 
     @discardableResult
     func acceptInlineHint() -> Bool {
-        guard completionEnabled, PluginManager.shared.completionOptions.automatic else { return false }
+        guard completionEnabled, CompletionOptions().automatic else { return false }
         guard let hint = inlineHint else {
             guard !hasMarkedText(), selectedRange().length == 0,
                   let edit = delimiterHint ?? LaTeXCompletion.delimiterHint(in: string, at: selectedRange().location),
-                  (edit.text.contains("\\end{") ? PluginManager.shared.completionOptions.environmentEnd : PluginManager.shared.completionOptions.pairs) else { return false }
+                  (edit.text.contains("\\end{") ? CompletionOptions().environmentEnd : CompletionOptions().pairs) else { return false }
             dismissCompletions(); endSnippet()
             breakUndoCoalescing()
             undoManager?.beginUndoGrouping()
@@ -296,7 +288,6 @@ extension SourceTextView {
     func completionKeyDown(_ event: NSEvent) -> Bool {
         
         if completionEnabled, !hasMarkedText() {
-            if PluginManager.shared.completionShortcut.matches(event) { showCandidates(); return true }
             if completionPopup?.isVisible == true {
                 switch event.keyCode {
                 case 125: completionPopup?.move(1); return true
@@ -306,6 +297,9 @@ extension SourceTextView {
                 default: break
                 }
             }
+            // Esc shows candidates when nothing is open; with the list visible
+            // the case above already closes it.
+            if CompletionShortcut.standard.matches(event) { showCandidates(); return true }
         }
         if completionEnabled, !hasMarkedText(), event.keyCode == 48 {
             if event.modifierFlags.contains(.shift) {
@@ -426,7 +420,7 @@ extension SourceTextView {
         }
     }
     func completionHandlesInsertion(_ input: Any, range: NSRange) -> Bool {
-        if completionEnabled, PluginManager.shared.completionOptions.pairs, !insertingCompletion, !hasMarkedText(), let text = input as? String,
+        if completionEnabled, CompletionOptions().pairs, !insertingCompletion, !hasMarkedText(), let text = input as? String,
            let edit = LaTeXCompletion.typingInsertion(text, range: range, in: string, expandPairs: false), edit.text.isEmpty {
             let selection = edit.placeholders.first.map { NSRange(location: edit.range.location + $0.location, length: $0.length) }
                 ?? NSRange(location: edit.range.location + edit.finalOffset, length: 0)
@@ -438,7 +432,7 @@ extension SourceTextView {
     }
     func completionDeletesPair() -> Bool {
         let selection = selectedRange(), ns = string as NSString
-        if completionEnabled, PluginManager.shared.completionOptions.pairs, !hasMarkedText(), selection.length == 0, selection.location > 0, selection.location < ns.length {
+        if completionEnabled, CompletionOptions().pairs, !hasMarkedText(), selection.length == 0, selection.location > 0, selection.location < ns.length {
             let around = ns.substring(with: NSRange(location: selection.location - 1, length: 2))
             if ["{}", "()", "[]"].contains(around),
                LaTeXCompletion.typingInsertion(String(around.suffix(1)), range: selection, in: string)?.text == "" {

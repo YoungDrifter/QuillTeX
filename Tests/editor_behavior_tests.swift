@@ -98,13 +98,7 @@ struct EditorBehaviorTests {
         surface.textView.setSelectedRange(originalRange)
         var editNotifications = 0
         let editObservation = store.objectWillChange.sink { editNotifications += 1 }
-        // Completion is native now; keep its hints out of this single-edit count.
-        let plugins = PluginManager.shared
-        let hintIDs = ["automatic", "pairs", "environmentEnd"]
-        let savedHints = hintIDs.map { ($0, plugins.option($0, for: PluginManager.completionID)) }
-        for id in hintIDs { plugins.setOption(false, id: id, for: PluginManager.completionID) }
         surface.textView.insertText("中文 😀", replacementRange: originalRange)
-        for (id, value) in savedHints { plugins.setOption(value, id: id, for: PluginManager.completionID) }
         editObservation.cancel()
         check(editNotifications >= 1, "one native edit publishes a project change")
         editObservation.cancel()
