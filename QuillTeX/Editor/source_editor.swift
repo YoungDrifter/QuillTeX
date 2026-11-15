@@ -24,7 +24,15 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
     private var highlightScan: Task<[LaTeXHighlighter.Span], Never>?
     private var highlightGeneration = 0
     private var initialPositionRestorePending = true
+    private var restoringScrollAfterWindowReturn = false
+    private var lastLayoutWidth: CGFloat = 0
+    private var widthRestoreGeneration = 0
+    /// Last reading anchor captured while scrolling; AppKit may reset the clip
+    /// bounds before `layout()` runs, so the anchor cannot be read there.
+    private var lastTopVisibleCharacter: Int?
     private var changingAttributes = false
+    /// Guards the invariant fix against re-entrant layout while it corrects frames.
+    private var isAligningHorizontal = false
     private var lineIndex = SourceLineIndex()
     private var textRevision = 0
     private var committedRevision = 0
@@ -92,7 +100,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 16, height: ChromeMetrics.paneHeaderHeight)
+        textView.textContainerInset = NSSize(width: 8, height: ChromeMetrics.paneHeaderHeight)
         textView.isRichText = false; textView.importsGraphics = false
         textView.documentUndoManager = document.undoManager
         textView.allowsUndo = true; textView.usesFindBar = true
@@ -149,13 +157,14 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
             guard let self, self.initialPositionRestorePending else { return }
             self.initialPositionRestorePending = false
             self.layoutSubtreeIfNeeded()
+            let restoredOrigin = NSPoint(x: self.horizontalContentOrigin, y: max(0, restoredScrollOrigin.y))
             if restoresEditorPosition {
                 if let layout = self.textView.layoutManager, let container = self.textView.textContainer {
-                    layout.ensureLayout(forBoundingRect: NSRect(origin: restoredScrollOrigin, size: self.contentView.bounds.size), in: container)
+                    layout.ensureLayout(forBoundingRect: NSRect(origin: restoredOrigin, size: self.contentView.bounds.size), in: container)
                 }
-                self.contentView.scroll(to: restoredScrollOrigin)
+                self.contentView.scroll(to: restoredOrigin)
             } else {
-                self.contentView.scroll(to: restoredScrollOrigin)
+                self.contentView.scroll(to: restoredOrigin)
                 // A non-zero origin is a position to preserve (for example after
                 // switching pane modes). Only bring the caret into view when the
                 // document is opening at the very top.
@@ -164,16 +173,132 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
                 }
             }
             self.reflectScrolledClipView(self.contentView)
+            self.alignHorizontalOrigin()
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Keep the line at the top in place when the editor changes width. Without
+    /// this, re-wrapping after Editor Only → Editor + PDF leaves the same pixel
+    /// offset, so the visible text appears to jump upwards.
+    override func layout() {
+        let previousWidth = lastLayoutWidth
+        let anchor = previousWidth > 0 && abs(bounds.width - previousWidth) > 0.5
+            ? (lastTopVisibleCharacter ?? topVisibleCharacterOffset()) : nil
+        super.layout()
+        lastLayoutWidth = bounds.width
+        alignHorizontalOrigin()
+        guard let anchor else { return }
+        // Text re-wrapping settles after the scroll view lays out its new width;
+        // restore on the next pass so the line position uses the new layout.
+        widthRestoreGeneration += 1
+        let generation = widthRestoreGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.widthRestoreGeneration == generation, self.window != nil else { return }
+            self.layoutSubtreeIfNeeded()
+            self.restoreTopVisibleCharacter(anchor)
+            self.lastTopVisibleCharacter = anchor
+        }
+    }
+
+    /// First character visible at the top of the editor. Used to keep the reading
+    /// position stable across width changes.
+    func topVisibleCharacterOffset() -> Int? {
+        let visible = contentView.bounds
+        guard visible.origin.y > 0, visible.width > 0, visible.height > 0,
+              let layout = textView.layoutManager, let container = textView.textContainer else { return nil }
+        let rect = NSRect(x: visible.minX - textView.textContainerOrigin.x,
+                          y: visible.minY - textView.textContainerOrigin.y,
+                          width: visible.width, height: visible.height)
+        let glyphs = layout.glyphRange(forBoundingRect: rect, in: container)
+        guard glyphs.length > 0 else { return nil }
+        let chars = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        return min(chars.location, (textView.string as NSString).length)
+    }
+
+    private func restoreTopVisibleCharacter(_ offset: Int) {
+        guard let layout = textView.layoutManager, let container = textView.textContainer else { return }
+        let length = (textView.string as NSString).length
+        let position = min(max(0, offset), length)
+        layout.ensureLayout(for: container)
+        let line: NSRect
+        if position < layout.numberOfGlyphs {
+            let glyph = layout.glyphIndexForCharacter(at: position)
+            line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        } else {
+            line = layout.extraLineFragmentRect
+        }
+        let target = max(0, line.minY + textView.textContainerOrigin.y)
+        guard abs(contentView.bounds.origin.y - target) > 0.5 else { return }
+        contentView.scroll(to: NSPoint(x: horizontalContentOrigin, y: target))
+        reflectScrolledClipView(contentView)
+    }
+
+    /// NSScrollView puts the line-number ruler on top of the left edge and
+    /// compensates by scrolling the clip view left by exactly the ruler width.
+    /// The document view itself must stay at x = 0. AppKit breaks that second
+    /// half of the invariant while a pane is collapsed to zero width (it leaves
+    /// `documentView.frame.origin.x = -ruleThickness` behind when the pane comes
+    /// back), which shifted every line under the gutter and clipped its first
+    /// characters. Always restore both halves explicitly instead of reading the
+    /// (possibly stale) tiling back.
+    private var horizontalContentOrigin: CGFloat {
+        -(verticalRulerView?.ruleThickness ?? 0)
+    }
+
+    /// Put the editor back on the ruler-aligned horizontal origin: document view
+    /// at x = 0 and clip view scrolled left by the ruler width. The editor never
+    /// scrolls sideways, so every other horizontal value is a stale layout.
+    private func alignHorizontalOrigin() {
+        guard !isAligningHorizontal else { return }
+        isAligningHorizontal = true
+        defer { isAligningHorizontal = false }
+        if abs(textView.frame.origin.x) > 0.01 {
+            var frame = textView.frame
+            frame.origin.x = 0
+            textView.frame = frame
+        }
+        let wanted = horizontalContentOrigin
+        guard abs(contentView.bounds.origin.x - wanted) > 0.01 else { return }
+        contentView.scroll(to: NSPoint(x: wanted, y: contentView.bounds.origin.y))
+        reflectScrolledClipView(contentView)
+    }
+
+    override func tile() {
+        super.tile()
+        alignHorizontalOrigin()
+    }
+
+    /// Collapsing a split pane takes the editor out of its window, which can
+    /// reset the clip view to the top. Put the saved position back when the
+    /// editor returns, so switching to PDF Only and back never jumps the text.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, !initialPositionRestorePending, let source else { return }
+        let origin = NSPoint(x: horizontalContentOrigin, y: max(0, source.scrollOrigin.y))
+        guard origin.y != 0 else { return }
+        restoringScrollAfterWindowReturn = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.restoringScrollAfterWindowReturn = false
+            guard self.window != nil else { return }
+            self.layoutSubtreeIfNeeded()
+            self.contentView.scroll(to: origin)
+            self.reflectScrolledClipView(self.contentView)
+        }
+    }
+
     @objc private func didScroll() {
         // Collapsing the split item removes the editor from its window and can
         // reset the clip bounds to zero. Do not overwrite the position the user
         // will return to when the pane is shown again.
+        if restoringScrollAfterWindowReturn || isAligningHorizontal { return }
         guard window != nil else { return }
         textView.closeCandidates()
-        source?.scrollOrigin = contentView.bounds.origin
+        alignHorizontalOrigin()
+        // The clip view can sit above the document while a pane is collapsed;
+        // negative offsets are not reading positions and must not be persisted.
+        source?.scrollOrigin = NSPoint(x: 0, y: max(0, contentView.bounds.origin.y))
+        if let top = topVisibleCharacterOffset() { lastTopVisibleCharacter = top }
         verticalRulerView?.needsDisplay = true
         store?.scheduleSessionSave()
     }

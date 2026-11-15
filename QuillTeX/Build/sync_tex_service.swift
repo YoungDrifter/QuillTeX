@@ -24,13 +24,13 @@ enum SyncTeXService {
 
         var errorDescription: String? {
             switch self {
-            case .missingPDF: return "Build the document before locating it in the PDF."
-            case .missingSyncData: return "SyncTeX data is missing. Rebuild the document to enable source–PDF navigation."
-            case .unavailableTool: return "The SyncTeX tool is unavailable. Check the TeX installation."
-            case .timedOut: return "SyncTeX took too long. Try locating the position again."
-            case .noMatch: return "No matching position was found. Rebuild the document if the source has changed."
-            case .invalidResult: return "SyncTeX returned an invalid position. Rebuild the document and try again."
-            case .commandFailed(let detail): return detail.isEmpty ? "SyncTeX could not locate this position." : "SyncTeX could not locate this position: \(detail)"
+            case .missingPDF: return "Build the PDF first"
+            case .missingSyncData: return "SyncTeX data missing — rebuild"
+            case .unavailableTool: return "SyncTeX tool unavailable"
+            case .timedOut: return "SyncTeX timed out"
+            case .noMatch: return "SyncTeX found no match"
+            case .invalidResult: return "SyncTeX position invalid"
+            case .commandFailed(let detail): return detail.isEmpty ? "SyncTeX not found" : "SyncTeX: \(detail)"
             }
         }
     }

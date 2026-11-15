@@ -66,15 +66,14 @@ final class DocumentLibrary: ObservableObject {
                 let destination = templatesDirectory.appendingPathComponent(source.lastPathComponent)
                 if !FileManager.default.fileExists(atPath: destination.path) {
                     try FileManager.default.copyItem(at: source, to: destination)
-                } else if source.lastPathComponent == "blank.tex",
-                          try Data(contentsOf: source).isEmpty,
-                          try Data(contentsOf: destination) == Data("\\documentclass[UTF8]{ctexart}\n\\begin{document}\n\n\\end{document}\n".utf8) {
-                    // Update only the previous shipped blank, preserving customized templates.
-                    try Data().write(to: destination, options: .atomic)
                 }
             }
             do { try restoreRetiredTemplates() }
             catch { storageError = error.localizedDescription }
+            // Versions before 1.2.1 shipped a zero-byte blank.tex (and 空白文稿.tex)
+            // as built-in templates. That file is removed once on upgrade; a blank
+            // template the user creates later, even an empty one, must survive.
+            removeLegacyBlankTemplates()
             reloadTemplates()
             if FileManager.default.fileExists(atPath: historyURL.path) {
                 do { recents = try JSONDecoder().decode([RecentDocument].self, from: Data(contentsOf: historyURL)) }
@@ -82,11 +81,29 @@ final class DocumentLibrary: ObservableObject {
             }
         } catch { storageError = error.localizedDescription }
     }
+
+    /// One-time upgrade cleanup for the retired built-in blank template. Only a
+    /// zero-byte file that matches the previously shipped template is removed; a
+    /// customized blank keeps its content and stays a usable template. The marker
+    /// keeps a blank created afterwards (New Template starts empty) from ever being
+    /// deleted on a later launch.
+    private func removeLegacyBlankTemplates() {
+        let marker = directory.appendingPathComponent("LegacyBlankTemplateCleanup")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        for name in ["blank.tex", "空白文稿.tex"] {
+            let url = templatesDirectory.appendingPathComponent(name)
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values?.isRegularFile == true, (values?.fileSize ?? -1) == 0 else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+        try? Data().write(to: marker, options: .atomic)
+    }
+
     /// Rename previous built-ins without overwriting a customized template.
     private func migrateTemplateNames() throws {
         let names = [("basic_article", "article"), ("basic_report", "report"),
                      ("basic_book", "book"), ("basic_letter", "letter"),
-                     ("basic_beamer", "beamer"), ("空白文稿", "blank")]
+                     ("basic_beamer", "beamer")]
         for (oldName, name) in names {
             let aliases = oldName.hasPrefix("basic_") ? [oldName, oldName.replacingOccurrences(of: "_", with: "-")] : [oldName]
             for alias in aliases {
@@ -160,11 +177,54 @@ final class DocumentLibrary: ObservableObject {
         guard template.url.deletingLastPathComponent().standardizedFileURL == templatesDirectory.standardizedFileURL else {
             throw CocoaError(.fileWriteNoPermission)
         }
-        try FileManager.default.removeItem(at: template.url)
+        guard FileManager.default.fileExists(atPath: template.url.path) else { return }
+        try FileManager.default.trashItem(at: template.url, resultingItemURL: nil)
         reloadTemplates()
     }
     func source(for template: DocumentTemplate) throws -> String {
         try String(contentsOf: template.url, encoding: .utf8)
+    }
+    /// Create a new template inside the app's template library.
+    @discardableResult
+    func createTemplate(named rawName: String, source: String = "") throws -> DocumentTemplate {
+        var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.lowercased().hasSuffix(".tex") { name = String(name.dropLast(4)) }
+        guard !name.isEmpty, !name.contains("/"), !name.contains(":"), !name.hasPrefix(".") else {
+            throw NSError(domain: "TemplateName", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Enter a valid template name."])
+        }
+        let url = availableTemplateURL(named: name)
+        try source.write(to: url, atomically: true, encoding: .utf8)
+        reloadTemplates()
+        return DocumentTemplate(url: url)
+    }
+
+    /// Rename a template file in the local template folder.
+    @discardableResult
+    func renameTemplate(_ template: DocumentTemplate, to rawName: String) throws -> DocumentTemplate {
+        guard template.url.deletingLastPathComponent().standardizedFileURL == templatesDirectory.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.lowercased().hasSuffix(".tex") { name = String(name.dropLast(4)) }
+        guard !name.isEmpty, !name.contains("/"), !name.contains(":"), !name.hasPrefix(".") else {
+            throw NSError(domain: "TemplateName", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Enter a valid template name."])
+        }
+        guard name != template.title else { return template }
+        let destination = availableTemplateURL(named: name)
+        try FileManager.default.moveItem(at: template.url, to: destination)
+        reloadTemplates()
+        return DocumentTemplate(url: destination)
+    }
+
+    /// Save an edited template back to the local template folder.
+    func saveTemplate(_ template: DocumentTemplate, source: String) throws {
+        guard template.url.deletingLastPathComponent().standardizedFileURL == templatesDirectory.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try source.write(to: template.url, atomically: true, encoding: .utf8)
+        reloadTemplates()
     }
     /// Import a copy, preserving both the source and any existing template with the same name.
     @discardableResult func importTemplate(_ source: URL) throws -> URL {

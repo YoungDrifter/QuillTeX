@@ -59,20 +59,19 @@ struct TeXProjectTests {
               "root-looking text in a verbatim block is left alone")
 
         store.sidebarMode = .tex
-        plugin.setEnabled(false, for: PluginManager.texProjectID)
-        check(store.sidebarMode == .folder && !store.texProjectEnabled,
-              "disabling TeX Project removes its sidebar mode")
+        check(store.texProjectEnabled && store.sidebarMode == .tex,
+              "TeX Project is native and keeps its sidebar mode")
 
         let standalone = directory.appendingPathComponent("standalone.tex")
         try "Standalone\n".write(to: standalone, atomically: true, encoding: .utf8)
         let plainStore = ProjectStore(library: store.library, maintainsRootDirectives: false)
         plainStore.openProject(root, explicitRoot: true)
         plainStore.openSource(standalone)
-        check(plainStore.root == standalone && plainStore.activeDocument?.url == standalone,
-              "without the plugin an unlinked TeX file becomes the compile target")
+        check(plainStore.root == root && plainStore.activeDocument?.url == standalone,
+              "native project keeps the main file while editing an unlinked source")
         plainStore.openProject(linked)
         check(plainStore.root == root && plainStore.activeDocument?.url == linked,
-              "without the plugin a file with a root comment still opens its declared target")
+              "native project resolves a root directive to its declared target")
         plainStore.finishClosing()
 
         print("PASS: \(checks) TeX-project assertions")

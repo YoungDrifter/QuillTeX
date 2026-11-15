@@ -25,7 +25,7 @@
             <key>CFBundleTypeName</key>
             <string>LaTeX Source</string>
             <key>CFBundleTypeIconFile</key>
-            <string>AppIcon.icns</string>
+            <string>QuillTeXIcon.icns</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>LSHandlerRank</key>
@@ -48,7 +48,7 @@
             <key>UTTypeDescription</key>
             <string>LaTeX Source</string>
             <key>UTTypeIconFile</key>
-            <string>AppIcon.icns</string>
+            <string>QuillTeXIcon.icns</string>
             <key>UTTypeConformsTo</key>
             <array><string>public.plain-text</string></array>
             <key>UTTypeTagSpecification</key>

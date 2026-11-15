@@ -100,7 +100,10 @@ struct SyncTeXServiceTests {
             _ = try await SyncTeXService.forward(line: 9, file: source, pdf: pdf, executable: executable.path)
             fatalError("FAILED: missing SyncTeX data needs a clear reason")
         } catch SyncTeXService.Failure.missingSyncData { checks += 1 }
-        check(SyncTeXService.Failure.noMatch.localizedDescription.contains("Rebuild"), "unmatched positions provide a useful next action")
+        check(SyncTeXService.Failure.noMatch.localizedDescription.contains("SyncTeX"),
+              "unmatched positions name the failing feature")
+        check(SyncTeXService.Failure.missingSyncData.localizedDescription.count <= 40,
+              "SyncTeX hints stay short enough for the preview capsule")
         print("PASS: \(checks) SyncTeX assertions")
     }
 }

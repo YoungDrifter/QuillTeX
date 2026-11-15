@@ -89,6 +89,11 @@ struct TeXProjectList: View {
         .buttonStyle(QuillRowButtonStyle(selected: store.activeDocument?.url == url))
         .opacity(dragged == url ? 0.45 : 1)
         .help(store.relativePath(url))
+        .contextMenu {
+            if let root = store.root {
+                Button("Rename Project…") { store.requestRenameProject(root) }
+            }
+        }
         .highPriorityGesture(DragGesture(minimumDistance: 6, coordinateSpace: .named("texRoleList"))
             .onChanged { value in
                 dragged = url
