@@ -436,7 +436,17 @@ final class SourceTextView: NSTextView {
     }
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         guard sourceLineHighlightRange == nil else { return }
-        super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
+        // The caret otherwise spans the whole line fragment, including the 5 pt
+        // paragraph line spacing, and reads as an unusually long bar. Keep it
+        // hugged to the glyph height instead.
+        var caret = rect
+        if let font {
+            let glyphHeight = ceil(font.ascender - font.descender)
+            if glyphHeight > 0, caret.height > glyphHeight {
+                caret.size.height = glyphHeight
+            }
+        }
+        super.drawInsertionPoint(in: caret, color: color, turnedOn: flag)
     }
     var documentUndoManager = UndoManager()
     override var undoManager: UndoManager? { documentUndoManager }

@@ -633,8 +633,12 @@ private struct SidebarTrashForm: View {
         // Run after the button action so the close confirmation can present
         // without blocking SwiftUI's update pass.
         DispatchQueue.main.async {
-            do { if try store.trashProjectFile(url) { onClose() } }
-            catch { self.error = error.localizedDescription }
+            do {
+                if try store.trashProjectFile(url) {
+                    QuillToast.shared.show("Moved \(url.lastPathComponent) to Trash")
+                    onClose()
+                }
+            } catch { self.error = error.localizedDescription }
         }
     }
 }

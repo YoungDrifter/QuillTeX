@@ -16,7 +16,7 @@ final class ProjectIndexCache: @unchecked Sendable {
             let declarations = ProjectDeclarationScanner.declarations(in: clean)
             commands = declarations.commands
             environments = declarations.environments
-            tokens = ProjectIndexer.matches(#"\\(part|chapter|section|subsection|subsubsection|label|input|include|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)"#, in: clean)
+            tokens = ProjectIndexer.matches(#"\\(part|chapter|section|subsection|subsubsection|label|input|include|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)|\\addcontentsline\s*\{toc\}\s*\{(part|chapter|section|subsection|subsubsection)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}"#, in: clean)
         }
     }
     struct Inventory {
@@ -145,6 +145,160 @@ struct ProjectIndexer {
         return path == base || path.hasPrefix(base + "/")
     }
 
+    /// Turns the raw heading a custom environment writes to the .toc into a
+    /// readable title. The exercise package stores
+    /// `\exercise@name{第~\thequestion~题}{Question~\thequestion}`, so expand
+    /// its language branch and the question counter before stripping leftovers.
+    static func expandTOCTitle(_ raw: String, chinese: Bool, question: Int) -> String {
+        var title = raw
+        let namePattern = #"\\exercise@name\s*\{([^{}]*)\}\s*\{([^{}]*)\}"#
+        if let regex = try? NSRegularExpression(pattern: namePattern) {
+            title = regex.stringByReplacingMatches(in: title,
+                                                   range: NSRange(location: 0, length: (title as NSString).length),
+                                                   withTemplate: chinese ? "$1" : "$2")
+        }
+        title = title.replacingOccurrences(of: #"\\thequestion|\\arabic\s*\{question\}"#,
+                                           with: "\(question)", options: .regularExpression)
+        title = title.replacingOccurrences(of: "~", with: " ")
+        title = title.replacingOccurrences(of: #"\\[A-Za-z@]+|[{}]"#, with: "", options: .regularExpression)
+        return title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Reads the `.toc` LaTeX writes next to the main file (or in its build
+    /// folder). The entries are the document's real table of contents, so any
+    /// custom environment that adds a line there is represented, not just the
+    /// headings this parser recognizes in source.
+    static func parseTOC(near root: URL) -> [(level: Int, title: String)]? {
+        let stem = root.deletingPathExtension().lastPathComponent
+        let folder = root.deletingLastPathComponent()
+        let candidates = [folder.appendingPathComponent(stem + ".toc"),
+                          folder.appendingPathComponent("build").appendingPathComponent(stem + ".toc")]
+        guard let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let levels = ["part": 0, "chapter": 1, "section": 2, "subsection": 3, "subsubsection": 4]
+        let ns = text as NSString
+        var entries: [(Int, String)] = []
+        var search = 0
+        while search < ns.length {
+            let found = ns.range(of: "\\contentsline", options: [], range: NSRange(location: search, length: ns.length - search))
+            guard found.location != NSNotFound else { break }
+            var cursor = skipTOCWhitespace(ns, found.location + found.length)
+            guard let levelGroup = braceGroup(ns, at: cursor) else { search = cursor; continue }
+            let levelName = ns.substring(with: levelGroup.content).trimmingCharacters(in: .whitespacesAndNewlines)
+            cursor = skipTOCWhitespace(ns, levelGroup.end)
+            guard let titleGroup = braceGroup(ns, at: cursor), let level = levels[levelName] else {
+                search = max(levelGroup.end, 1); continue
+            }
+            let title = cleanTOCTitle(ns.substring(with: titleGroup.content))
+            if !title.isEmpty { entries.append((level, title)) }
+            search = titleGroup.end
+        }
+        return entries.isEmpty ? nil : entries
+    }
+
+    /// Keeps every source heading (so an out-of-date `.toc` never hides a newer
+    /// section) and slots the `.toc`-only entries in where LaTeX put them.
+    static func mergedOutline(_ toc: [(level: Int, title: String)],
+                              source: [(level: Int, node: NavigationNode)],
+                              sourceTexts: [(url: URL, text: String)],
+                              root: URL) -> [(level: Int, node: NavigationNode)] {
+        func key(_ level: Int, _ title: String) -> String {
+            let normalized = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return "\(level)|\(normalized)"
+        }
+        var available: [String: [Int]] = [:]
+        for (index, item) in source.enumerated() where item.level >= 0 {
+            available[key(item.level, item.node.title), default: []].append(index)
+        }
+        var match: [Int: Int] = [:]
+        for (index, entry) in toc.enumerated() {
+            let k = key(entry.level, entry.title)
+            if var list = available[k], let sourceIndex = list.first {
+                list.removeFirst()
+                available[k] = list
+                match[index] = sourceIndex
+            }
+        }
+        var before: [Int: [(Int, String)]] = [:]
+        var after: [Int: [(Int, String)]] = [:]
+        var atStart: [(Int, String)] = []
+        for (index, entry) in toc.enumerated() where match[index] == nil {
+            if let next = (index + 1..<toc.count).first(where: { match[$0] != nil }), let anchor = match[next] {
+                before[anchor, default: []].append((entry.level, entry.title))
+            } else if let previous = (0..<index).reversed().first(where: { match[$0] != nil }), let anchor = match[previous] {
+                after[anchor, default: []].append((entry.level, entry.title))
+            } else {
+                atStart.append((entry.level, entry.title))
+            }
+        }
+        func makeNode(_ entry: (level: Int, title: String), anchor: NavigationNode?) -> NavigationNode {
+            var url: URL?
+            var offset: Int?
+            for (file, text) in sourceTexts {
+                if let range = text.range(of: entry.title) {
+                    url = file
+                    offset = text.utf16.distance(from: text.utf16.startIndex, to: range.lowerBound)
+                    break
+                }
+            }
+            return NavigationNode(id: "toc:\(entry.level):\(entry.title):\(offset ?? -1)",
+                                  title: entry.title, kind: .section,
+                                  url: url ?? anchor?.url ?? root,
+                                  offset: offset ?? anchor?.offset ?? 0)
+        }
+        var result: [(Int, NavigationNode)] = []
+        func append(_ entries: [(Int, String)], anchor: NavigationNode?) {
+            for entry in entries { result.append((entry.0, makeNode(entry, anchor: anchor))) }
+        }
+        append(atStart, anchor: source.first?.node)
+        for (index, item) in source.enumerated() {
+            if let inserts = before[index] { append(inserts, anchor: item.node) }
+            result.append(item)
+            if let inserts = after[index] { append(inserts, anchor: item.node) }
+        }
+        return result
+    }
+
+    private static func skipTOCWhitespace(_ ns: NSString, _ index: Int) -> Int {
+        var cursor = index
+        while cursor < ns.length {
+            let unit = ns.character(at: cursor)
+            guard let scalar = UnicodeScalar(unit), CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
+            cursor += 1
+        }
+        return cursor
+    }
+
+    private static func braceGroup(_ ns: NSString, at index: Int) -> (content: NSRange, end: Int)? {
+        guard index < ns.length, ns.character(at: index) == 123 else { return nil }
+        var depth = 0
+        var cursor = index
+        while cursor < ns.length {
+            let unit = ns.character(at: cursor)
+            if unit == 123 { depth += 1 }
+            if unit == 125 {
+                depth -= 1
+                if depth == 0 {
+                    return (NSRange(location: index + 1, length: cursor - index - 1), cursor + 1)
+                }
+            }
+            cursor += 1
+        }
+        return nil
+    }
+
+    private static func cleanTOCTitle(_ raw: String) -> String {
+        var title = raw
+        title = title.replacingOccurrences(of: #"\\texorpdfstring\s*\{([^{}]*)\}\s*\{[^{}]*\}"#, with: "$1", options: .regularExpression)
+        title = title.replacingOccurrences(of: #"\\numberline\s*\{[^{}]*\}"#, with: "", options: .regularExpression)
+        title = title.replacingOccurrences(of: #"\\[A-Za-z@]+\s*"#, with: "", options: .regularExpression)
+        title = title.replacingOccurrences(of: "\\ ", with: " ")
+        title = title.replacingOccurrences(of: "~", with: " ")
+        title = title.replacingOccurrences(of: "{", with: "").replacingOccurrences(of: "}", with: "")
+        title = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func matches(_ pattern: String, in text: String) -> [NSTextCheckingResult] {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         return regex.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
@@ -242,6 +396,9 @@ struct ProjectIndexer {
         var result = ProjectIndex()
         var visited = Set<URL>()
         var outline: [(level: Int, node: NavigationNode)] = []
+        var sourceTexts: [(url: URL, text: String)] = []
+        var chineseDocument = false
+        var questionCount = 0
         var labels: [NavigationNode] = []
         var figures: [NavigationNode] = []
         var tables: [NavigationNode] = []
@@ -293,6 +450,13 @@ struct ProjectIndexer {
                 result.issues.append("Cannot read: \(file.path)"); return node
             }
             visited.insert(identity)
+            sourceTexts.append((file, source))
+            if file == root {
+                // The exercise package renders Chinese headings only for ctex, so
+                // use the same rule when expanding custom TOC entries.
+                chineseDocument = source.range(of: #"\\(?:documentclass|usepackage)\s*(?:\[[^\]]*\])?\s*\{[^}]*ctex"#,
+                                               options: .regularExpression) != nil
+            }
             let analysis = cache?.analysis(text: source, file: file) ?? ProjectIndexCache.Analysis(text: source, file: file)
             let floats = analysis.floats
             figures.append(contentsOf: floats.figures)
@@ -309,9 +473,32 @@ struct ProjectIndexer {
             }
             for match in analysis.tokens {
                 if Task.isCancelled { return node }
+                // Custom environments (for example the exercise package's question)
+                // register their headings through \addcontentsline instead of
+                // \section, so mirror LaTeX's own TOC mechanism here.
+                if match.range(at: 5).location != NSNotFound {
+                    let levelName = ns.substring(with: match.range(at: 5))
+                    let rawTitle = ns.substring(with: match.range(at: 6))
+                    let title = Self.expandTOCTitle(rawTitle, chinese: chineseDocument, question: questionCount)
+                    let id = "\(file.path):\(match.range.location):toc"
+                    if !title.isEmpty, let level = levels[levelName] {
+                        outline.append((level, NavigationNode(id: id, title: title, kind: .section, url: file, offset: match.range.location)))
+                    }
+                    continue
+                }
                 let command = match.range(at: 1).location == NSNotFound ? (match.range(at: 3).location == NSNotFound ? "input" : "table") : ns.substring(with: match.range(at: 1))
                 let argRange = match.range(at: 2).location != NSNotFound ? match.range(at: 2) : (match.range(at: 3).location != NSNotFound ? match.range(at: 3) : match.range(at: 4))
                 let value = ns.substring(with: argRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                if command == "begin", value == "question" {
+                    // The academic_exercise package adds a TOC line from inside the
+                    // environment, which never appears in the source. Mirror its
+                    // numbering so the outline lists each question like the PDF TOC.
+                    questionCount += 1
+                    let title = chineseDocument ? "第 \(questionCount) 题" : "Question \(questionCount)"
+                    let questionID = "\(file.path):\(match.range.location):question"
+                    outline.append((2, NavigationNode(id: questionID, title: title, kind: .section,
+                                                      url: file, offset: match.range.location)))
+                }
                 let id = "\(file.path):\(match.range.location):\(command)"
                 if let level = levels[command] {
                     let title = value.replacingOccurrences(of: #"\\[A-Za-z]+"#, with: "", options: .regularExpression).replacingOccurrences(of: "{", with: "").replacingOccurrences(of: "}", with: "")
@@ -344,6 +531,9 @@ struct ProjectIndexer {
             NavigationNode(id: prefix + ":" + node.id, title: node.title, kind: node.kind, url: node.url, offset: node.offset, children: node.children.map { reidentify($0, prefix: prefix) }, detail: node.detail, count: node.count, isMissing: node.isMissing)
         }
         let rootNode = visit(root, ancestry: [])
+        if let toc = Self.parseTOC(near: root) {
+            outline = Self.mergedOutline(toc, source: outline, sourceTexts: sourceTexts, root: root)
+        }
         func subfilesOnly(_ nodes: [NavigationNode]) -> [NavigationNode] {
             nodes.filter { $0.kind == .source && $0.url != root }.map { node in
                 var child = node; child.children = subfilesOnly(node.children); return child

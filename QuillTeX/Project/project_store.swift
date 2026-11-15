@@ -129,7 +129,12 @@ final class ProjectStore: ObservableObject {
         build.$status.dropFirst().sink { [weak self] status in
             guard let self else { return }
             if status.isRunning { self.buildRevision = self.build.activeSourceRevision ?? self.editRevision }
-            if case .succeeded = status { self.previewIsOutdated = self.buildRevision != self.editRevision }
+            if case .succeeded = status {
+                self.previewIsOutdated = self.buildRevision != self.editRevision
+                // A build refreshes the .toc, which now feeds the outline for
+                // custom environments that write their own TOC entries.
+                self.refreshIndex(immediate: true)
+            }
             self.objectWillChange.send()
         }.store(in: &buildObservers)
         build.$diagnostics.sink { [weak self] diagnostics in
@@ -730,6 +735,9 @@ final class ProjectStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: entry.path) else {
             showError("Document Not Found", "“\(entry.displayName)” is no longer at \(entry.path).\nIt stays in the library until you remove it.")
             return
+        }
+        if entry.kind == .file {
+            QuillToast.shared.show("Opened \(entry.displayName)")
         }
         requestOpenProject(entry.url, explicitRoot: true)
     }
@@ -1642,11 +1650,17 @@ final class ProjectStore: ObservableObject {
         if node.kind == .folder || node.kind == .group { return }
         if node.kind == .resource { NSWorkspace.shared.open(url); return }
         openSource(url, offset: node.offset, preserveDisplayMode: true)
-        // Sections and labels are positions inside the document, so the preview
-        // follows: clicking one shows the page it lives on.
-        if node.kind == .section || node.kind == .label || node.kind == .figure || node.kind == .table {
-            let text = documents.first { $0.url == url.standardizedFileURL }?.text ?? ""
-            syncSourceToPDF(line: EditorSurface.lineNumber(atCharacter: node.offset, in: text))
+        let text = documents.first { $0.url == url.standardizedFileURL }?.text ?? ""
+        let line = EditorSurface.lineNumber(atCharacter: node.offset, in: text)
+        // Only the panes the user is actually looking at follow the outline: a
+        // PDF-only window scrolls the PDF, a visible editor shows the source line,
+        // and a split window does both. A hidden pane is left alone.
+        if paneMode != .preview, let surface = activeDocument?.editorSurface {
+            surface.textView.highlightSourceLine(line)
+        }
+        if paneMode != .editor,
+           node.kind == .section || node.kind == .label || node.kind == .figure || node.kind == .table {
+            syncSourceToPDF(line: line)
         }
     }
     private func rememberCurrentLocation() {

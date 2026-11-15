@@ -154,6 +154,8 @@ private struct LibrarySortMenu: View {
     @Binding var sort: LibrarySortOrder
     @Binding var ascending: Bool
     var showsAdded = true
+    /// Folder views also offer the Finder-style manual order and Kind.
+    var folderOrders = false
     @State private var hovered = false
 
     var body: some View {
@@ -194,8 +196,11 @@ private struct LibrarySortMenu: View {
     }
 
     private var orders: [LibrarySortOrder] {
-        showsAdded ? [.name, .lastViewed, .added, .created, .updated]
-                   : [.name, .lastViewed, .created, .updated]
+        if folderOrders {
+            return [.manual, .name, .kind, .lastViewed, .created, .updated]
+        }
+        return showsAdded ? [.name, .lastViewed, .added, .created, .updated]
+                          : [.name, .lastViewed, .created, .updated]
     }
 }
 
@@ -348,19 +353,13 @@ private final class LibraryThumbnailStore: @unchecked Sendable {
 
 /// Collects a document's compiled PDFs into a directory the user picks.
 @MainActor
-private enum LibraryPDFExporter {
+enum LibraryPDFExporter {
     static func export(_ entries: [LibraryEntry]) {
         let unique = entries.reduce(into: [LibraryEntry]()) { result, entry in
             if !result.contains(where: { $0.id == entry.id }) { result.append(entry) }
         }
         guard !unique.isEmpty else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose where to save the exported PDFs."
-        panel.prompt = "Export Here"
-        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        guard let directory = chooseExportDirectory() else { return }
 
         var exported = 0
         var missing: [String] = []
@@ -381,6 +380,29 @@ private enum LibraryPDFExporter {
         report(exported: exported, missing: missing, failed: failed)
     }
 
+    /// Export one compiled PDF, used by a document tab's context menu.
+    static func export(pdf: URL, displayName: String) {
+        guard let directory = chooseExportDirectory() else { return }
+        do {
+            let destination = availableDestination(named: displayName + ".pdf", in: directory)
+            try FileManager.default.copyItem(at: pdf, to: destination)
+            report(exported: 1, missing: [], failed: [])
+        } catch {
+            report(exported: 0, missing: [], failed: ["\(displayName): \(error.localizedDescription)"])
+        }
+    }
+
+    private static func chooseExportDirectory() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose where to save the exported PDFs."
+        panel.prompt = "Export Here"
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
     private static func availableDestination(named name: String, in directory: URL) -> URL {
         let base = (name as NSString).deletingPathExtension
         let ext = (name as NSString).pathExtension
@@ -396,6 +418,11 @@ private enum LibraryPDFExporter {
     private static func report(exported: Int, missing: [String], failed: [String]) {
         if exported == 0 && missing.isEmpty && failed.isEmpty {
             QuillDialogCenter.shared.showAlert("Nothing to Export", "No documents were selected.")
+            return
+        }
+        // A clean success is a quiet confirmation, not a modal dialog.
+        if exported > 0 && missing.isEmpty && failed.isEmpty {
+            QuillToast.shared.show("\(exported) PDF\(exported == 1 ? "" : "s") exported")
             return
         }
         var lines: [String] = []
@@ -514,7 +541,10 @@ private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatal
     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
     Button("Export PDF to Folder") { LibraryPDFExporter.export([entry]) }
     Divider()
-    Button("Remove from Library", role: .destructive) { catalog.removeEntry(entry.id) }
+    Button("Remove from Library", role: .destructive) {
+        catalog.removeEntry(entry.id)
+        QuillToast.shared.show("Removed \(entry.displayName) from Library")
+    }
 }
 
 private struct LibraryEntryContextMenu: ViewModifier {
@@ -872,7 +902,7 @@ struct LibrarySidebarContent: View {
         var nodes: [LibraryFolderNode] = []
         nodes.append(LibraryFolderNode(id: "folder-unsorted", kind: .folder(.unsorted), depth: 0))
         if expandedFolders.contains(.unsorted) {
-            for entry in catalog.unsortedEntries {
+            for entry in catalog.sorted(catalog.unsortedEntries, by: catalog.sortOrder(in: nil)) {
                 nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: 1))
             }
         }
@@ -880,7 +910,8 @@ struct LibrarySidebarContent: View {
             nodes.append(LibraryFolderNode(id: "folder-\(folder.id)", kind: .folder(.folder(folder)), depth: depth))
             guard expandedFolders.contains(.folder(folder.id)) else { return }
             for child in catalog.childFolders(of: folder.id) { append(child, depth: depth + 1) }
-            for entry in catalog.entries(inFolder: folder.id) {
+            for entry in catalog.sorted(catalog.entries(inFolder: folder.id),
+                                        by: catalog.sortOrder(in: folder.id)) {
                 nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: depth + 1))
             }
         }
@@ -1001,6 +1032,10 @@ private struct LibraryIconButton: View {
         .accessibilityLabel(label)
     }
 }
+
+private let libraryFolderSortOptions: [LibrarySortOrder] = [
+    .manual, .name, .kind, .lastViewed, .created, .updated
+]
 
 /// Sidebar row for one folder. Child folders and documents are emitted by the
 /// sidebar as separate depth-tagged rows, so nesting never has to recurse here.
@@ -1124,6 +1159,20 @@ private struct LibraryFolderRow: View {
                 }
             }
             Button("Export PDFs from This Folder") { LibraryPDFExporter.export(entries) }
+            Menu("Sort By") {
+                ForEach(libraryFolderSortOptions, id: \.self) { order in
+                    // A Toggle inside a menu renders the system checkmark for the
+                    // active choice, the same affordance Finder uses.
+                    Toggle(isOn: Binding(
+                        get: { catalog.sortOrder(in: folderID) == order },
+                        set: { isOn in
+                            if isOn { catalog.setSortOrder(order, in: folderID) }
+                        }
+                    )) {
+                        Text(order.title)
+                    }
+                }
+            }
             if let folderID {
                 Divider()
                 Button("Edit…") {
@@ -1319,6 +1368,22 @@ struct LibraryBrowser: View {
 
     private var totalEntries: [LibraryEntry] { catalog.entries(in: store.librarySelection) }
 
+    /// Folder views carry their own sort (set from the folder's context menu);
+    /// other views keep the toolbar's sort.
+    private var effectiveSort: LibrarySortOrder {
+        if case .folder(let id) = store.librarySelection { return catalog.sortOrder(in: id) }
+        return sort
+    }
+
+    private var sortBinding: Binding<LibrarySortOrder> {
+        Binding(get: { effectiveSort }, set: { newSort in
+            if case .folder(let id) = store.librarySelection {
+                catalog.setSortOrder(newSort, in: id)
+            }
+            sort = newSort
+        })
+    }
+
     private var visibleEntries: [LibraryEntry] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return totalEntries }
@@ -1329,7 +1394,7 @@ struct LibraryBrowser: View {
     }
 
     private var orderedEntries: [LibraryEntry] {
-        let base = catalog.sorted(visibleEntries, by: sort)
+        let base = catalog.sorted(visibleEntries, by: effectiveSort)
         return sortAscending ? base.reversed() : base
     }
 
@@ -1445,8 +1510,8 @@ struct LibraryBrowser: View {
     }
 
     private var dateColumn: LibraryDateColumn? {
-        switch sort {
-        case .name: nil
+        switch effectiveSort {
+        case .manual, .name, .kind: nil
         case .lastViewed: .lastViewed
         case .added: .added
         case .updated: .updated
@@ -1561,13 +1626,14 @@ struct LibraryBrowser: View {
 
     private var sortMenu: some View {
         // Same quiet gray wash as the other capsules and the search pill.
-        LibrarySortMenu(sort: $sort, ascending: $sortAscending, showsAdded: false)
+        LibrarySortMenu(sort: sortBinding, ascending: $sortAscending,
+                        showsAdded: false, folderOrders: true)
             // Same hover treatment as the neighbouring capsules.
             .modifier(CapsuleHoverWash())
     }
 
     private var columnHeader: some View {
-        LibraryTableHeader(sort: $sort, ascending: $sortAscending,
+        LibraryTableHeader(sort: sortBinding, ascending: $sortAscending,
                            trailingWidth: LibraryLook.rowActionsWidth)
     }
 
@@ -2170,7 +2236,7 @@ private struct TemplatesBrowser: View {
 
     private var dateColumn: LibraryDateColumn? {
         switch sort {
-        case .name: nil
+        case .manual, .name, .kind: nil
         case .lastViewed: .lastViewed
         case .added: .created
         case .updated: .updated
@@ -2210,7 +2276,11 @@ private struct TemplatesBrowser: View {
         }
         let sorted: [DocumentTemplate]
         switch sort {
+        case .manual:
+            sorted = filtered
         case .name:
+            sorted = filtered.sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
+        case .kind:
             sorted = filtered.sorted { $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending }
         case .lastViewed:
             sorted = filtered.sorted { viewedDate($0) > viewedDate($1) }

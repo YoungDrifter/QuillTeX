@@ -72,6 +72,9 @@ struct LibraryFolder: Codable, Identifiable, Equatable {
     var color: LibraryFolderColor?
     /// nil for a top-level folder; set to the containing folder for a subfolder.
     var parentID: UUID? = nil
+    /// The order this folder's documents are shown in. nil means the folder has
+    /// never been sorted and follows the manual order stored in `entries`.
+    var sortOrder: LibrarySortOrder? = nil
 }
 
 /// A link to a local document. The library never owns or moves the file: it only
@@ -103,8 +106,10 @@ struct LibraryDateGroup: Identifiable {
     let entries: [LibraryEntry]
 }
 
-enum LibrarySortOrder: String, CaseIterable, Identifiable {
+enum LibrarySortOrder: String, Codable, CaseIterable, Identifiable {
+    case manual
     case name
+    case kind
     case lastViewed
     case added
     case created
@@ -113,7 +118,9 @@ enum LibrarySortOrder: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .manual: "Manual"
         case .name: "Name"
+        case .kind: "Kind"
         case .lastViewed: "Last Viewed"
         case .added: "Date Added"
         case .created: "Date Created"
@@ -126,6 +133,8 @@ struct LibrarySnapshot: Codable {
     var version: Int = 1
     var folders: [LibraryFolder] = []
     var entries: [LibraryEntry] = []
+    /// Unsorted has no LibraryFolder record, so its sort lives on the snapshot.
+    var unsortedSortOrder: LibrarySortOrder? = nil
 }
 
 /// The previous history format owned by `DocumentLibrary`, decoded locally so the
@@ -149,6 +158,7 @@ final class DocumentCatalog: ObservableObject {
 
     @Published private(set) var folders: [LibraryFolder] = []
     @Published private(set) var entries: [LibraryEntry] = []
+    @Published private(set) var unsortedSortOrder: LibrarySortOrder?
     @Published private(set) var storageError: String?
 
     /// False only when the snapshot file exists but cannot be decoded. Mutations
@@ -188,6 +198,7 @@ final class DocumentCatalog: ObservableObject {
             let snapshot = try JSONDecoder().decode(LibrarySnapshot.self, from: data)
             folders = snapshot.folders
             entries = snapshot.entries
+            unsortedSortOrder = snapshot.unsortedSortOrder
             storageError = nil
             storageReadable = true
             backfillDiskDates()
@@ -258,7 +269,8 @@ final class DocumentCatalog: ObservableObject {
     private func encodedSnapshot() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try encoder.encode(LibrarySnapshot(folders: folders, entries: entries))
+        return try encoder.encode(LibrarySnapshot(folders: folders, entries: entries,
+                                                   unsortedSortOrder: unsortedSortOrder))
     }
 
     private func persist() throws {
@@ -369,11 +381,50 @@ final class DocumentCatalog: ObservableObject {
 
     func sorted(_ entries: [LibraryEntry], by order: LibrarySortOrder) -> [LibraryEntry] {
         switch order {
+        case .manual: entries
         case .lastViewed: entries.sorted { $0.lastViewedAt > $1.lastViewedAt }
         case .added: entries.sorted { $0.addedAt > $1.addedAt }
         case .created: entries.sorted { ($0.createdOnDiskAt ?? $0.addedAt) > ($1.createdOnDiskAt ?? $1.addedAt) }
         case .updated: entries.sorted { ($0.updatedAt ?? $0.addedAt) > ($1.updatedAt ?? $1.addedAt) }
         case .name: entries.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        case .kind:
+            entries.sorted {
+                if $0.kind.rawValue == $1.kind.rawValue {
+                    return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+                }
+                return $0.kind.rawValue.localizedStandardCompare($1.kind.rawValue) == .orderedAscending
+            }
+        }
+    }
+
+    /// The folder's chosen order; folders that were never sorted follow the
+    /// manual order of the catalog, which is what a Finder-style manual sort is.
+    func sortOrder(in folderID: UUID?) -> LibrarySortOrder {
+        if let folderID {
+            return folders.first { $0.id == folderID }?.sortOrder ?? .manual
+        }
+        return unsortedSortOrder ?? .manual
+    }
+
+    func setSortOrder(_ order: LibrarySortOrder, in folderID: UUID?) {
+        guard storageReadable else { return }
+        if let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) {
+            folders[index].sortOrder = order
+        } else if folderID == nil {
+            unsortedSortOrder = order
+        } else {
+            return
+        }
+        persistIfPossible()
+    }
+
+    /// Dragging a document is a manual act: the affected folder drops whatever
+    /// automatic order it had and keeps the hand-made order from now on.
+    private func markManualSort(for folderID: UUID?) {
+        if let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) {
+            folders[index].sortOrder = .manual
+        } else if folderID == nil {
+            unsortedSortOrder = .manual
         }
     }
 
@@ -470,7 +521,10 @@ final class DocumentCatalog: ObservableObject {
         guard storageReadable, let index = entries.firstIndex(where: { $0.id == id }) else { return }
         // Unknown folders (for example one deleted on another screen) become Unsorted.
         let resolved = folderID.flatMap { folder(id: $0) != nil ? $0 : nil }
+        let previous = entries[index].folderID
         entries[index].folderID = resolved
+        markManualSort(for: previous)
+        markManualSort(for: resolved)
         persistIfPossible()
     }
 
@@ -612,6 +666,7 @@ final class DocumentCatalog: ObservableObject {
         } else {
             entries.append(moved)
         }
+        markManualSort(for: moved.folderID)
         persistIfPossible()
     }
 

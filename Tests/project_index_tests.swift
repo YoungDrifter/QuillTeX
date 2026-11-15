@@ -145,6 +145,52 @@ struct ProjectIndexTests {
         check(plainIndex.structure.first { $0.title == "Labels" }?.count == 0, "an empty Labels group counts zero")
         try? FileManager.default.removeItem(at: plain)
 
+        // Custom environments that number themselves (academic_exercise's
+        // question) must appear in the outline even though the source only has
+        // \begin{question}; it uses the same Chinese/English wording as the PDF.
+        let exercise = try write("exercise/main.tex", #"""
+        \documentclass{ctexart}
+        \begin{document}
+        \section{作业}
+        \begin{question}
+        第一题
+        \end{question}
+        \begin{question}
+        第二题
+        \end{question}
+        \end{document}
+        """#)
+        let exerciseIndex = ProjectIndexer(root: exercise, overrides: [:]).build()
+        let exerciseHeadings = flat(exerciseIndex.structure).filter { $0.kind == .section }.map(\.title)
+        check(exerciseHeadings == ["作业", "第 1 题", "第 2 题"], "question environment headings appear in order")
+        check(exerciseIndex.structure.first?.count == 3, "question headings count toward the outline")
+
+        // A compiled .toc is the authoritative TOC: entries from custom
+        // environments appear, while newer source headings survive a stale .toc.
+        let tocRoot = try write("toc/main.tex", #"""
+        \documentclass{ctexart}
+        \begin{document}
+        \section{基础}
+        \begin{question}
+        题干
+        \end{question}
+        \section{收尾}
+        \end{document}
+        """#)
+        _ = try write("toc/main.toc", #"""
+        \contentsline {section}{\numberline {1}基础}{1}{section.1}%
+        \contentsline {section}{\numberline {2}第 1 题}{2}{section.2}%
+        \contentsline {section}{\numberline {3}额外标题}{3}{section.3}%
+        \contentsline {section}{\numberline {4}收尾}{4}{section.4}%
+        """#)
+        let tocIndex = ProjectIndexer(root: tocRoot, overrides: [:]).build()
+        let tocHeadings = flat(tocIndex.structure).filter { $0.kind == .section }.map(\.title)
+        check(tocHeadings == ["基础", "第 1 题", "额外标题", "收尾"], "toc entries merge in document order")
+        let extraEntry = flat(tocIndex.structure).first { $0.title == "额外标题" }
+        check(extraEntry?.url == tocRoot, "a toc-only heading resolves to the project source")
+        check(extraEntry?.offset == flat(tocIndex.structure).first { $0.title == "收尾" }?.offset,
+              "a toc-only heading anchors to the next known source heading")
+
         print("PASS: \(assertions) project-index assertions")
     }
 }

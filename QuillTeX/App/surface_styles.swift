@@ -930,3 +930,91 @@ struct QuillOverlaySaveChanges: View {
         dismiss()
     }
 }
+
+/// A small, self-dismissing confirmation shown near the bottom of the key
+/// window. Used for successes that do not need a modal alert (for example an
+/// exported PDF); failures and decisions keep the regular dialog.
+@MainActor
+final class QuillToast {
+    static let shared = QuillToast()
+
+    private var panel: NSPanel?
+    private var dismissWork: DispatchWorkItem?
+
+    func show(_ message: String) {
+        dismissWork?.cancel()
+        if let panel {
+            panel.orderOut(nil)
+            self.panel = nil
+        }
+        guard let parent = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+
+        let label = NSTextField(labelWithString: message)
+        label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .labelColor
+        label.alignment = .center
+        label.sizeToFit()
+
+        let width = max(104, label.frame.width + 28)
+        let height: CGFloat = 30
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.ignoresMouseEvents = true
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+
+        // Same translucent glass language as the dialogs and toolbar capsules:
+        // blurred material plus a light white veil, instead of an opaque card.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = height / 2
+        container.layer?.borderWidth = 0.9
+        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.55).cgColor
+        let glass = NSVisualEffectView(frame: container.bounds)
+        glass.material = .popover
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.autoresizingMask = [.width, .height]
+        glass.wantsLayer = true
+        glass.layer?.cornerRadius = height / 2
+        glass.layer?.masksToBounds = true
+        let veil = NSView(frame: container.bounds)
+        veil.autoresizingMask = [.width, .height]
+        veil.wantsLayer = true
+        veil.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        glass.addSubview(veil)
+        container.addSubview(glass)
+        label.frame = NSRect(x: 14, y: (height - label.frame.height) / 2,
+                             width: width - 28, height: label.frame.height)
+        container.addSubview(label)
+        panel.contentView = container
+
+        let parentFrame = parent.frame
+        panel.setFrameOrigin(NSPoint(x: parentFrame.midX - width / 2, y: parentFrame.minY + 72))
+        panel.alphaValue = 0
+        panel.orderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            panel.animator().alphaValue = 1
+        }
+        self.panel = panel
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.22
+                panel.animator().alphaValue = 0
+            }, completionHandler: {
+                panel.orderOut(nil)
+            })
+            self.panel = nil
+        }
+        dismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.7, execute: work)
+    }
+}

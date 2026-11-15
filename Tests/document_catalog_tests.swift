@@ -477,6 +477,43 @@ struct DocumentCatalogTests {
         check((catalog.entries.firstIndex { $0.id == alphaEntry.id } ?? -1) < (catalog.entries.firstIndex { $0.id == betaEntry.id } ?? -1),
               "moveEntry can reorder the other way")
 
+        // MARK: - Per-folder sort orders
+
+        let sortData = base.appendingPathComponent("sort-data", isDirectory: true)
+        let sortCatalog = DocumentCatalog(directory: sortData)
+        let sortedFolder = try sortCatalog.createFolder(named: "Sorted")
+        let sortedDocs = base.appendingPathComponent("sorted-docs", isDirectory: true)
+        let oneEntry = try sortCatalog.link(writeDocument("one.tex", in: sortedDocs))
+        let twoEntry = try sortCatalog.link(writeDocument("two.tex", in: sortedDocs))
+        try sortCatalog.setFolder(oneEntry.id, folderID: sortedFolder.id)
+        try sortCatalog.setFolder(twoEntry.id, folderID: sortedFolder.id)
+        check(sortCatalog.sortOrder(in: sortedFolder.id) == .manual,
+              "a folder that was never sorted reads as manual")
+        sortCatalog.setSortOrder(.name, in: sortedFolder.id)
+        check(sortCatalog.sortOrder(in: sortedFolder.id) == .name,
+              "setSortOrder stores the folder's order")
+        let sortReloaded = DocumentCatalog(directory: sortData)
+        check(sortReloaded.sortOrder(in: sortedFolder.id) == .name,
+              "a folder sort survives reopening the catalog")
+        sortReloaded.setSortOrder(.kind, in: nil)
+        let unsortedReloaded = DocumentCatalog(directory: sortData)
+        check(unsortedReloaded.sortOrder(in: nil) == .kind,
+              "Unsorted's sort survives reopening the catalog")
+        sortReloaded.moveEntry(oneEntry.id, before: twoEntry.id)
+        check(sortReloaded.sortOrder(in: sortedFolder.id) == .manual,
+              "reordering a document switches its folder to manual")
+        sortReloaded.setSortOrder(.name, in: sortedFolder.id)
+        let otherFolder = try sortReloaded.createFolder(named: "Other")
+        sortReloaded.setFolder(twoEntry.id, folderID: otherFolder.id)
+        check(sortReloaded.sortOrder(in: sortedFolder.id) == .manual
+              && sortReloaded.sortOrder(in: otherFolder.id) == .manual,
+              "dragging a document between folders makes both manual")
+        check(sortReloaded.sorted(sortReloaded.entries, by: .manual).map(\.id) == sortReloaded.entries.map(\.id),
+              "manual sort keeps the stored catalog order")
+        check(sortReloaded.sorted(sortReloaded.entries, by: .name).map(\.displayName)
+              == sortReloaded.entries.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }.map(\.displayName),
+              "name sort orders the folder's documents")
+
         // MARK: - Sidebar drag payload
 
         let dragID = UUID()

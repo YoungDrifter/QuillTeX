@@ -463,6 +463,14 @@ struct TopBar: View {
             .contextMenu {
                 if let path = tab.path, !tab.isTemplate {
                     Button("Rename Project…") { store.requestRenameProject(path) }
+                    Button("Export PDF…") {
+                        if let pdf = store.build.pdfURL {
+                            LibraryPDFExporter.export(pdf: pdf, displayName: tab.title)
+                        } else {
+                            LibraryPDFExporter.export([LibraryEntry(path: path.path,
+                                                                    displayName: tab.title)])
+                        }
+                    }
                 }
             }
 
