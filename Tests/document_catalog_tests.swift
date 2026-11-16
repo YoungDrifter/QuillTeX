@@ -317,6 +317,38 @@ struct DocumentCatalogTests {
               "created sorting is newest first")
         check(seededCatalog.sorted(seededCatalog.entries, by: .updated).first?.displayName == "Earlier",
               "updated sorting uses the modification date")
+        check(seededCatalog.sorted(seededCatalog.entries, by: .name, ascending: false).first?.displayName == "Yesterday",
+              "reversing name sorting starts from the end of the alphabet")
+        check(seededCatalog.sorted(seededCatalog.entries, by: .created, ascending: true).first?.displayName == "Earlier",
+              "reversing date sorting starts from the oldest entry")
+        check(seededCatalog.sorted(seededCatalog.entries, by: .manual, ascending: true).map(\.displayName)
+                == seededCatalog.entries.map(\.displayName),
+              "manual order ignores the direction arrow")
+
+        let ascendingGroups = LibraryDateGrouping.groups(
+            seededCatalog.sorted(seededCatalog.entries, by: .created, ascending: true),
+            date: { $0.addedAt }, ascending: true, now: now, calendar: calendar)
+        check(ascendingGroups.map(\.title) == ["Earlier", "Last 30 Days", "Last 7 Days", "Yesterday", "Today"],
+              "date groups follow the direction arrow")
+
+        // MARK: - Compiled PDF lookup
+
+        let pdfProject = base.appendingPathComponent("pdf-project", isDirectory: true)
+        let pdfMain = try writeDocument("paper.tex", in: pdfProject, contents: "main")
+        let stalePDF = pdfProject.appendingPathComponent("paper.pdf")
+        let buildPDF = pdfProject.appendingPathComponent("build", isDirectory: true)
+            .appendingPathComponent("paper.pdf")
+        try "stale".write(to: stalePDF, atomically: true, encoding: .utf8)
+        try fm.createDirectory(at: buildPDF.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "built".write(to: buildPDF, atomically: true, encoding: .utf8)
+        let pdfEntry = LibraryEntry(path: pdfMain.path, displayName: "paper")
+        check(LibraryPDFLocator.pdfURL(for: pdfEntry, outputDirectory: "build")?.standardizedFileURL == buildPDF.standardizedFileURL,
+              "the configured output folder wins over a stale sibling PDF")
+        check(LibraryPDFLocator.pdfURL(for: pdfEntry, outputDirectory: ".")?.standardizedFileURL == stalePDF.standardizedFileURL,
+              "the main-file folder is used for the default output")
+        let noPDF = LibraryEntry(path: base.appendingPathComponent("empty.tex").path, displayName: "empty")
+        check(LibraryPDFLocator.pdfURL(for: noPDF, outputDirectory: "build") == nil,
+              "a missing compiled PDF reports no result")
 
         // MARK: - One-time migration from the previous recent-documents list
 

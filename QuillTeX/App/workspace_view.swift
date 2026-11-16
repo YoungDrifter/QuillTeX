@@ -114,12 +114,9 @@ struct WorkspaceView: View {
         }
         .onChange(of: isModalPresented) { _, modal in
             QuillModalGate.shared.active = modal
-        }
-        .onChange(of: isModalPresented) { _, modal in
-            QuillModalGate.shared.active = modal
             if modal && store.projectNamePrompt == nil {
-                // The search field keeps its edit session (and caret) alive while a
-                // dialog is up; the modal card owns focus from here.
+                // The native editor keeps first responder beneath a SwiftUI
+                // overlay, so keys could still edit the document behind a dialog.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }

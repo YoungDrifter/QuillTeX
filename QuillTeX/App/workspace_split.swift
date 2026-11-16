@@ -488,6 +488,13 @@ final class WorkspaceSplitController: WorkspacePaneSplitController {
         guard style != cardStyle else { return }
         cardStyle = style
         applyCardStyle()
+        // The card insets change the content split's width. In the same update
+        // that opens a document, the pane mode switches back to Editor + PDF and
+        // applies the editor/PDF fraction. Let the new width reach the split's
+        // panes first: resolving the divider against the previous, wider layout
+        // places it one card inset off centre, and the unchanged width afterwards
+        // leaves that offset in place until the user clicks the pane button.
+        cardView.superview?.layoutSubtreeIfNeeded()
     }
 
     private func applyCardStyle() {

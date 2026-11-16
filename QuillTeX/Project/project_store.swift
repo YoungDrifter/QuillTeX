@@ -610,13 +610,22 @@ final class ProjectStore: ObservableObject {
         guard let directory = sourceDirectory ?? directory, let enumerator = FileManager.default.enumerator(at: directory,
             includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return documents.map(\.url) }
         var files = Set(documents.map(\.url).filter { ProjectIndexer.isWithin($0, directory: directory) })
+        // Other open main files are independent projects even when they share a
+        // folder. They must not receive this project's root directive or be
+        // rewritten as if they were subfiles.
+        let otherProjectRoots = Set(tabs.compactMap(\.path).map(\.standardizedFileURL)
+            .filter { $0 != root?.standardizedFileURL })
         for case let url as URL in enumerator {
-            if url.lastPathComponent == "build" || url.standardizedFileURL == library.directory.standardizedFileURL
+            let standardized = url.standardizedFileURL
+            if otherProjectRoots.contains(standardized) {
+                enumerator.skipDescendants(); continue
+            }
+            if url.lastPathComponent == "build" || standardized == library.directory.standardizedFileURL
                 || !ProjectIndexer.isWithin(url, directory: directory) {
                 enumerator.skipDescendants(); continue
             }
             if url.pathExtension.lowercased() == "tex", (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true {
-                files.insert(url.standardizedFileURL)
+                files.insert(standardized)
             }
         }
         return files.sorted { $0.path < $1.path }
@@ -1127,12 +1136,8 @@ final class ProjectStore: ObservableObject {
     @discardableResult
     private func switchToTab(_ path: URL, asTemplate: Bool = false) -> Bool {
         prepareToLeaveCurrentTab()
-        // Same project: reuse the open buffer instead of rebuilding the project.
-        if let root, root.deletingLastPathComponent().standardizedFileURL == path.deletingLastPathComponent().standardizedFileURL,
-           documents.contains(where: { $0.url.standardizedFileURL == path.standardizedFileURL }) {
-            openSource(path)
-            return true
-        }
+        // A document tab identifies a workspace root, even when two main files
+        // share a directory and one already appears in the other's buffers.
         return openProject(path, explicitRoot: true, asTemplate: asTemplate)
     }
 
@@ -1152,23 +1157,45 @@ final class ProjectStore: ObservableObject {
         tabs = homeTabs + others
     }
 
+    /// A project tab owns all its open source drafts, including subfiles. A
+    /// background project's buffers have already moved into its session store.
+    func unsavedDocuments(forTab tab: WorkspaceTab) -> [SourceDocument] {
+        guard let path = tab.path?.standardizedFileURL else { return [] }
+        if path == root?.standardizedFileURL { return documents.filter(\.isDirty) }
+        guard let state = sessionStore.load(root: path) else { return [] }
+        return state.documents.compactMap { saved in
+            let savedURL = URL(fileURLWithPath: saved.path).standardizedFileURL
+            // The same file can also be open as a subfile of the active project.
+            // Its live buffer is newer than the session copy, so saving the session
+            // draft would overwrite those edits. Prefer (and save) the live buffer.
+            if let live = documents.first(where: { $0.url.standardizedFileURL == savedURL }) {
+                return live.isDirty ? live : nil
+            }
+            guard let text = saved.draft else { return nil }
+            let document = SourceDocument(url: savedURL, text: text)
+            document.savedText = saved.savedText ?? saved.diskText ?? ""
+            document.diskText = saved.diskText ?? document.savedText
+            return document.isDirty ? document : nil
+        }
+    }
+
     func closeTab(_ tab: WorkspaceTab) {
-        let path = tab.path
-        if let path, let document = documents.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL }),
-           document.isDirty {
+        guard tabs.contains(where: { $0.id == tab.id }), commitSidebarNameEdit() else { return }
+        let dirty = unsavedDocuments(forTab: tab)
+        if !dirty.isEmpty {
             // Explicit tab close keeps the synchronous seam for tests, while the
             // app uses the non-blocking overlay so the button never freezes.
-            if closeConfirmationHandler != nil {
-                guard confirmClose([document]) else { return }
+            if let closeConfirmationHandler {
+                guard closeConfirmationHandler(dirty) else { return }
                 finishCloseTab(tab)
                 return
             }
             QuillDialogCenter.shared.showSaveChanges(title: "Save Changes Before Closing?",
-                                                     detail: document.url.lastPathComponent) { [weak self] choice in
+                detail: dirty.map { $0.url.lastPathComponent }.joined(separator: "\n")) { [weak self] choice in
                 guard let self else { return }
                 switch choice {
                 case .save:
-                    guard self.save(document) else { return }
+                    guard dirty.allSatisfy({ self.save($0, allowDetached: true) }) else { return }
                     self.finishCloseTab(tab)
                 case .discard:
                     self.finishCloseTab(tab)
@@ -1182,18 +1209,46 @@ final class ProjectStore: ObservableObject {
     }
 
     private func finishCloseTab(_ tab: WorkspaceTab) {
+        guard let removedIndex = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         let wasActive = activeTabID == tab.id
-        let removedIndex = tabs.firstIndex(where: { $0.id == tab.id }) ?? tabs.count - 1
-        tabs.removeAll { $0.id == tab.id }
+        if let path = tab.path?.standardizedFileURL {
+            if path == root?.standardizedFileURL {
+                // Resolve the whole workspace before activating its neighbour;
+                // otherwise switching tabs would save discarded drafts again.
+                persistSession(includeDrafts: false)
+                sessionStore.flush()
+                sessionTask?.cancel()
+                indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
+                generation += 1; isIndexing = false
+                build.resetProject()
+                root = nil; sourceDirectory = nil; documents = []; activeID = nil
+                index = ProjectIndex(); history = []; historyPosition = -1
+                pdfReadingState = nil; syncStatusMessage = nil; recoveryMessage = nil
+                selectedNodes = [:]; expandedNodes = []; selectedFolder = nil; folderExpansionOrder = []
+                window?.representedURL = nil
+                window?.title = "QuillTeX"
+                window?.isDocumentEdited = false
+            } else if var state = sessionStore.load(root: path) {
+                for index in state.documents.indices {
+                    state.documents[index].draft = nil
+                    state.documents[index].savedText = nil
+                    state.documents[index].diskText = nil
+                }
+                sessionStore.save(state, updateLastWorkspace: false)
+                sessionStore.flush()
+            }
+        }
+        tabs.remove(at: removedIndex)
+        fadingTabIDs.remove(tab.id)
         guard wasActive else { return }
+        // The removed tab must not remain the activation fallback if the next
+        // project fails to open.
+        activeTabID = nil
         if tabs.isEmpty {
-            activeTabID = nil
-            // Closing the last tab (for example the All Documents home tab) lands on a
-            // fresh New Tab page instead of an empty strip over the library.
             showNewTabPage()
             return
         }
-        let next = tabs[min(max(removedIndex, 0), tabs.count - 1)]
+        let next = tabs[min(removedIndex, tabs.count - 1)]
         activateTab(next)
     }
 
@@ -1712,12 +1767,12 @@ final class ProjectStore: ObservableObject {
         refreshIndex()
         scheduleAutoCompile()
     }
-    @discardableResult func save(_ doc: SourceDocument) -> Bool {
+    @discardableResult func save(_ doc: SourceDocument, allowDetached: Bool = false) -> Bool {
         guard !doc.hasMarkedText else { showError("Finish Typing First", "Confirm the current input before saving."); return false }
         do {
             let current = try? String(contentsOf: doc.url, encoding: .utf8)
             if let current, current != doc.diskText {
-                guard reconcile(doc, with: current) else { return false }
+                guard reconcile(doc, with: current, allowDetached: allowDetached) else { return false }
                 if !doc.isDirty {
                     objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
                     refreshIndex(immediate: true)
@@ -1750,7 +1805,7 @@ final class ProjectStore: ObservableObject {
             renameBuildArtifacts(from: oldURL, to: destination)
         }
         updateFileMonitoring()
-        history = history.map { $0.url == oldURL ? EditorLocation(url: destination, offset: $0.offset) : $0 }
+        relocateDocumentReferences(from: oldURL, to: destination)
         indexCache.invalidateInventory()
         if selectedFolder == oldURL.deletingLastPathComponent() { selectedFolder = destination.deletingLastPathComponent() }
         objectWillChange.send()
@@ -1758,6 +1813,45 @@ final class ProjectStore: ObservableObject {
         updateProjectReferences(from: oldURL, to: destination, files: previousProjectFiles.filter { $0 != oldURL } + [destination])
         if root == destination { maintainProjectRootDirectives(replacingExisting: true, additionalFiles: previousProjectFiles.filter { $0 != oldURL } + [destination]) }
         persistSession(force: true); sessionStore.flush()
+    }
+
+    /// Keep every representation of a renamed source on the same path. The tab
+    /// ID stays stable, and a custom project name remains independent of filenames.
+    private func relocateDocumentReferences(from old: URL, to new: URL) {
+        let oldStem = old.deletingPathExtension().lastPathComponent
+        let entry = catalog?.entry(forMainFile: old)
+        for index in tabs.indices where tabs[index].path?.standardizedFileURL == old.standardizedFileURL {
+            tabs[index].path = new
+            if tabs[index].title == oldStem { tabs[index].title = new.deletingPathExtension().lastPathComponent }
+        }
+        if let entry {
+            do {
+                try catalog?.relocate(entry.id, to: new.standardizedFileURL.path,
+                    displayName: entry.displayName == oldStem ? new.deletingPathExtension().lastPathComponent : nil)
+            } catch { recoveryMessage = "The file was renamed, but its library location could not be saved: " + error.localizedDescription }
+        }
+        // A background tab's drafts live in its session file. Renaming that main
+        // file must carry those drafts to the new root, or the next activation
+        // would open the renamed file without them.
+        if root?.standardizedFileURL != new.standardizedFileURL,
+           var state = sessionStore.load(root: old) {
+            state.rootPath = new.standardizedFileURL.path
+            for index in state.documents.indices
+            where URL(fileURLWithPath: state.documents[index].path).standardizedFileURL == old.standardizedFileURL {
+                state.documents[index].path = new.standardizedFileURL.path
+            }
+            if let activePath = state.activePath,
+               URL(fileURLWithPath: activePath).standardizedFileURL == old.standardizedFileURL {
+                state.activePath = new.standardizedFileURL.path
+            }
+            sessionStore.save(state, retiringRoots: [old], updateLastWorkspace: false)
+        }
+        history = history.map { $0.url == old ? EditorLocation(url: new, offset: $0.offset) : $0 }
+        if root == new {
+            retiredSessionRoots.insert(old)
+            window?.representedURL = new
+            window?.title = "QuillTeX — \(projectTitle(for: new))"
+        }
     }
 
     /// LaTeX writes its outputs beside the main document with the same base name.
@@ -1804,8 +1898,6 @@ final class ProjectStore: ObservableObject {
         let destination = url.deletingLastPathComponent().appendingPathComponent(filename).standardizedFileURL
         guard destination != url else { return url }
         let previousProjectFiles = projectTeXFiles
-        let oldStem = url.deletingPathExtension().lastPathComponent
-        let entry = catalog?.entry(forMainFile: url)
         let doc = documents.first { $0.url == url }
         guard doc?.hasMarkedText != true else { throw ProjectError.message("Finish the current input method composition before renaming.") }
         let tags = (try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
@@ -1817,18 +1909,13 @@ final class ProjectStore: ObservableObject {
             window?.representedURL = destination
             renameBuildArtifacts(from: url, to: destination)
         }
-        history = history.map { $0.url == url ? EditorLocation(url: destination, offset: $0.offset) : $0 }
+        relocateDocumentReferences(from: url, to: destination)
         selectedNodes[.folder] = "file:" + destination.path
         updateFileMonitoring(); indexCache.invalidateInventory()
         updateProjectReferences(from: url, to: destination, files: previousProjectFiles.filter { $0 != url } + [destination])
         if root == destination {
             maintainProjectRootDirectives(replacingExisting: true,
                 additionalFiles: previousProjectFiles.filter { $0 != url } + [destination])
-        }
-        if let entry {
-            let newStem = destination.deletingPathExtension().lastPathComponent
-            try? catalog?.relocate(entry.id, to: destination.standardizedFileURL.path,
-                                   displayName: entry.displayName == oldStem ? newStem : nil)
         }
         refreshIndex(immediate: true); persistSession(force: true); sessionStore.flush()
         return destination
@@ -2086,12 +2173,14 @@ final class ProjectStore: ObservableObject {
     }
 
     @discardableResult
-    private func reconcile(_ doc: SourceDocument, with external: String) -> Bool {
+    private func reconcile(_ doc: SourceDocument, with external: String, allowDetached: Bool = false) -> Bool {
         var text = external
         while text != doc.diskText {
             if !doc.isDirty || doc.text == text { replace(doc, with: text); return true }
             let choice: ExternalChangeChoice
-            if let externalChangeDecision { choice = externalChangeDecision(doc) }
+            if let externalChangeDecision {
+                choice = externalChangeDecision(doc)
+            }
             else {
                 let result = QuillDialog.present(
                     title: "External Change Detected",
@@ -2104,7 +2193,7 @@ final class ProjectStore: ObservableObject {
             }
             // The file may change again while the user is deciding. Never accept
             // a stale snapshot, or overwrite a file which disappeared meanwhile.
-            guard documents.contains(where: { $0 === doc }),
+            guard allowDetached || documents.contains(where: { $0 === doc }),
                   let latest = try? String(contentsOf: doc.url, encoding: .utf8) else { return false }
             if latest != text { text = latest; continue }
             if choice == .useExternal { replace(doc, with: text) }

@@ -193,6 +193,37 @@ struct BuildPipelineTests {
         check(!streaming.status.isRunning && streaming.lastSummary == "Build cancelled", "cancelled process callbacks cannot publish a later success")
         check(streaming.log.contains("first output"), "cancel preserves the output already received")
 
+        // A latexmk-like launcher can ignore SIGTERM and leave an engine behind.
+        // Both processes must stop before a subsequent build can touch the output.
+        let lateOutput = directory.appendingPathComponent("late-output")
+        let childMarker = directory.appendingPathComponent("child-started")
+        let stubbornEngine = try fixture("stubborn-engine", body: """
+        trap '' TERM
+        (trap '' TERM; echo ready > '\(childMarker.path)'; sleep 0.7; echo stale > '\(lateOutput.path)') &
+        echo 'launcher ready'
+        wait
+        """)
+        let cancelledTree = BuildController()
+        cancelledTree.compile(request(["xelatex": stubbornEngine]))
+        let childDeadline = Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath: childMarker.path), Date() < childDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        check(FileManager.default.fileExists(atPath: childMarker.path), "cancellation fixture starts a child engine")
+        cancelledTree.cancel()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.9))
+        check(!FileManager.default.fileExists(atPath: lateOutput.path), "cancel stops a signal-resistant launcher and its child engine before they write stale output")
+        check(cancelledTree.lastSummary == "Build cancelled", "terminating child processes cannot replace the cancelled build state")
+
+        let silentFailure = try fixture("silent-failure", body: "echo 'compiler could not initialize'\nexit 7")
+        let unexplainedFailure = BuildController()
+        unexplainedFailure.compile(request(["xelatex": silentFailure]))
+        waitForBuild(unexplainedFailure)
+        check(unexplainedFailure.diagnostics.contains { $0.severity == .error && $0.message.contains("XeLaTeX") && $0.message.contains("7") },
+              "nonzero compiler exits without TeX records still expose the tool and exit code")
+        check(unexplainedFailure.diagnostics.contains { $0.detail.contains("compiler could not initialize") },
+              "fallback compiler diagnostics retain the failure output")
+
         let stuckEngine = try fixture("stuck-engine", body: "echo 'stuck'\nsleep 5")
         let timeoutBuild = BuildController()
         timeoutBuild.stepTimeout = 0.4

@@ -26,6 +26,11 @@ struct WorkspaceLayoutTests {
             RunLoop.main.run(until: Date().addingTimeInterval(0.35))
             window.contentView?.layoutSubtreeIfNeeded()
         }
+        func settleWindow(_ target: NSWindow) {
+            target.contentView?.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+            target.contentView?.layoutSubtreeIfNeeded()
+        }
         var checks = 0
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             guard condition() else { fatalError("FAILED: \(message)") }
@@ -394,6 +399,39 @@ struct WorkspaceLayoutTests {
         check(abs(reopened.content.editorFraction - 0.35) < 0.02,
               "reopened workspace keeps its stored ratio after the window grows to editing size")
         reopenedWindow.close()
+
+        // The library uses the edge-to-edge card, and opening a document switches
+        // to the inset card in the same update that reveals the PDF pane. The
+        // content split therefore changes width while the fraction is restored;
+        // applying the fraction before the panes see that width used to place the
+        // divider one card inset off centre, which read as "clicking Editor + PDF
+        // widens the editor" after every reopen.
+        let libraryFirst = WorkspaceSplitController(sidebar: pane(), topBar: pane(),
+                                                   editor: pane(NSTextView()), preview: pane(PDFView()), topBarHeight: 46)
+        let libraryWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
+                                     styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        libraryWindow.contentViewController = libraryFirst
+        libraryWindow.setFrameOrigin(NSPoint(x: -20000, y: -10000))
+        libraryWindow.orderFront(nil)
+        libraryWindow.setContentSize(NSSize(width: 1280, height: 800))
+        settleWindow(libraryWindow)
+        for cycle in 0..<2 {
+            libraryFirst.setCardStyle(.library)
+            libraryFirst.update(sidebarVisible: true, paneMode: .editor, splitLayoutVersion: 0)
+            settleWindow(libraryWindow)
+            check(libraryFirst.content.splitViewItems[1].isCollapsed,
+                  "the document library keeps the PDF pane collapsed")
+            // The store resets the split to 50/50 as the document opens; the card
+            // switches to its inset style in the same update that restores the
+            // split. No settle is allowed between those two calls.
+            libraryFirst.restoreLayout(sidebarWidth: 248, editorFraction: 0.5)
+            libraryFirst.setCardStyle(.document)
+            libraryFirst.update(sidebarVisible: true, paneMode: .split, splitLayoutVersion: 0)
+            settleWindow(libraryWindow)
+            check(abs(libraryFirst.content.editorFraction - 0.5) < 0.002,
+                  "opening \(cycle == 0 ? "a document" : "the document again") from the library lands exactly even")
+        }
+        libraryWindow.close()
 
         print("PASS: \(checks) workspace-layout assertions")
     }

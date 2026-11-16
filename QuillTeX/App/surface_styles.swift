@@ -821,8 +821,8 @@ struct QuillOverlayConfirm: View {
                                 actions: confirmActions,
                                 onAction: { code in
                                     if code == 2 {
-                                        request.secondaryCompletion?()
                                         dismiss()
+                                        request.secondaryCompletion?()
                                     } else {
                                         finish(true)
                                     }
@@ -843,8 +843,8 @@ struct QuillOverlayConfirm: View {
     }
 
     private func finish(_ confirmed: Bool) {
-        request.completion(confirmed)
         dismiss()
+        request.completion(confirmed)
     }
 }
 
@@ -896,8 +896,8 @@ struct QuillOverlayPrompt: View {
     }
 
     private func finish(_ value: String?) {
-        request.completion(value)
         dismiss()
+        request.completion(value)
     }
 }
 
@@ -926,8 +926,8 @@ struct QuillOverlaySaveChanges: View {
     }
 
     private func finish(_ choice: QuillCloseChoice) {
-        request.completion(choice)
         dismiss()
+        request.completion(choice)
     }
 }
 

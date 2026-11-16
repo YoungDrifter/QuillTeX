@@ -976,8 +976,10 @@ struct EditorBehaviorTests {
         let tabStore = ProjectStore(library: tabLibrary, catalog: tabCatalog, maintainsRootDirectives: true)
         var closePrompts = 0
         var reportedErrors: [String] = []
+        var externalPrompts = 0
         tabStore.closeConfirmationHandler = { _ in closePrompts += 1; return false }
         tabStore.errorAlertHandler = { title, _ in reportedErrors.append(title) }
+        tabStore.externalChangeDecision = { _ in externalPrompts += 1; return .keepMine }
         tabStore.openProject(documentA, explicitRoot: true)
         check(tabStore.root == documentA && tabStore.tabs.count == 1, "opening a document registers its tab")
         let tabDocA = tabStore.activeDocument!
@@ -1051,6 +1053,74 @@ struct EditorBehaviorTests {
         check(tabStore.activeTabID == libraryTabID && tabStore.showingLibrary,
               "a failed tab open rolls back to the library tab")
         check(tabStore.root == documentA, "a failed tab open keeps the previous project")
+
+        // A confirmed close releases the tab and its background drafts.
+        tabStore.activateTab(aTab)
+        check(tabStore.root == documentA, "the document tab can be activated again before closing")
+        tabStore.closeConfirmationHandler = { _ in closePrompts += 1; return true }
+        tabStore.closeTab(aTab)
+        check(closePrompts == 2 && !tabStore.tabs.contains { $0.id == aTab.id },
+              "a confirmed tab close removes only that tab")
+        check(tabStore.root == documentB, "closing the active tab activates its neighbour")
+        tabStore.sessionStore.flush()
+        check(tabStore.sessionStore.load(root: documentA)?.documents.allSatisfy { $0.draft == nil } == true,
+              "closing a tab clears its discarded session drafts")
+
+        // Two main files in one directory are still distinct project roots.
+        let siblingMain = tabBase.appendingPathComponent("A/sibling.tex")
+        try "\\documentclass{article}\n\\begin{document}\nSibling\n\\end{document}\n"
+            .write(to: siblingMain, atomically: true, encoding: .utf8)
+        tabStore.openProject(documentA, explicitRoot: true)
+        let tabA = tabStore.tabs.first { $0.path?.standardizedFileURL == documentA.standardizedFileURL }!
+        tabStore.openProject(siblingMain, explicitRoot: true)
+        let siblingTab = tabStore.tabs.first { $0.path?.standardizedFileURL == siblingMain.standardizedFileURL }!
+        tabStore.activateTab(tabA)
+        check(tabStore.root == documentA, "switching back to the first main file selects its own project")
+        tabStore.activateTab(siblingTab)
+        check(tabStore.root == siblingMain && tabStore.activeDocument?.url == siblingMain,
+              "a sibling main file in the same folder becomes the compile target")
+
+        // Renaming a background main file carries its session draft along.
+        tabStore.activeDocument?.text += "\n% background sibling draft\n"
+        tabStore.openProject(documentA, explicitRoot: true)
+        tabStore.sessionStore.flush()
+        check(tabStore.sessionStore.load(root: siblingMain)?.documents.contains { $0.draft?.contains("background sibling draft") == true } == true,
+              "the background tab session stores its draft before renaming")
+        let renamedSibling = try tabStore.renameProjectFile(siblingMain, to: "sibling-renamed")
+        check(tabStore.tabs.first { $0.id == siblingTab.id }?.path?.standardizedFileURL == renamedSibling.standardizedFileURL,
+              "renaming a background main file updates its tab")
+        tabStore.sessionStore.flush()
+        check(tabStore.sessionStore.load(root: renamedSibling)?.documents.contains { $0.draft?.contains("background sibling draft") == true } == true,
+              "renaming a background main file migrates its session draft")
+        let renamedTab = tabStore.tabs.first { $0.id == siblingTab.id }!
+        tabStore.activateTab(renamedTab)
+        check(tabStore.root == renamedSibling, "renaming a background main file activates the new root")
+        check(tabStore.activeDocument?.text.contains("background sibling draft") == true,
+              "renaming a background main file keeps its unsaved session draft")
+        check(externalPrompts == 0,
+              "activating a renamed background tab does not report a false external change")
+
+        // Renaming the main file keeps the tab, preview and catalog on one path.
+        let renameBase = tabBase.appendingPathComponent("RenameBehavior", isDirectory: true)
+        let renameMain = renameBase.appendingPathComponent("paper.tex")
+        try FileManager.default.createDirectory(at: renameBase, withIntermediateDirectories: true)
+        try "\\documentclass{article}\n\\begin{document}\nRename\n\\end{document}\n"
+            .write(to: renameMain, atomically: true, encoding: .utf8)
+        let renameCatalog = DocumentCatalog(directory: tabBase.appendingPathComponent("RenameCatalog"))
+        let renameStore = ProjectStore(library: tabLibrary, catalog: renameCatalog, maintainsRootDirectives: true)
+        renameStore.openProject(renameMain, explicitRoot: true)
+        let renameTab = renameStore.tabs.first { $0.path?.standardizedFileURL == renameMain.standardizedFileURL }!
+        renameStore.requestRenameFile(renameMain)
+        renameStore.projectNamePrompt?.completion("renamed-paper")
+        renameStore.projectNamePrompt = nil
+        let renamedMain = renameBase.appendingPathComponent("renamed-paper.tex").standardizedFileURL
+        check(renameStore.root == renamedMain, "renaming the main file updates the workspace root")
+        check(renameStore.tabs.first { $0.id == renameTab.id }?.path?.standardizedFileURL == renamedMain,
+              "renaming the main file updates its open tab without changing identity")
+        check(renameCatalog.entry(forMainFile: renamedMain) != nil
+            && renameCatalog.entry(forMainFile: renameMain) == nil,
+              "renaming the main file moves its library link")
+        renameStore.finishClosing()
 
         // MARK: Template tabs stay template editor pages
 

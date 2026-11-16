@@ -76,6 +76,7 @@ final class BuildController: ObservableObject {
         var started = Date()
         var generation = 0
         var stepDiagnostics: [BuildDiagnostic] = []
+        var failureMessage: String?
     }
 
     // MARK: - Public API
@@ -124,7 +125,7 @@ final class BuildController: ObservableObject {
         generation += 1
         pendingRequest = nil
         active = nil
-        if let process, process.isRunning { process.terminate() }
+        if let process { stopProcess(process) }
         closeStepCapture()
         process = nil
         currentStep = nil
@@ -258,8 +259,7 @@ final class BuildController: ObservableObject {
         guard token == generation, let active, let process, process.isRunning else { return }
         readStepOutput()
         generation += 1
-        process.terminate()
-        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        stopProcess(process)
         closeStepCapture()
         self.process = nil
         self.active = nil
@@ -271,6 +271,21 @@ final class BuildController: ObservableObject {
         selectedDiagnosticID = nil
         currentStep = nil
         log = bounded(log + "\n[QuillTeX] \(message)\n")
+    }
+
+    /// Foundation launches a separate process group on macOS. Stop that group
+    /// when it belongs to this run, so latexmk's engine cannot keep writing after
+    /// Cancel or a timeout. Never signal the application's own process group.
+    private func stopProcess(_ process: Process) {
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        if pid > 0, getpgid(pid) == pid {
+            kill(-pid, SIGTERM)
+            kill(-pid, SIGKILL)
+        } else {
+            process.terminate()
+            if process.isRunning { kill(pid, SIGKILL) }
+        }
     }
 
     private func failCurrentStep(_ step: BuildStep, message: String, alreadyAdvanced: Bool = false) {
@@ -376,6 +391,8 @@ final class BuildController: ObservableObject {
         updated?.transcript = bounded(previousTranscript + "\n===== \(step.title) (exit \(exitCode)) =====\n" + text)
         if BuildLogParser.stepFailed(step, exitCode: exitCode, output: text) {
             updated?.failed = true
+            let tool = step == .engine ? updated?.request.engine.title ?? step.title : step.title
+            updated?.failureMessage = "\(tool) stopped with exit code \(exitCode)."
             if step == .bibtex || step == .biber {
                 let message = text.split(separator: "\n").first { line in
                     line.localizedCaseInsensitiveContains("ERROR") || line.contains("I couldn't") || line.contains("I was expecting")
@@ -400,13 +417,21 @@ final class BuildController: ObservableObject {
         let combined = active.transcript + "\n" + transcript
         log = bounded(active.transcript.isEmpty ? transcript : active.transcript)
 
-        let found = BuildLogParser.diagnostics(in: combined, workingDirectory: directory).map { diagnostic in
+        var found = BuildLogParser.diagnostics(in: combined, workingDirectory: directory).map { diagnostic in
             var diagnostic = diagnostic
             if diagnostic.file == nil && diagnostic.line != nil { diagnostic.file = request.mainFile }
             return diagnostic
         } + active.stepDiagnostics
-        diagnostics = found
         let succeeded = !active.failed
+        // Tool launchers and killed engines can fail before TeX writes a standard
+        // file:line record. The Result pane must still explain the failed run.
+        if !succeeded, !found.contains(where: { $0.severity == .error }) {
+            found.append(BuildDiagnostic(severity: .error,
+                                         message: active.failureMessage ?? "Compilation stopped before producing a complete result.",
+                                         file: request.mainFile, line: nil,
+                                         detail: String(active.transcript.suffix(4_000))))
+        }
+        diagnostics = found
         status = succeeded ? .succeeded(Date(), duration) : .failed(Date(), duration)
         lastSummary = BuildLogParser.summary(for: found, succeeded: succeeded)
         if succeeded {

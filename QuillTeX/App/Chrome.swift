@@ -197,6 +197,7 @@ struct TopBar: View {
     @State private var hoveredTab: UUID?
     @State private var hoveringCloseTab: UUID?
     @State private var tabStripWidth: CGFloat = 0
+    @State private var tabStripViewportWidth: CGFloat = 0
     /// Document controls slide/fade with a hand-driven 60 fps tween. SwiftUI
     /// transitions and implicit opacity animations do not animate reliably in
     /// this AppKit-hosted top bar, so the progress value is stepped explicitly;
@@ -273,7 +274,7 @@ struct TopBar: View {
                     }
                     // Library-only tabs may use the full bar; once a document adds
                     // the compile/pane controls the strip shrinks towards the left.
-                    tabStrip(maxWidth: .infinity)
+                    tabStrip
                     newTabControl
                     Spacer(minLength: 8)
                     if documentControlsRendered {
@@ -310,6 +311,8 @@ struct TopBar: View {
                                alignment: .leading)
                         .clipped()
                         .opacity(documentControlsWidth > 0 ? documentControlsProgress : 1)
+                        .allowsHitTesting(showsDocumentControls)
+                        .accessibilityHidden(!showsDocumentControls)
                         .layoutPriority(2)
                     }
                 }
@@ -326,13 +329,9 @@ struct TopBar: View {
                     }
                     if shown {
                         documentControlsRendered = true
-                        documentControlsProgress = 0
-                        DispatchQueue.main.async {
-                            tweenDocumentControls(to: 1) {
-                                // Keep it visible if the measurement arrives late.
-                                if documentControlsProgress < 1 { documentControlsProgress = 1 }
-                            }
-                        }
+                        // Reverse an in-flight collapse from its current frame,
+                        // instead of snapping back to zero on rapid tab switches.
+                        tweenDocumentControls(to: 1) {}
                     } else {
                         tweenDocumentControls(to: 0) {
                             guard !showsDocumentControls else { return }
@@ -376,40 +375,79 @@ struct TopBar: View {
         }
     }
 
-    private func tabStrip(maxWidth: CGFloat) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
-                ForEach(tabStripItems) { item in
-                    switch item {
-                    case .tab(let tab):
-                        tabPill(tab)
-                    case .gap:
-                        Capsule()
-                            .fill(Palette.primaryInk.opacity(0.08))
-                            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.8))
-                            .frame(width: 8, height: 26)
-                            .transition(.opacity)
+    private var tabStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(tabStripItems) { item in
+                        switch item {
+                        case .tab(let tab):
+                            tabPill(tab)
+                                .id(tab.id)
+                        case .gap:
+                            Capsule()
+                                .fill(Palette.primaryInk.opacity(0.08))
+                                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.8))
+                                .frame(width: 8, height: 26)
+                                .transition(.opacity)
+                        }
+                    }
+                }
+                .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabLayoutSignature)
+                .padding(.vertical, 2)
+                .background {
+                    GeometryReader { strip in
+                        Color.clear.preference(key: TabStripWidthKey.self, value: strip.size.width)
                     }
                 }
             }
-            .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabLayoutSignature)
-            .padding(.vertical, 2)
+            .scrollIndicators(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
+            // Hug the tabs so the add control follows the last one. maxWidth-only is
+            // flexible: HStack shrinks this strip only when the tabs would reach the
+            // fixed compile controls on the right.
+            .frame(maxWidth: max(tabStripWidth, 0), alignment: .leading)
+            // The strip (and the New Tab button behind it) resize on the same clock,
+            // so a new or closing tab never leaves the rest of the bar jumping.
+            .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabStripWidth)
+            .layoutPriority(0)
+            .onPreferenceChange(TabStripWidthKey.self) { tabStripWidth = $0 }
             .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: TabStripWidthKey.self, value: proxy.size.width)
+                GeometryReader { viewport in
+                    Color.clear.preference(key: TabStripViewportWidthKey.self, value: viewport.size.width)
                 }
             }
+            .onPreferenceChange(TabStripViewportWidthKey.self) { width in
+                guard width > 0, abs(width - tabStripViewportWidth) > 0.5 else { return }
+                tabStripViewportWidth = width
+                // Resizing the window can hide the selected tab; keep it in view
+                // without animating the whole strip.
+                revealActiveTab(proxy, animated: false)
+            }
+            .onAppear {
+                // A restored session can select a tab beyond the visible strip
+                // before the bar first appears.
+                revealActiveTab(proxy, animated: false)
+            }
+            .onChange(of: store.activeTabID) { _, _ in
+                // Newly inserted tabs are laid out on the next pass, including
+                // when a sidebar action selects a tab outside the visible strip.
+                revealActiveTab(proxy, animated: true)
+            }
         }
-        .scrollIndicators(.hidden)
-        // Hug the tabs so the add control follows the last one. maxWidth-only is
-        // flexible: HStack shrinks this strip only when the tabs would reach the
-        // fixed compile controls on the right.
-        .frame(maxWidth: max(tabStripWidth, 0), alignment: .leading)
-        // The strip (and the New Tab button behind it) resize on the same clock,
-        // so a new or closing tab never leaves the rest of the bar jumping.
-        .animation(reduceMotion ? nil : ChromeMotion.tab, value: tabStripWidth)
-        .layoutPriority(0)
-        .onPreferenceChange(TabStripWidthKey.self) { tabStripWidth = $0 }
+    }
+
+    /// Scroll just enough to expose the selected tab. The next runloop pass lets
+    /// a newly inserted pill take part in layout first.
+    private func revealActiveTab(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            guard let id = store.activeTabID else { return }
+            if animated {
+                withAnimation(reduceMotion ? nil : ChromeMotion.tab) { proxy.scrollTo(id) }
+            } else {
+                proxy.scrollTo(id)
+            }
+        }
     }
 
     /// With no document tabs the New Tab page is offered as a wide pill; once
@@ -468,18 +506,16 @@ struct TopBar: View {
             }
             .buttonStyle(.plain)
             .chromeControlBoundary()
-            .help(tab.isLibrary ? "Library" : (tab.path?.deletingLastPathComponent().path ?? "New Tab"))
+            .help(tab.isSettings ? "Settings" : (tab.path?.path ?? tab.title))
+            .accessibilityAddTraits(active ? .isSelected : [])
             .contextMenu {
                 if let path = tab.path, !tab.isTemplate {
                     Button("Rename Project") { store.requestRenameProject(path) }
                     Button("Rename Main File") { store.requestRenameFile(path) }
                     Button("Export PDF…") {
-                        if let pdf = store.build.pdfURL {
-                            LibraryPDFExporter.export(pdf: pdf, displayName: tab.title)
-                        } else {
-                            LibraryPDFExporter.export([LibraryEntry(path: path.path,
-                                                                    displayName: tab.title)])
-                        }
+                        let entry = store.catalog?.entry(forMainFile: path)
+                            ?? LibraryEntry(path: path.path, displayName: tab.title)
+                        LibraryPDFExporter.export([entry])
                     }
                 }
             }
@@ -553,10 +589,9 @@ struct TopBar: View {
     /// the existing layout (instead of a removal transition) means the strip
     /// never renders a clipped edge while it reflows.
     private func closeTabAnimated(_ tab: WorkspaceTab) {
-        let isDirty = tab.path.map { path in
-            store.documents.contains { $0.url.standardizedFileURL == path.standardizedFileURL && $0.isDirty }
-        } ?? false
-        guard !isDirty, !reduceMotion, !closingTabIDs.contains(tab.id) else {
+        guard !closingTabIDs.contains(tab.id) else { return }
+        let isDirty = !store.unsavedDocuments(forTab: tab).isEmpty
+        guard !isDirty, !reduceMotion else {
             store.closeTab(tab)
             return
         }
@@ -682,6 +717,11 @@ private struct DocumentControlsWidthKey: PreferenceKey {
 }
 
 private struct TabStripWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct TabStripViewportWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

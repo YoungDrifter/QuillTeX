@@ -116,6 +116,10 @@ enum LibrarySortOrder: String, Codable, CaseIterable, Identifiable {
     case updated
     var id: String { rawValue }
 
+    var defaultAscending: Bool {
+        self == .manual || self == .name || self == .kind
+    }
+
     var title: String {
         switch self {
         case .manual: "Manual"
@@ -126,6 +130,53 @@ enum LibrarySortOrder: String, Codable, CaseIterable, Identifiable {
         case .created: "Date Created"
         case .updated: "Date Updated"
         }
+    }
+}
+
+/// Calendar groups shared by the document and template browsers. The caller
+/// supplies already-sorted items, so both groups and rows follow its direction.
+enum LibraryDateGrouping {
+    static func groups<Item>(_ items: [Item], date: (Item) -> Date, ascending: Bool = false,
+                             now: Date = Date(), calendar: Calendar = .current) -> [(title: String, items: [Item])] {
+        let today = calendar.startOfDay(for: now)
+        let boundaries = [0, -1, -7, -30].map {
+            calendar.date(byAdding: .day, value: $0, to: today) ?? today
+        }
+        var buckets = Array(repeating: [Item](), count: 5)
+        for item in items {
+            let value = date(item)
+            let index = boundaries.firstIndex { value >= $0 } ?? 4
+            buckets[index].append(item)
+        }
+        let titles = ["Today", "Yesterday", "Last 7 Days", "Last 30 Days", "Earlier"]
+        let indices = ascending ? Array(titles.indices.reversed()) : Array(titles.indices)
+        return indices.compactMap { index in
+            buckets[index].isEmpty ? nil : (titles[index], buckets[index])
+        }
+    }
+}
+
+/// Resolve the same output location as compilation before considering PDFs from
+/// an earlier configuration. This is also used by library thumbnails and export.
+enum LibraryPDFLocator {
+    static func pdfURL(for entry: LibraryEntry, outputDirectory: String) -> URL? {
+        let configured = (outputDirectory as NSString).expandingTildeInPath
+        let output = configured.hasPrefix("/")
+            ? URL(fileURLWithPath: configured, isDirectory: true)
+            : entry.folderURL.appendingPathComponent(configured.isEmpty ? "." : configured, isDirectory: true)
+        let fileName = entry.url.deletingPathExtension().lastPathComponent + ".pdf"
+        let candidates = [output.appendingPathComponent(fileName),
+                          entry.folderURL.appendingPathComponent(fileName),
+                          entry.folderURL.deletingLastPathComponent().appendingPathComponent(fileName),
+                          entry.folderURL.appendingPathComponent("build").appendingPathComponent(fileName)]
+        var seen = Set<String>()
+        for candidate in candidates {
+            let url = candidate.standardizedFileURL
+            guard seen.insert(url.path).inserted,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            return url
+        }
+        return nil
     }
 }
 
@@ -379,8 +430,8 @@ final class DocumentCatalog: ObservableObject {
         }
     }
 
-    func sorted(_ entries: [LibraryEntry], by order: LibrarySortOrder) -> [LibraryEntry] {
-        switch order {
+    func sorted(_ entries: [LibraryEntry], by order: LibrarySortOrder, ascending: Bool? = nil) -> [LibraryEntry] {
+        let result: [LibraryEntry] = switch order {
         case .manual: entries
         case .lastViewed: entries.sorted { $0.lastViewedAt > $1.lastViewedAt }
         case .added: entries.sorted { $0.addedAt > $1.addedAt }
@@ -395,6 +446,8 @@ final class DocumentCatalog: ObservableObject {
                 return $0.kind.rawValue.localizedStandardCompare($1.kind.rawValue) == .orderedAscending
             }
         }
+        guard order != .manual, let ascending, ascending != order.defaultAscending else { return result }
+        return Array(result.reversed())
     }
 
     /// The folder's chosen order; folders that were never sorted follow the

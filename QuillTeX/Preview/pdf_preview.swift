@@ -556,6 +556,9 @@ struct PreviewPane: View {
                 if !focused { commitZoom() }
             }
             .onChange(of: controls.percentage) { _, value in
+                // PDFKit may report a delayed scale change while the user types.
+                // Preserve the in-progress value until Return or focus loss.
+                guard !zoomFocused || !zoomTextEdited else { return }
                 zoomText = value
                 zoomTextEdited = false
             }

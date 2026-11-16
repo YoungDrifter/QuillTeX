@@ -131,8 +131,9 @@ struct SettingsPage<Content: View>: View {
                 }
                 content()
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 720, alignment: .leading)
             .padding(SettingsStyle.padding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 }

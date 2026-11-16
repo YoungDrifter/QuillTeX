@@ -44,13 +44,15 @@ final class WorkspaceSessionStore: @unchecked Sendable {
             return state
         }
     }
-    func save(_ state: WorkspaceSession, retiringRoots: [URL] = [], completion: (@Sendable (String?) -> Void)? = nil) {
+    func save(_ state: WorkspaceSession, retiringRoots: [URL] = [], updateLastWorkspace: Bool = true, completion: (@Sendable (String?) -> Void)? = nil) {
         queue.async { [self] in
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 let data = try JSONEncoder().encode(state)
                 try data.write(to: file(for: URL(fileURLWithPath: state.rootPath)), options: .atomic)
-                try Data(state.rootPath.utf8).write(to: directory.appendingPathComponent("LastWorkspace"), options: .atomic)
+                if updateLastWorkspace {
+                    try Data(state.rootPath.utf8).write(to: directory.appendingPathComponent("LastWorkspace"), options: .atomic)
+                }
                 for root in retiringRoots where root.path != state.rootPath {
                     let oldFile = file(for: root)
                     guard let previous = try? Data(contentsOf: oldFile),

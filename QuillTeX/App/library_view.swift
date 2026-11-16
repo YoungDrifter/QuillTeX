@@ -13,6 +13,10 @@ private enum LibraryLook {
     /// Extra indent for a folder's documents: they read as children of the
     /// folder's name instead of lining up with another folder row.
     static let sidebarDocumentIndent: CGFloat = 44
+    /// The library tree uses one row spacing everywhere so the measured branch
+    /// height matches what the reveal clips.
+    static let sidebarRowSpacing: CGFloat = 1
+    static let sidebarDocumentRowHeight: CGFloat = 28
     /// One nesting step for subfolders and for documents one level deeper.
     static let sidebarIndentStep: CGFloat = 18
     static let browserInset: CGFloat = 24
@@ -170,7 +174,7 @@ private struct LibrarySortMenu: View {
                                 ascending.toggle()
                             } else if on {
                                 sort = order
-                                ascending = false
+                                ascending = order.defaultAscending
                             }
                         })) {
                         Text(order.title + (active ? (ascending ? "  ↑" : "  ↓") : ""))
@@ -204,20 +208,28 @@ private struct LibrarySortMenu: View {
     }
 }
 
+private struct LibraryContentWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 /// One shared column header for documents and templates.
 private struct LibraryTableHeader: View {
     @Binding var sort: LibrarySortOrder
     @Binding var ascending: Bool
     var trailingWidth: CGFloat = 0
     var showsAdded = true
+    var showsLastViewed = true
     var inset: CGFloat = LibraryLook.browserInset
 
     var body: some View {
         HStack(spacing: 0) {
             button("Name", order: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            button("Last Viewed", order: .lastViewed)
-                .frame(width: LibraryLook.dateColumnWidth, alignment: .leading)
+            if showsLastViewed {
+                button("Last Viewed", order: .lastViewed)
+                    .frame(width: LibraryLook.dateColumnWidth, alignment: .leading)
+            }
             if showsAdded {
                 button("Added", order: .added)
                     .frame(width: LibraryLook.dateColumnWidth, alignment: .leading)
@@ -238,7 +250,7 @@ private struct LibraryTableHeader: View {
                 ascending.toggle()
             } else {
                 sort = order
-                ascending = false
+                ascending = order.defaultAscending
             }
         } label: {
             HStack(spacing: 3) {
@@ -265,10 +277,11 @@ private struct LibraryDateColumns: View {
     var added: Date? = nil
     let updated: Date
     let created: Date
+    var showsLastViewed = true
 
     var body: some View {
         HStack(spacing: 0) {
-            cell(lastViewed)
+            if showsLastViewed { cell(lastViewed) }
             if let added { cell(added) }
             cell(updated)
             cell(created)
@@ -297,17 +310,19 @@ private final class LibraryThumbnailStore: @unchecked Sendable {
         cache.countLimit = 256
     }
 
-    func thumbnail(for entry: LibraryEntry, size: NSSize) async -> NSImage? {
+    func thumbnail(for entry: LibraryEntry, size: NSSize, outputDirectory: String) async -> NSImage? {
         await withCheckedContinuation { continuation in
             queue.async {
-                continuation.resume(returning: Self.load(entry: entry, size: size, cache: self.cache))
+                continuation.resume(returning: Self.load(entry: entry, size: size,
+                                                         outputDirectory: outputDirectory,
+                                                         cache: self.cache))
             }
         }
     }
 
-    private static func load(entry: LibraryEntry, size: NSSize,
+    private static func load(entry: LibraryEntry, size: NSSize, outputDirectory: String,
                              cache: NSCache<NSString, NSImage>) -> NSImage? {
-        guard let (url, key) = resolvePDF(for: entry) else { return nil }
+        guard let (url, key) = resolvePDF(for: entry, outputDirectory: outputDirectory) else { return nil }
         // The same PDF is requested at very different sizes (tiny row icon vs a
         // full gallery page); the cache key must include the size or a small
         // thumbnail would be stretched into a blurry large one.
@@ -320,34 +335,17 @@ private final class LibraryThumbnailStore: @unchecked Sendable {
     }
 
     /// The staged compiled PDF for a library entry, if one exists.
-    static func pdfURL(for entry: LibraryEntry) -> URL? {
-        resolvePDF(for: entry)?.0
+    static func pdfURL(for entry: LibraryEntry, outputDirectory: String) -> URL? {
+        resolvePDF(for: entry, outputDirectory: outputDirectory)?.0
     }
 
-    /// The compiled PDF usually sits next to the main .tex; also accept a
-    /// same-named PDF in the document folder, its parent, or the build folder.
-    private static func resolvePDF(for entry: LibraryEntry) -> (URL, String)? {
-        var seen = Set<String>()
-        for url in candidates(for: entry) {
-            let path = url.standardizedFileURL.path
-            guard seen.insert(path).inserted else { continue }
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate?.timeIntervalSince1970 ?? 0
-            return (url, "\(path)#\(modified)")
-        }
-        return nil
-    }
-
-    private static func candidates(for entry: LibraryEntry) -> [URL] {
-        let stem = entry.url.deletingPathExtension().lastPathComponent
-        let sibling = entry.url.deletingPathExtension().appendingPathExtension("pdf")
-        let documentFolder = entry.folderURL.appendingPathComponent(stem).appendingPathExtension("pdf")
-        let parentFolder = entry.folderURL.deletingLastPathComponent()
-            .appendingPathComponent(stem).appendingPathExtension("pdf")
-        let buildFolder = entry.folderURL.appendingPathComponent("build")
-            .appendingPathComponent(stem).appendingPathExtension("pdf")
-        return [sibling, documentFolder, parentFolder, buildFolder]
+    /// Resolve the same output location as compilation, then accept the old
+    /// beside-the-source and build-folder locations for existing projects.
+    private static func resolvePDF(for entry: LibraryEntry, outputDirectory: String) -> (URL, String)? {
+        guard let url = LibraryPDFLocator.pdfURL(for: entry, outputDirectory: outputDirectory) else { return nil }
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?.timeIntervalSince1970 ?? 0
+        return (url, "\(url.standardizedFileURL.path)#\(modified)")
     }
 }
 
@@ -364,8 +362,11 @@ enum LibraryPDFExporter {
         var exported = 0
         var missing: [String] = []
         var failed: [String] = []
+        // Resolve the output the same way compilation does, so a build folder
+        // inside the project is preferred over a stale sibling PDF.
+        let outputDirectory = BuildSettings.shared.outputDirectory
         for entry in unique {
-            guard let pdf = LibraryThumbnailStore.pdfURL(for: entry) else {
+            guard let pdf = LibraryPDFLocator.pdfURL(for: entry, outputDirectory: outputDirectory) else {
                 missing.append(entry.displayName)
                 continue
             }
@@ -444,6 +445,7 @@ struct LibraryDocumentThumbnail: View {
     var cornerRadius: CGFloat = 7
 
     @State private var image: NSImage?
+    @State private var outputDirectory = "."
 
     private var revision: String {
         "\(entry.path)#\(entry.updatedAt?.timeIntervalSince1970 ?? 0)"
@@ -471,11 +473,13 @@ struct LibraryDocumentThumbnail: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(shape)
-        .task(id: revision) {
+        .task(id: "\(revision)#\(outputDirectory)") {
             image = nil
             image = await LibraryThumbnailStore.shared.thumbnail(
-                for: entry, size: NSSize(width: size.width * 2, height: size.height * 2))
+                for: entry, size: NSSize(width: size.width * 2, height: size.height * 2),
+                outputDirectory: outputDirectory)
         }
+        .onAppear { outputDirectory = BuildSettings.shared.outputDirectory }
     }
 }
 
@@ -880,93 +884,23 @@ struct LibrarySidebarContent: View {
     }
 
     private var folderList: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(folderNodes) { node in
-                switch node.kind {
-                case .folder(let item):
-                    folderRow(item, depth: node.depth)
-                case .document(let entry):
-                    LibrarySidebarDocumentRow(
-                        entry: entry,
-                        indent: LibraryLook.sidebarDocumentIndent
-                            + CGFloat(max(0, node.depth - 1)) * LibraryLook.sidebarIndentStep,
-                        store: store, catalog: catalog,
-                        onOpen: { onOpenEntry(entry) })
-                }
+        // Each folder emits its own subtree so every level is inserted and
+        // removed with the same branch reveal. A flat ForEach only animated the
+        // rows below a collapsed folder, which made a top-level folder pop in
+        // and out while a nested one appeared to unfold.
+        VStack(alignment: .leading, spacing: LibraryLook.sidebarRowSpacing) {
+            LibraryFolderBranch(item: .unsorted, depth: 0,
+                                expandedFolders: expandedFolders,
+                                store: store, catalog: catalog,
+                                onOpenEntry: onOpenEntry,
+                                onToggle: toggleFolder)
+            ForEach(catalog.rootFolders) { folder in
+                LibraryFolderBranch(item: .folder(folder), depth: 0,
+                                    expandedFolders: expandedFolders,
+                                    store: store, catalog: catalog,
+                                    onOpenEntry: onOpenEntry,
+                                    onToggle: toggleFolder)
             }
-        }
-    }
-
-    /// Visible sidebar tree rows in depth-first order. Expanding a folder shows
-    /// its subfolders first, then the documents filed directly inside it.
-    private var folderNodes: [LibraryFolderNode] {
-        var nodes: [LibraryFolderNode] = []
-        nodes.append(LibraryFolderNode(id: "folder-unsorted", kind: .folder(.unsorted), depth: 0))
-        if expandedFolders.contains(.unsorted) {
-            for entry in catalog.sorted(catalog.unsortedEntries, by: catalog.sortOrder(in: nil)) {
-                nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: 1))
-            }
-        }
-        func append(_ folder: LibraryFolder, depth: Int) {
-            nodes.append(LibraryFolderNode(id: "folder-\(folder.id)", kind: .folder(.folder(folder)), depth: depth))
-            guard expandedFolders.contains(.folder(folder.id)) else { return }
-            for child in catalog.childFolders(of: folder.id) { append(child, depth: depth + 1) }
-            for entry in catalog.sorted(catalog.entries(inFolder: folder.id),
-                                        by: catalog.sortOrder(in: folder.id)) {
-                nodes.append(LibraryFolderNode(id: "entry-\(entry.id)", kind: .document(entry), depth: depth + 1))
-            }
-        }
-        for folder in catalog.rootFolders { append(folder, depth: 0) }
-        return nodes
-    }
-
-    @ViewBuilder
-    private func folderRow(_ item: LibraryFolderItem, depth: Int) -> some View {
-        switch item {
-        case .unsorted:
-            LibraryFolderRow(
-                key: .unsorted,
-                name: DocumentCatalog.unsortedTitle,
-                symbol: "tray",
-                tint: .gray,
-                count: catalog.unsortedEntries.count,
-                entries: catalog.unsortedEntries,
-                hasChildren: !catalog.unsortedEntries.isEmpty,
-                depth: depth,
-                isSelected: store.librarySelection == .folder(nil),
-                isExpanded: expandedFolders.contains(.unsorted),
-                store: store,
-                catalog: catalog,
-                onSelect: {
-                    store.showLibrary(selection: .folder(nil), title: DocumentCatalog.unsortedTitle)
-                },
-                onToggle: { toggleFolder(.unsorted) }
-            )
-        case .folder(let folder):
-            let index = catalog.folders.firstIndex(where: { $0.id == folder.id }) ?? 0
-            let entries = catalog.entries(inFolder: folder.id)
-            // The row's count is the folder's whole subtree, matching what
-            // opening the folder shows; direct files alone read as 0 for a
-            // folder that only holds subfolders.
-            let subtreeEntries = catalog.entries(in: .folder(folder.id))
-            LibraryFolderRow(
-                key: .folder(folder.id),
-                name: folder.name,
-                symbol: "folder",
-                tint: folder.color?.tint ?? LibraryLook.folderTints[index % LibraryLook.folderTints.count],
-                count: subtreeEntries.count,
-                entries: entries,
-                hasChildren: !entries.isEmpty || !catalog.childFolders(of: folder.id).isEmpty,
-                depth: depth,
-                isSelected: store.librarySelection == .folder(folder.id),
-                isExpanded: expandedFolders.contains(.folder(folder.id)),
-                store: store,
-                catalog: catalog,
-                onSelect: {
-                    store.showLibrary(selection: .folder(folder.id), title: folder.name)
-                },
-                onToggle: { toggleFolder(.folder(folder.id)) }
-            )
         }
     }
 
@@ -1038,8 +972,8 @@ private let libraryFolderSortOptions: [LibrarySortOrder] = [
     .manual, .name, .kind, .lastViewed, .created, .updated
 ]
 
-/// Sidebar row for one folder. Child folders and documents are emitted by the
-/// sidebar as separate depth-tagged rows, so nesting never has to recurse here.
+/// Sidebar row for one folder. Its expanded subtree is emitted by
+/// LibraryFolderBranch, which keeps every nesting level on the same reveal.
 private struct LibraryFolderRow: View {
     let key: LibraryFolderKey
     let name: String
@@ -1223,6 +1157,175 @@ private struct LibraryFolderRow: View {
     }
 }
 
+/// One folder row plus its expanded subtree. Every level uses the same
+/// height reveal, so a top-level folder folds exactly like a nested one instead
+/// of depending on rows below it to animate.
+private struct LibraryFolderBranch: View {
+    let item: LibraryFolderItem
+    let depth: Int
+    let expandedFolders: Set<LibraryFolderKey>
+    @ObservedObject var store: ProjectStore
+    @ObservedObject var catalog: DocumentCatalog
+    let onOpenEntry: (LibraryEntry) -> Void
+    let onToggle: (LibraryFolderKey) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var contentPresent = false
+    @State private var contentOpen = false
+    @State private var naturalHeight: CGFloat = 0
+    @State private var closeWork: DispatchWorkItem?
+    @State private var syncGeneration = 0
+
+    private var key: LibraryFolderKey { item.key }
+    private var folder: LibraryFolder? {
+        if case .folder(let folder) = item { return folder }
+        return nil
+    }
+    private var entries: [LibraryEntry] {
+        switch item {
+        case .unsorted: catalog.unsortedEntries
+        case .folder(let folder): catalog.entries(inFolder: folder.id)
+        }
+    }
+    private var sortedEntries: [LibraryEntry] {
+        catalog.sorted(entries, by: catalog.sortOrder(in: folder?.id))
+    }
+    private var childFolders: [LibraryFolder] {
+        guard let folder else { return [] }
+        return catalog.childFolders(of: folder.id)
+    }
+    private var isExpanded: Bool { expandedFolders.contains(key) }
+    private var hasChildren: Bool { !entries.isEmpty || !childFolders.isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: LibraryLook.sidebarRowSpacing) {
+            row
+            if contentPresent {
+                VStack(alignment: .leading, spacing: LibraryLook.sidebarRowSpacing) {
+                    // Subfolders come first, then the documents filed directly
+                    // inside this folder, matching the order of the row list.
+                    ForEach(childFolders) { child in
+                        LibraryFolderBranch(item: .folder(child), depth: depth + 1,
+                                            expandedFolders: expandedFolders,
+                                            store: store, catalog: catalog,
+                                            onOpenEntry: onOpenEntry,
+                                            onToggle: onToggle)
+                    }
+                    ForEach(sortedEntries) { entry in
+                        LibrarySidebarDocumentRow(
+                            entry: entry,
+                            indent: LibraryLook.sidebarDocumentIndent
+                                + CGFloat(depth) * LibraryLook.sidebarIndentStep,
+                            store: store, catalog: catalog,
+                            onOpen: { onOpenEntry(entry) })
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: LibraryBranchHeightKey.self,
+                                           value: proxy.size.height)
+                })
+                .frame(height: contentOpen ? naturalHeight : 0, alignment: .top)
+                .clipped()
+                .opacity(contentOpen ? 1 : 0)
+                .allowsHitTesting(contentOpen)
+                .accessibilityHidden(!contentOpen)
+                .onPreferenceChange(LibraryBranchHeightKey.self) { height in
+                    guard height > 0, abs(height - naturalHeight) > 0.5 else { return }
+                    naturalHeight = height
+                }
+            }
+        }
+        .onAppear { if isExpanded != contentPresent { sync(animated: false) } }
+        .onChange(of: isExpanded) { _, _ in sync(animated: true) }
+        .onDisappear { closeWork?.cancel() }
+    }
+
+    /// Mount the subtree first so its natural height is known, then animate the
+    /// occupied height open. Closing animates the same height to zero before
+    /// the subtree leaves the hierarchy, which keeps the removed rows clipped
+    /// and lets rows below slide instead of jumping.
+    private func sync(animated: Bool) {
+        closeWork?.cancel()
+        closeWork = nil
+        syncGeneration &+= 1
+        let generation = syncGeneration
+        let animate = animated && !reduceMotion
+        if isExpanded && hasChildren {
+            if contentPresent {
+                withAnimation(animate ? ChromeMotion.transition : nil) { contentOpen = true }
+            } else {
+                contentPresent = true
+                contentOpen = false
+                naturalHeight = 0
+                DispatchQueue.main.async {
+                    guard generation == syncGeneration, isExpanded, contentPresent else { return }
+                    withAnimation(animate ? ChromeMotion.transition : nil) { contentOpen = true }
+                }
+            }
+        } else if contentPresent {
+            withAnimation(animate ? ChromeMotion.transition : nil) { contentOpen = false }
+            let work = DispatchWorkItem {
+                guard generation == syncGeneration, !isExpanded else { return }
+                contentPresent = false
+            }
+            closeWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + (animate ? 0.26 : 0), execute: work)
+        }
+    }
+
+    @ViewBuilder
+    private var row: some View {
+        switch item {
+        case .unsorted:
+            LibraryFolderRow(
+                key: .unsorted,
+                name: DocumentCatalog.unsortedTitle,
+                symbol: "tray",
+                tint: .gray,
+                count: catalog.unsortedEntries.count,
+                entries: catalog.unsortedEntries,
+                hasChildren: !catalog.unsortedEntries.isEmpty,
+                depth: depth,
+                isSelected: store.librarySelection == .folder(nil),
+                isExpanded: isExpanded,
+                store: store, catalog: catalog,
+                onSelect: {
+                    store.showLibrary(selection: .folder(nil), title: DocumentCatalog.unsortedTitle)
+                },
+                onToggle: { onToggle(.unsorted) }
+            )
+        case .folder(let folder):
+            let index = catalog.folders.firstIndex(where: { $0.id == folder.id }) ?? 0
+            LibraryFolderRow(
+                key: .folder(folder.id),
+                name: folder.name,
+                symbol: "folder",
+                tint: folder.color?.tint ?? LibraryLook.folderTints[index % LibraryLook.folderTints.count],
+                count: catalog.entries(in: .folder(folder.id)).count,
+                entries: entries,
+                hasChildren: hasChildren,
+                depth: depth,
+                isSelected: store.librarySelection == .folder(folder.id),
+                isExpanded: isExpanded,
+                store: store, catalog: catalog,
+                onSelect: {
+                    store.showLibrary(selection: .folder(folder.id), title: folder.name)
+                },
+                onToggle: { onToggle(.folder(folder.id)) }
+            )
+        }
+    }
+}
+
+private struct LibraryBranchHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// A document filed in a folder. Its indent comes from the sidebar tree so a
 /// subfolder's documents step in one more level than the subfolder itself.
 private struct LibrarySidebarDocumentRow: View {
@@ -1265,7 +1368,7 @@ private struct LibrarySidebarDocumentRow: View {
             }
             .padding(.leading, 2)
             .padding(.trailing, 8)
-            .frame(height: 28)
+            .frame(height: LibraryLook.sidebarDocumentRowHeight)
             .contentShape(Rectangle())
         .padding(.leading, indent)
         .contentShape(Rectangle())
@@ -1337,16 +1440,6 @@ private enum LibraryFolderItem {
     }
 }
 
-private struct LibraryFolderNode: Identifiable {
-    enum Kind {
-        case folder(LibraryFolderItem)
-        case document(LibraryEntry)
-    }
-    let id: String
-    let kind: Kind
-    let depth: Int
-}
-
 // MARK: - Browser
 
 /// The All Documents browser drawn straight on the window's blurred backdrop: no card,
@@ -1366,8 +1459,19 @@ struct LibraryBrowser: View {
     @FocusState private var searchFocused: Bool
     @State private var searchFocusMonitor: Any?
     @State private var sortAscending = false
+    @State private var contentWidth: CGFloat = 800
 
     private var totalEntries: [LibraryEntry] { catalog.entries(in: store.librarySelection) }
+
+    /// A narrow window keeps the title, view switch, sort and search usable by
+    /// dropping the document count and then the least useful date columns.
+    private var compactHeader: Bool { contentWidth < 700 }
+    private var veryCompact: Bool { contentWidth < 620 }
+    private var showsCount: Bool { contentWidth >= 680 }
+    private var showsAddedColumn: Bool { contentWidth >= 700 }
+    private var showsLastViewedColumn: Bool { contentWidth >= 560 }
+    private var headerInset: CGFloat { veryCompact ? 16 : LibraryLook.browserInset }
+    private var searchWidth: CGFloat { veryCompact ? 132 : (compactHeader ? 168 : 196) }
 
     /// Folder views carry their own sort (set from the folder's context menu);
     /// other views keep the toolbar's sort.
@@ -1395,8 +1499,7 @@ struct LibraryBrowser: View {
     }
 
     private var orderedEntries: [LibraryEntry] {
-        let base = catalog.sorted(visibleEntries, by: effectiveSort)
-        return sortAscending ? base.reversed() : base
+        catalog.sorted(visibleEntries, by: effectiveSort, ascending: sortAscending)
     }
 
     private var groups: [LibraryDateGroup] {
@@ -1405,25 +1508,10 @@ struct LibraryBrowser: View {
         guard let dateColumn else {
             return orderedEntries.isEmpty ? [] : [LibraryDateGroup(title: "", entries: orderedEntries)]
         }
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfToday = calendar.startOfDay(for: now)
-        let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
-        let startOfLast7 = calendar.date(byAdding: .day, value: -7, to: startOfToday) ?? startOfYesterday
-        let startOfLast30 = calendar.date(byAdding: .day, value: -30, to: startOfToday) ?? startOfLast7
-        var buckets: [[LibraryEntry]] = Array(repeating: [], count: 5)
-        for entry in orderedEntries {
-            let date = dateColumn.value(entry)
-            if date >= startOfToday { buckets[0].append(entry) }
-            else if date >= startOfYesterday { buckets[1].append(entry) }
-            else if date >= startOfLast7 { buckets[2].append(entry) }
-            else if date >= startOfLast30 { buckets[3].append(entry) }
-            else { buckets[4].append(entry) }
-        }
-        let titles = ["Today", "Yesterday", "Last 7 Days", "Last 30 Days", "Earlier"]
-        return zip(titles, buckets).compactMap { title, entries in
-            entries.isEmpty ? nil : LibraryDateGroup(title: title, entries: entries)
-        }
+        // Groups follow the arrow too: ascending shows Earlier before Today.
+        return LibraryDateGrouping.groups(orderedEntries, date: dateColumn.value,
+                                          ascending: sortAscending)
+            .map { LibraryDateGroup(title: $0.title, entries: $0.items) }
     }
 
     private var isSearching: Bool {
@@ -1464,6 +1552,15 @@ struct LibraryBrowser: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: LibraryContentWidthKey.self, value: proxy.size.width)
+            }
+        }
+        .onPreferenceChange(LibraryContentWidthKey.self) { width in
+            guard width > 0, abs(width - contentWidth) > 0.5 else { return }
+            contentWidth = width
+        }
     }
 
     // MARK: Header
@@ -1530,26 +1627,28 @@ struct LibraryBrowser: View {
     }
 
     private var browserHeader: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: compactHeader ? 6 : 10) {
             newDocumentControl
 
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Text(browserTitle)
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: veryCompact ? 21 : 24, weight: .semibold))
                     .foregroundStyle(Palette.primaryInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(countText)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Palette.secondaryInk)
-                    .lineLimit(1)
+                if showsCount {
+                    Text(countText)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Palette.secondaryInk)
+                        .lineLimit(1)
+                }
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: veryCompact ? 4 : 12)
             LibraryViewModeControl(mode: $viewMode)
             sortMenu
             searchField
         }
-        .padding(.horizontal, LibraryLook.browserInset)
+        .padding(.horizontal, headerInset)
         .padding(.top, 20)
         .padding(.bottom, 14)
     }
@@ -1579,7 +1678,7 @@ struct LibraryBrowser: View {
             }
         }
         .padding(.horizontal, 11)
-        .frame(width: 196)
+        .frame(width: searchWidth)
         .modifier(LibraryControlSurface())
         // Fill the whole pill on hover, not just the text area.
         .overlay {
@@ -1635,7 +1734,10 @@ struct LibraryBrowser: View {
 
     private var columnHeader: some View {
         LibraryTableHeader(sort: sortBinding, ascending: $sortAscending,
-                           trailingWidth: LibraryLook.rowActionsWidth)
+                           trailingWidth: LibraryLook.rowActionsWidth,
+                           showsAdded: showsAddedColumn,
+                           showsLastViewed: showsLastViewedColumn,
+                           inset: headerInset)
     }
 
     // MARK: Content
@@ -1651,6 +1753,9 @@ struct LibraryBrowser: View {
                             catalog: catalog,
                             entry: entry,
                             dateColumn: dateColumn,
+                            showsAdded: showsAddedColumn,
+                            showsLastViewed: showsLastViewedColumn,
+                            inset: headerInset,
                             onOpen: { onOpenEntry(entry) }
                         )
                     }
@@ -1689,7 +1794,7 @@ struct LibraryBrowser: View {
         Text(title)
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(Palette.secondaryInk)
-            .padding(.horizontal, LibraryLook.browserInset)
+            .padding(.horizontal, headerInset)
             .padding(.top, 16)
             .padding(.bottom, 5)
     }
@@ -1846,6 +1951,9 @@ private struct LibraryBrowserRow: View {
     @ObservedObject var catalog: DocumentCatalog
     let entry: LibraryEntry
     let dateColumn: LibraryDateColumn?
+    var showsAdded = true
+    var showsLastViewed = true
+    var inset: CGFloat = LibraryLook.browserInset
     let onOpen: () -> Void
 
     @State private var hovered = false
@@ -1861,7 +1969,7 @@ private struct LibraryBrowserRow: View {
                 .opacity(hovered || entry.starred ? 1 : 0)
                 .allowsHitTesting(hovered || entry.starred)
         }
-        .padding(.trailing, LibraryLook.browserInset)
+        .padding(.trailing, inset)
         .frame(height: LibraryLook.browserRowHeight)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -1872,8 +1980,8 @@ private struct LibraryBrowserRow: View {
             Rectangle()
                 .fill(Palette.hairline.opacity(0.75))
                 .frame(height: 0.7)
-                .padding(.leading, LibraryLook.browserInset + LibraryLook.docTileSize.width + 11)
-                .padding(.trailing, LibraryLook.browserInset)
+                .padding(.leading, inset + LibraryLook.docTileSize.width + 11)
+                .padding(.trailing, inset)
         }
         .onContinuousHover { phase in
             switch phase {
@@ -1916,11 +2024,12 @@ private struct LibraryBrowserRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             LibraryDateColumns(lastViewed: entry.lastViewedAt,
-                               added: entry.addedAt,
+                               added: showsAdded ? entry.addedAt : nil,
                                updated: entry.updatedAt ?? entry.addedAt,
-                               created: entry.createdOnDiskAt ?? entry.addedAt)
+                               created: entry.createdOnDiskAt ?? entry.addedAt,
+                               showsLastViewed: showsLastViewed)
         }
-        .padding(.leading, LibraryLook.browserInset)
+        .padding(.leading, inset)
         .frame(height: LibraryLook.browserRowHeight)
         .contentShape(Rectangle())
     }
@@ -1999,7 +2108,9 @@ private struct LibraryGridCard: View {
                         .font(.system(size: 9.5))
                         .foregroundStyle(Palette.secondaryInk.opacity(0.85))
                     Spacer(minLength: 0)
-                    if !catalog.isMissing(entry), LibraryThumbnailStore.pdfURL(for: entry) == nil {
+                    if !catalog.isMissing(entry),
+                       LibraryThumbnailStore.pdfURL(for: entry,
+                           outputDirectory: BuildSettings.shared.outputDirectory) == nil {
                         Text("No PDF")
                             .font(.system(size: 9.5))
                             .foregroundStyle(Palette.secondaryInk.opacity(0.7))
@@ -2292,32 +2403,20 @@ private struct TemplatesBrowser: View {
         case .created:
             sorted = filtered.sorted { createdDate($0) > createdDate($1) }
         }
-        return sortAscending ? sorted.reversed() : sorted
+        // Base order is already the field's natural direction: names ascend,
+        // dates descend. Reverse only when the arrow asks for the other one.
+        guard sort != .manual, sortAscending != sort.defaultAscending else { return sorted }
+        return sorted.reversed()
     }
 
     private var groupedTemplates: [(title: String, templates: [DocumentTemplate])] {
         guard let column = dateColumn else {
             return visibleTemplates.isEmpty ? [] : [("", visibleTemplates)]
         }
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfToday = calendar.startOfDay(for: now)
-        let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
-        let startOfLast7 = calendar.date(byAdding: .day, value: -7, to: startOfToday) ?? startOfYesterday
-        let startOfLast30 = calendar.date(byAdding: .day, value: -30, to: startOfToday) ?? startOfLast7
-        var buckets: [[DocumentTemplate]] = Array(repeating: [], count: 5)
-        for template in visibleTemplates {
-            let date = templateDate(template, column: column)
-            if date >= startOfToday { buckets[0].append(template) }
-            else if date >= startOfYesterday { buckets[1].append(template) }
-            else if date >= startOfLast7 { buckets[2].append(template) }
-            else if date >= startOfLast30 { buckets[3].append(template) }
-            else { buckets[4].append(template) }
-        }
-        let titles = ["Today", "Yesterday", "Last 7 Days", "Last 30 Days", "Earlier"]
-        return zip(titles, buckets).compactMap { title, templates in
-            templates.isEmpty ? nil : (title, templates)
-        }
+        return LibraryDateGrouping.groups(visibleTemplates,
+                                          date: { templateDate($0, column: column) },
+                                          ascending: sortAscending)
+            .map { ($0.title, $0.items) }
     }
 
     private func dateText(for template: DocumentTemplate) -> String? {
