@@ -6,19 +6,19 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 2.1.0** · macOS 14+ · Apple Silicon
+**Version 2.1.1** · macOS 14+ · Apple Silicon
 
-[下载 2.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.0)
+[下载 2.1.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.1)
 
-![QuillTeX 2.1.0 · 文档库](docs/demo/document-library.png)
+![QuillTeX 2.1.1 · 文档库](docs/demo/document-library.png)
 
-![QuillTeX 2.1.0 · 写作工作区](docs/demo/writing-workspace.png)
+![QuillTeX 2.1.1 · 写作工作区](docs/demo/writing-workspace.png)
 
 ## 功能
 
-- 本地文档库自动收录打开的 `.tex`，可按文件夹、Star 和搜索整理；提供列表与 PDF 卡片视图，支持日期属性与排序方向切换，右键可把已编译 PDF 导出到指定目录；文件夹可自定义颜色，新建时选择或通过右键菜单修改。
-- All Documents、Starred、Templates 和文件夹都以标签打开；New Tab 页提供新建、打开、模板、Quick Open 与最近文档。
-- 文档标签可拖动排序和关闭；All Documents 是临时主页标签，打开文档后折叠回 home 图标，点击即可回到文档库。
+- 本地文档库自动收录打开的 `.tex`，可按文件夹、Star 和搜索整理；提供列表与 PDF 卡片视图，支持日期属性与排序方向切换，右键可把已编译 PDF 导出到指定目录；文件夹可自定义颜色，新建时选择或通过右键菜单修改；Open Document 可选择一个 `.tex` 或整个文件夹，文件夹中的主文档会被递归导入，subfiles 跟随主文档只计为一个文稿。
+- All Documents、Starred 与 Templates 共用主页标签，点击只切换主页视图；New Tab 页提供新建、打开、模板、Quick Open 与最近文档。
+- 文档标签可拖动排序和关闭；未显式新建标签时，打开文稿或文件夹会在当前标签内切换；右键 Open in New Tab 可让同一文稿、文件夹或主页视图同时存在于多个标签，home 图标回到上次查看的主页视图。
 - 章节、引用标签、图表和表格导航，帮助定位长篇文稿与子文件。
 - LaTeX 语法高亮与内置 Completion：按 Tab 接受行内提示，Option–Esc 打开分类候选，支持分阶段环境补全、工程路径和数学参数跳转。
 - Templates 以卡片或列表显示每个模板的内容与日期，可在应用内新建、编辑、重命名和删除，点击即像普通文稿一样编辑，不显示 PDF 预览和编译按钮。
@@ -37,7 +37,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.0) 下载 `QuillTeX-2.1.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.1) 下载 `QuillTeX-2.1.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -128,6 +128,12 @@ TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主�
 同一文件夹的不同主文件保持独立标签与编译目标；重命名同步标签与文档库路径；关闭标签检查全部未保存草稿；后台标签导出所属工程的 PDF；取消编译结束整个进程组。文档库排序方向与日期分组一致，窄窗口自动收起数量、次要日期列并收窄搜索框，标签过多时自动显示当前标签；文档库侧栏的顶层文件夹与子文件夹展开／收起统一为同一动画；从文档库打开文稿时编辑区与 PDF 分隔线不再偏左，重开文稿保持等宽。
 
 [更新说明](docs/versions/2.1.0.md) · [下载 2.1.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.0)
+
+### 2.1.1 · 标签打开方式与文件夹导入
+
+打开文稿或文件夹默认在当前标签内切换，不再新增标签；All Documents、Starred 与 Templates 共用可记忆的主页标签。点击加号仍新建标签，文稿、文件夹、模板和主页视图都能通过右键 Open in New Tab 同时出现在多个标签。文档库文件夹右键的 Open Documents 改为 Open Documents to This Folder…，可从本地选择 `.tex` 或整个文件夹加入文档库、移入该文件夹并直接打开。Open Document 选择文件夹时会递归导入其中的主文档；subfiles 跟随主文档，只计为一个文稿；多主文档时只导入并提示，不自动打开。修复选择文件夹时 Open 按钮不可用的问题；文档库侧栏会记住文件夹的展开／收起状态，返回主页或重启后恢复；Sort By 菜单与 Added 列排序保持同步。
+
+[更新说明](docs/versions/2.1.1.md) · [下载 2.1.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.1)
 
 ## 本地构建
 

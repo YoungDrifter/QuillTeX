@@ -245,7 +245,7 @@ private struct EditorPane: View {
             Text("Open a .tex file to keep writing.")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             Button { store.openPanel() } label: {
-                Text("Open LaTeX File…").padding(.horizontal, 18).frame(height: 34).quillCapsule()
+                Text("Open LaTeX File or Folder…").padding(.horizontal, 18).frame(height: 34).quillCapsule()
             }.buttonStyle(.plain).padding(.top, 4)
             Text("⌘O").font(.caption).foregroundStyle(.tertiary)
             Spacer()

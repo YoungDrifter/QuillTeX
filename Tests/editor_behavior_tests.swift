@@ -993,14 +993,14 @@ struct EditorBehaviorTests {
         canceledOpen?.completion(nil)
         check(tabStore.root == documentA && tabCatalog.entry(forMainFile: documentB) == nil,
               "canceling the project name leaves the current tab and catalog intact")
-        tabStore.requestOpenProject(documentB)
+        tabStore.requestOpenProject(documentB, newTab: true)
         tabStore.projectNamePrompt?.completion("Custom Project B")
         tabStore.projectNamePrompt = nil
         check(tabCatalog.entry(forMainFile: documentB)?.displayName == "Custom Project B"
             && tabStore.tabs.last?.title == "Custom Project B", "the custom name is saved and shown on the tab")
         check(closePrompts == 0, "switching tabs never asks to close the current tab")
         check(tabStore.root == documentB && tabStore.tabs.count == 2,
-              "opening another library document adds a tab instead of closing")
+              "opening another library document in a new tab keeps the current tab")
         tabStore.sessionStore.flush()
         check(tabStore.sessionStore.load(root: documentA)?.documents.first { $0.path == documentA.standardizedFileURL.path }?.draft == tabDocA.text,
               "the outgoing tab keeps its unsaved draft in its session")
@@ -1072,7 +1072,7 @@ struct EditorBehaviorTests {
             .write(to: siblingMain, atomically: true, encoding: .utf8)
         tabStore.openProject(documentA, explicitRoot: true)
         let tabA = tabStore.tabs.first { $0.path?.standardizedFileURL == documentA.standardizedFileURL }!
-        tabStore.openProject(siblingMain, explicitRoot: true)
+        tabStore.openProject(siblingMain, explicitRoot: true, newTab: true)
         let siblingTab = tabStore.tabs.first { $0.path?.standardizedFileURL == siblingMain.standardizedFileURL }!
         tabStore.activateTab(tabA)
         check(tabStore.root == documentA, "switching back to the first main file selects its own project")
@@ -1122,6 +1122,199 @@ struct EditorBehaviorTests {
               "renaming the main file moves its library link")
         renameStore.finishClosing()
 
+        // MARK: Current-tab opening, remembered home sections and folder import
+
+        let inPlaceBase = tabBase.appendingPathComponent("InPlace", isDirectory: true)
+        try FileManager.default.createDirectory(at: inPlaceBase, withIntermediateDirectories: true)
+        let documentC = inPlaceBase.appendingPathComponent("C/main.tex")
+        for main in [documentC] {
+            try FileManager.default.createDirectory(at: main.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "\\documentclass{article}\n\\begin{document}\nC\n\\end{document}\n"
+                .write(to: main, atomically: true, encoding: .utf8)
+        }
+        let inPlaceCatalog = DocumentCatalog(directory: tabBase.appendingPathComponent("InPlaceCatalog"))
+        let inPlaceStore = ProjectStore(library: tabLibrary, catalog: inPlaceCatalog, maintainsRootDirectives: false)
+        inPlaceStore.openProject(documentA, explicitRoot: true)
+        let firstTabID = inPlaceStore.tabs.first!.id
+        inPlaceStore.openProject(documentB, explicitRoot: true)
+        check(inPlaceStore.tabs.count == 1 && inPlaceStore.tabs[0].id == firstTabID
+            && inPlaceStore.root == documentB,
+              "opening another document without a new tab replaces the active tab")
+        inPlaceStore.openProject(documentA, explicitRoot: true)
+        check(inPlaceStore.tabs.count == 1 && inPlaceStore.tabs[0].id == firstTabID
+            && inPlaceStore.root == documentA,
+              "switching files stays in the same tab")
+        inPlaceStore.openProject(documentB, explicitRoot: true)
+        inPlaceStore.openProject(documentB, explicitRoot: true, newTab: true)
+        check(inPlaceStore.tabs.count == 2
+            && inPlaceStore.tabs.filter { $0.path?.standardizedFileURL == documentB.standardizedFileURL }.count == 2,
+              "an explicit new tab may hold the same document twice")
+        inPlaceStore.openProject(documentB, explicitRoot: true)
+        check(inPlaceStore.tabs.count == 2 && inPlaceStore.activeTabID == inPlaceStore.tabs.last?.id,
+              "reopening an already open document reuses its tab instead of stacking")
+        inPlaceStore.showLibraryPage()
+        let homeTabID = inPlaceStore.tabs.first(where: { $0.isHome })?.id
+        check(homeTabID != nil && inPlaceStore.activeTabID == homeTabID
+            && inPlaceStore.tabs.first(where: { $0.id == homeTabID })?.selection == .all,
+              "home is one tab and defaults to All Documents")
+        let tabsBeforeSections = inPlaceStore.tabs.count
+        inPlaceStore.showLibrary(selection: .starred, title: "Starred")
+        check(inPlaceStore.tabs.count == tabsBeforeSections
+            && inPlaceStore.tabs.first(where: { $0.isHome })?.id == homeTabID
+            && inPlaceStore.tabs.first(where: { $0.isHome })?.selection == .starred,
+              "Starred becomes the home tab instead of opening another tab")
+        inPlaceStore.showLibrary(selection: .templates, title: "Templates")
+        check(inPlaceStore.tabs.count == tabsBeforeSections
+            && inPlaceStore.tabs.first(where: { $0.isHome })?.id == homeTabID
+            && inPlaceStore.tabs.first(where: { $0.isHome })?.selection == .templates,
+              "Templates becomes the same home tab")
+        inPlaceStore.openProject(documentC, explicitRoot: true)
+        check(inPlaceStore.tabs.count == tabsBeforeSections && inPlaceStore.root == documentC
+            && !inPlaceStore.tabs.contains(where: { $0.isHome }),
+              "opening a document from home turns the active tab into the document tab")
+        inPlaceStore.showLibraryPage()
+        check(inPlaceStore.tabs.first(where: { $0.isHome })?.selection == .templates
+            && inPlaceStore.activeTabID == inPlaceStore.tabs.first(where: { $0.isHome })?.id,
+              "returning home shows the section visited last")
+        let documentCTab = inPlaceStore.tabs.first { $0.path?.standardizedFileURL == documentC.standardizedFileURL }!
+        inPlaceStore.activateTab(documentCTab)
+        let tabsBeforeCopies = inPlaceStore.tabs.count
+        inPlaceStore.showLibrary(selection: .all, title: "All Documents", inNewTab: true)
+        inPlaceStore.showLibrary(selection: .all, title: "All Documents", inNewTab: true)
+        check(inPlaceStore.tabs.count == tabsBeforeCopies + 2
+            && inPlaceStore.tabs.filter { $0.isLibrary && !$0.isHome && $0.selection == .all }.count == 2,
+              "an explicit new tab can show All Documents twice without touching home")
+        inPlaceStore.showLibraryPage()
+        check(inPlaceStore.tabs.first(where: { $0.isHome })?.selection == .templates,
+              "an explicit library tab does not replace the remembered home section")
+
+        let tabFolder = try inPlaceCatalog.createFolder(named: "Tab Folder")
+        let tabBeforeFolder = inPlaceStore.activeTabID
+        inPlaceStore.showLibrary(selection: .folder(tabFolder.id), title: "Tab Folder")
+        check(inPlaceStore.activeTabID == tabBeforeFolder
+            && inPlaceStore.tabs.first(where: { $0.id == tabBeforeFolder })?.selection == .folder(tabFolder.id)
+            && !inPlaceStore.tabs.contains(where: { $0.isHome }),
+              "opening a folder without a new tab converts the active page")
+        inPlaceStore.showLibrary(selection: .folder(tabFolder.id), title: "Tab Folder", inNewTab: true)
+        check(inPlaceStore.tabs.filter {
+            $0.isLibrary && $0.selection == .folder(tabFolder.id)
+        }.count == 2,
+              "an explicit new tab can show the same folder twice")
+
+        let importFolder = try inPlaceCatalog.createFolder(named: "Import Target")
+        let importedDocument = inPlaceBase.appendingPathComponent("imported.tex")
+        try "\\documentclass{article}\n\\begin{document}\nImported\n\\end{document}\n"
+            .write(to: importedDocument, atomically: true, encoding: .utf8)
+        inPlaceStore.importDocument(at: importedDocument, into: importFolder.id)
+        let importedEntry = inPlaceCatalog.entry(forMainFile: importedDocument)
+        check(importedEntry?.folderID == importFolder.id,
+              "Open Document to This Folder files the chosen file into that folder")
+        check(inPlaceStore.root == importedDocument.standardizedFileURL && inPlaceStore.projectNamePrompt == nil,
+              "folder import opens the chosen document without a second naming prompt")
+        inPlaceCatalog.setFolder(importedEntry!.id, folderID: nil)
+        inPlaceStore.importDocument(at: importedDocument, into: importFolder.id)
+        check(inPlaceCatalog.entry(forMainFile: importedDocument)?.folderID == importFolder.id,
+              "folder import moves an existing document into the target folder")
+
+        // Choosing a folder imports its main documents, while subfiles and build
+        // output stay with their main document instead of becoming extra entries.
+        let folderImportBase = inPlaceBase.appendingPathComponent("Folder Import", isDirectory: true)
+        let folderChaptersDirectory = folderImportBase.appendingPathComponent("chapters", isDirectory: true)
+        let folderNestedDirectory = folderImportBase.appendingPathComponent("nested", isDirectory: true)
+        let folderBuildDirectory = folderImportBase.appendingPathComponent("build", isDirectory: true)
+        for directory in [folderImportBase, folderChaptersDirectory, folderNestedDirectory, folderBuildDirectory] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let folderMain = folderImportBase.appendingPathComponent("main.tex")
+        let folderSecond = folderNestedDirectory.appendingPathComponent("second.tex")
+        let folderChapter = folderChaptersDirectory.appendingPathComponent("chapter.tex")
+        let folderBuild = folderBuildDirectory.appendingPathComponent("generated.tex")
+        let folderHidden = folderImportBase.appendingPathComponent(".hidden.tex")
+        let folderSubfile = folderImportBase.appendingPathComponent("subfile.tex")
+        try "\\documentclass{article}\n\\begin{document}\n\\input{chapters/chapter}\n\\end{document}\n"
+            .write(to: folderMain, atomically: true, encoding: .utf8)
+        try "\\documentclass{article}\n\\begin{document}\nSecond\n\\end{document}\n"
+            .write(to: folderSecond, atomically: true, encoding: .utf8)
+        try "Chapter body without a document class.\n"
+            .write(to: folderChapter, atomically: true, encoding: .utf8)
+        try "\\documentclass{article}\n\\begin{document}\nGenerated\n\\end{document}\n"
+            .write(to: folderBuild, atomically: true, encoding: .utf8)
+        try "\\documentclass{article}\n\\begin{document}\nHidden\n\\end{document}\n"
+            .write(to: folderHidden, atomically: true, encoding: .utf8)
+        try "% !TeX root = main.tex\n\\documentclass{subfiles}\n\\begin{document}\nSub\n\\end{document}\n"
+            .write(to: folderSubfile, atomically: true, encoding: .utf8)
+        let rootBeforeFolderImport = inPlaceStore.root
+        let folderImported = inPlaceStore.importFolder(at: folderImportBase, into: importFolder.id)
+        check(folderImported.map { $0.url.lastPathComponent } == ["main.tex", "second.tex"],
+              "folder import keeps one entry per main document and groups subfiles and build output")
+        let folderCatalogNames = inPlaceCatalog.entries
+            .filter { $0.path.hasPrefix(folderImportBase.path + "/") }
+            .map { URL(fileURLWithPath: $0.path).lastPathComponent }
+            .sorted()
+        check(folderCatalogNames == ["main.tex", "second.tex"],
+              "folder import skips subfiles, fragments, hidden files and build folders")
+        check(folderImported.allSatisfy { $0.folderID == importFolder.id },
+              "folder import files every imported document into the target folder")
+        check(inPlaceStore.root == rootBeforeFolderImport && inPlaceStore.projectNamePrompt == nil,
+              "multiple main documents are imported without replacing the open document")
+        inPlaceCatalog.setFolder(inPlaceCatalog.entry(forMainFile: folderSecond)!.id, folderID: nil)
+        inPlaceStore.importFolder(at: folderImportBase, into: nil, assignFolder: false)
+        check(inPlaceCatalog.entry(forMainFile: folderMain)?.folderID == importFolder.id
+            && inPlaceCatalog.entry(forMainFile: folderSecond)?.folderID == nil,
+              "opening a folder without a target keeps each document's existing library folder")
+
+        let singleFolderBase = inPlaceBase.appendingPathComponent("Single Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: singleFolderBase, withIntermediateDirectories: true)
+        let singleMain = singleFolderBase.appendingPathComponent("single.tex")
+        try "\\documentclass{article}\n\\begin{document}\nSingle\n\\end{document}\n"
+            .write(to: singleMain, atomically: true, encoding: .utf8)
+        let singleImported = inPlaceStore.importFolder(at: singleFolderBase, into: importFolder.id)
+        check(singleImported.count == 1 && singleImported[0].folderID == importFolder.id,
+              "a folder with one main document imports it into the target folder")
+        check(inPlaceStore.root == singleMain.standardizedFileURL && inPlaceStore.projectNamePrompt == nil,
+              "a single main document is opened without a naming prompt")
+        inPlaceStore.finishClosing()
+
+        // MARK: Library sidebar expansion persistence
+
+        let expansionSuite = "QuillTeX.LibrarySidebarExpansionTests.\(UUID().uuidString)"
+        let expansionDefaults = UserDefaults(suiteName: expansionSuite)!
+        defer { expansionDefaults.removePersistentDomain(forName: expansionSuite) }
+        let firstExpandedFolder = UUID()
+        let collapsedFolder = UUID()
+        let newFolder = UUID()
+        let librarySidebarExpansion = LibrarySidebarExpansion(defaults: expansionDefaults)
+        librarySidebarExpansion.initializeIfNeeded(folderIDs: [firstExpandedFolder, collapsedFolder])
+        check(librarySidebarExpansion.state.initialized
+            && librarySidebarExpansion.state.expandedFolderIDs == [firstExpandedFolder, collapsedFolder]
+            && librarySidebarExpansion.state.unsortedExpanded
+            && librarySidebarExpansion.state.foldersExpanded,
+              "first use expands every library folder")
+        librarySidebarExpansion.setFolderExpanded(firstExpandedFolder, false)
+        librarySidebarExpansion.setUnsortedExpanded(false)
+        librarySidebarExpansion.setFoldersExpanded(false)
+        let restoredExpansion = LibrarySidebarExpansion(defaults: expansionDefaults)
+        check(restoredExpansion.state.expandedFolderIDs == [collapsedFolder]
+            && !restoredExpansion.state.unsortedExpanded
+            && !restoredExpansion.state.foldersExpanded,
+              "library sidebar expansion survives returning home and relaunching")
+        restoredExpansion.initializeIfNeeded(folderIDs: [firstExpandedFolder, collapsedFolder, newFolder])
+        check(restoredExpansion.state.expandedFolderIDs == [collapsedFolder],
+              "revisiting the library does not re-expand collapsed folders")
+        restoredExpansion.expandFolders([newFolder])
+        check(restoredExpansion.state.expandedFolderIDs == [collapsedFolder, newFolder],
+              "a newly created folder can be revealed in the saved state")
+
+        let documentSortMenu = librarySortMenuOrders(showsAdded: true, folderOrders: true, active: .added)
+        check(documentSortMenu.contains(.added)
+            && documentSortMenu.filter { $0 == .added }.count == 1,
+              "the document sort menu offers the Added order exactly once")
+        check(documentSortMenu.contains(.manual) && documentSortMenu.contains(.kind),
+              "the library sort menu keeps Manual and Kind")
+        let fallbackSortMenu = librarySortMenuOrders(showsAdded: false, folderOrders: false, active: .added)
+        check(fallbackSortMenu.contains(.added),
+              "the active sort is never missing from the sort menu")
+
         // MARK: Template tabs stay template editor pages
 
         let templateRoot = directory.appendingPathComponent("TemplateTabs", isDirectory: true)
@@ -1140,7 +1333,7 @@ struct EditorBehaviorTests {
         }
         let template = DocumentTemplate(url: templateURL)
         templateStore.openProject(documentA, explicitRoot: true)
-        templateStore.openTemplate(template)
+        templateStore.openTemplate(template, inNewTab: true)
         check(templateStore.root == templateURL && templateStore.isEditingTemplate, "a template opens as its own editor tab")
         check(templateStore.paneMode == .editor && templateStore.sidebarPage == .library,
               "a template tab edits without a preview")

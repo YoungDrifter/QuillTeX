@@ -60,7 +60,7 @@ struct ProjectCommands: Commands {
                 else { AppDelegate.pendingNewDocument = true; openWindow(id: "workspace") }
             }.keyboardShortcut("n")
             Button("New Window") { openWindow(id: "workspace") }.keyboardShortcut("n", modifiers: [.command, .shift])
-            Button("Open LaTeX File…") { openProjectPanel() }.keyboardShortcut("o")
+            Button("Open LaTeX File or Folder…") { openProjectPanel() }.keyboardShortcut("o")
             Divider()
             Button("Reveal Project in Finder") {
                 if let directory = store?.directory { NSWorkspace.shared.open(directory) }
@@ -93,7 +93,7 @@ struct ProjectCommands: Commands {
                 .disabled(store?.build.diagnostics.compactMap({ store?.resolvedDiagnostic($0) }).isEmpty != false)
         }
         CommandGroup(after: .sidebar) {
-            Button("All Documents") { store?.showLibraryPage() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            Button("All Documents") { store?.showLibrary(selection: .all, title: "All Documents") }.keyboardShortcut("l", modifiers: [.command, .shift])
             Button("Show or Hide Sidebar") { store?.sidebarVisible.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
             Button("Editor Only") { store?.paneMode = .editor }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Editor and PDF") { store?.showEditorAndPDF() }.keyboardShortcut("2", modifiers: [.command, .option])

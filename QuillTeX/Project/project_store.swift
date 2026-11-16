@@ -65,9 +65,12 @@ struct WorkspaceTab: Identifiable, Equatable {
     var selection: LibrarySelection?
     /// Editing a template file: a normal text editor, no preview and no compile.
     var isTemplate: Bool
+    /// The single library home tab. Its section changes between All Documents,
+    /// Starred and Templates in place instead of opening one tab per section.
+    var isHome: Bool
     init(id: UUID = UUID(), path: URL?, title: String, isSettings: Bool = false,
          isLibrary: Bool = false, selection: LibrarySelection? = nil,
-         isTemplate: Bool = false) {
+         isTemplate: Bool = false, isHome: Bool = false) {
         self.id = id
         self.path = path
         self.title = title
@@ -75,7 +78,11 @@ struct WorkspaceTab: Identifiable, Equatable {
         self.isLibrary = isLibrary
         self.selection = selection
         self.isTemplate = isTemplate
+        self.isHome = isHome
     }
+    /// The transient New Tab page is a tab whose content is replaced by the next
+    /// document, folder or section the user opens from it.
+    var isNewTabPage: Bool { path == nil && !isSettings && !isLibrary }
 }
 
 @MainActor
@@ -175,6 +182,9 @@ final class ProjectStore: ObservableObject {
     @Published var showingSettings = false
     /// Which library view the browser is showing.
     @Published var librarySelection: LibrarySelection = .all
+    /// Last section shown by the home tab. Switching to a document or folder folds
+    /// the home tab away; the next home visit returns to this section.
+    @Published private(set) var homeSelection: LibrarySelection = .all
     /// Library folder the next New Document sheet should file the document into.
     @Published var pendingNewDocumentFolder: UUID?
     /// Template editing must not write root directives, catalog links or builds.
@@ -735,7 +745,7 @@ final class ProjectStore: ObservableObject {
 
     /// Open a document chosen in the library. The sidebar flips to the project page
     /// only once the document actually became the workspace root.
-    func openLibraryEntry(_ entry: LibraryEntry) {
+    func openLibraryEntry(_ entry: LibraryEntry, inNewTab: Bool = false) {
         guard FileManager.default.fileExists(atPath: entry.path) else {
             showError("Document Not Found", "“\(entry.displayName)” is no longer at \(entry.path).\nIt stays in the library until you remove it.")
             return
@@ -743,67 +753,255 @@ final class ProjectStore: ObservableObject {
         if entry.kind == .file {
             QuillToast.shared.show("Opened \(entry.displayName)")
         }
-        requestOpenProject(entry.url, explicitRoot: true)
+        requestOpenProject(entry.url, explicitRoot: true, newTab: inNewTab)
+    }
+
+    /// Folder action: choose a local .tex or a folder, file the result into this
+    /// library folder and open it. A folder imports all of its main documents;
+    /// subfiles stay grouped with their main file.
+    func chooseDocumentForFolder(_ folderID: UUID?) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a LaTeX file, or a folder of LaTeX documents, to open in this folder."
+        panel.prompt = "Open"
+        // Filtering the panel by the tex type also disables folders in NSOpenPanel.
+        // Accept both here and reject a non-tex file after the user chooses.
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if Self.directoryExists(url) {
+            importFolder(at: url, into: folderID, assignFolder: true)
+        } else {
+            importDocument(at: url, into: folderID)
+        }
+    }
+
+    private static func directoryExists(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// Recursively find the main LaTeX documents in a folder. A main document
+    /// declares `\documentclass` and does not point at another root; subfiles and
+    /// source fragments are excluded so each project contributes one library
+    /// entry instead of one entry per chapter. Build folders and hidden files are
+    /// not part of the document set.
+    static func mainDocuments(in folder: URL) -> [URL] {
+        guard let walker = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        var documents: [URL] = []
+        var seen = Set<URL>()
+        while let item = walker.nextObject() as? URL {
+            if Task.isCancelled { break }
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values?.isSymbolicLink == true {
+                walker.skipDescendants()
+                continue
+            }
+            if values?.isDirectory == true {
+                let name = item.lastPathComponent.lowercased()
+                if name == "build" || name == ".build" || name == "node_modules" {
+                    walker.skipDescendants()
+                }
+                continue
+            }
+            guard item.pathExtension.lowercased() == "tex",
+                  let text = try? String(contentsOf: item, encoding: .utf8),
+                  ProjectIndexer.isMainDocument(text, at: item) else { continue }
+            let standardized = item.standardizedFileURL
+            if seen.insert(standardized).inserted { documents.append(standardized) }
+        }
+        return documents.sorted { lhs, rhs in
+            let lhsMain = lhs.lastPathComponent.lowercased() == "main.tex"
+            let rhsMain = rhs.lastPathComponent.lowercased() == "main.tex"
+            if lhsMain != rhsMain { return lhsMain }
+            return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+    }
+
+    /// Import every main document found in a folder. With `assignFolder` the
+    /// documents are moved into the requested library folder; otherwise their
+    /// existing folder assignment is preserved. The first main document is opened
+    /// in the current tab.
+    @discardableResult
+    func importFolder(at url: URL, into folderID: UUID?, assignFolder: Bool = true,
+                      newTab: Bool = false) -> [LibraryEntry] {
+        let folder = url.standardizedFileURL
+        guard Self.directoryExists(folder) else {
+            importDocument(at: folder, into: folderID)
+            return []
+        }
+        let roots = Self.mainDocuments(in: folder)
+        guard !roots.isEmpty else {
+            showError("No LaTeX Documents Found",
+                      "The selected folder does not contain a .tex file with \\documentclass. Subfiles are imported with their main document.")
+            return []
+        }
+        var imported: [LibraryEntry] = []
+        for root in roots {
+            guard let catalog else {
+                imported.append(LibraryEntry(
+                    path: root.path,
+                    displayName: root.lastPathComponent == "main.tex"
+                        ? root.deletingLastPathComponent().lastPathComponent
+                        : root.deletingPathExtension().lastPathComponent))
+                continue
+            }
+            do {
+                let entry = try catalog.link(root)
+                if assignFolder { catalog.setFolder(entry.id, folderID: folderID) }
+                catalog.touch(entry.id)
+                imported.append(catalog.entry(id: entry.id) ?? entry)
+            } catch {
+                // One unreadable document must not discard the rest of the folder.
+                continue
+            }
+        }
+        guard let first = imported.first else {
+            showError("Could Not Add Documents",
+                      "None of the documents in “\(folder.lastPathComponent)” could be added to the library.")
+            return []
+        }
+        if imported.count == 1 {
+            QuillToast.shared.show("Imported \(first.displayName)")
+            requestOpenProject(first.url, explicitRoot: true, newTab: newTab)
+        } else {
+            // Several independent projects were found. Keep the current document
+            // untouched and let the user pick one from the library.
+            QuillToast.shared.show("Imported \(imported.count) documents from \(folder.lastPathComponent)")
+        }
+        return imported
+    }
+
+    /// Link a local document into the library, move it into `folderID`, and open
+    /// it. Linking first means the filename prompt is skipped; the document is
+    /// already part of the library by the time the project opens.
+    func importDocument(at url: URL, into folderID: UUID?) {
+        let url = url.standardizedFileURL
+        guard url.pathExtension.lowercased() == "tex" else {
+            showError("Choose a LaTeX File", "Select a file with the .tex extension.")
+            return
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            showError("Document Not Found", "“\(url.lastPathComponent)” could not be found.")
+            return
+        }
+        var linked: LibraryEntry?
+        if let catalog {
+            do {
+                let entry = try catalog.link(url)
+                catalog.setFolder(entry.id, folderID: folderID)
+                catalog.touch(entry.id)
+                linked = catalog.entry(id: entry.id) ?? entry
+            } catch {
+                showError("Could Not Add Document", error.localizedDescription)
+                return
+            }
+        }
+        openLibraryEntry(linked ?? LibraryEntry(path: url.path,
+                                                displayName: url.deletingPathExtension().lastPathComponent))
     }
 
     // MARK: - Tabs and the library surface
 
-    /// Show the library (All Documents / New Tab) while keeping the open tabs alive.
-    func showLibraryPage() {
-        showLibrary(selection: .all, title: "All Documents")
+    /// The home tab is the one tab that hosts All Documents, Starred and
+    /// Templates. It remembers the last section and is folded back into the home
+    /// button while another tab is active.
+    static func isHomeSection(_ selection: LibrarySelection) -> Bool {
+        switch selection {
+        case .all, .starred, .templates: true
+        default: false
+        }
     }
 
-    /// Show any library surface (All Documents, Starred, Templates, a folder) as the
-    /// active tab. All Documents is the ephemeral home tab; each other section keeps
-    /// its own tab so opening New Tab or a document does not discard it.
-    func showLibrary(selection: LibrarySelection, title: String) {
+    static func homeTitle(for selection: LibrarySelection) -> String {
+        switch selection {
+        case .starred: "Starred"
+        case .templates: "Templates"
+        default: "All Documents"
+        }
+    }
+
+    /// Show the library home at the section it last displayed.
+    func showLibraryPage() {
+        showLibrary(selection: homeSelection, title: Self.homeTitle(for: homeSelection))
+    }
+
+    /// Show any library surface. All Documents, Starred and Templates update the
+    /// single home tab in place; the other surfaces replace the active tab unless
+    /// the caller explicitly asks for `inNewTab`, which always appends a tab so
+    /// the same section or folder can live in several tabs at once.
+    func showLibrary(selection: LibrarySelection, title: String, inNewTab: Bool = false) {
         showingSettings = false
         sidebarPage = .library
-        if let existing = tabs.first(where: { $0.isLibrary && $0.selection == selection }) {
+        if !inNewTab, Self.isHomeSection(selection) {
+            homeSelection = selection
+        }
+        if inNewTab {
+            // An explicit new tab is additive: never reuse or replace another tab.
+            let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: selection)
+            tabs.append(tab)
+            activateTab(tab)
+        } else if Self.isHomeSection(selection) {
+            showHomeTab(selection: selection, title: title)
+        } else if let existing = tabs.first(where: {
+            $0.isLibrary && !$0.isHome && $0.selection == selection
+        }) {
+            // A folder or tag that is already open comes back instead of stacking
+            // a duplicate tab; an explicit New Tab is the way to duplicate it.
             activateTab(existing)
-        } else if selection == .all {
-            if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
-               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
-                tabs[index].isLibrary = true
-                tabs[index].selection = .all
-                tabs[index].title = title
-                activateTab(tabs[index])
-            } else {
-                let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: .all)
-                tabs.insert(tab, at: 0)
-                activateTab(tab)
-            }
+        } else if let index = activeTabIndex, !tabs[index].isSettings {
+            // Without an explicit new tab, the active tab becomes this library page.
+            tabs[index].path = nil
+            tabs[index].title = title
+            tabs[index].isSettings = false
+            tabs[index].isLibrary = true
+            tabs[index].selection = selection
+            tabs[index].isTemplate = false
+            tabs[index].isHome = false
+            activeTabID = tabs[index].id
         } else {
-            if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
-               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
-                // The New Tab page becomes this section's tab.
-                tabs[index].isLibrary = true
-                tabs[index].selection = selection
-                tabs[index].title = title
-                activateTab(tabs[index])
-            } else {
-                // Leaving All Documents: the home tab folds back into the home button.
-                if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
-                   tabs[index].isLibrary, tabs[index].selection == .all {
-                    tabs.remove(at: index)
-                    activeTabID = nil
-                }
-                let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: selection)
-                tabs.append(tab)
-                activateTab(tab)
-            }
+            let tab = WorkspaceTab(path: nil, title: title, isLibrary: true, selection: selection)
+            tabs.append(tab)
+            activeTabID = tab.id
         }
         showingLibrary = true
         librarySelection = selection
         libraryLocationTitle = title
     }
 
-    /// Mirror the library sidebar selection into the active library tab.
-    /// Open the New Tab page as a tab. Opening or creating a document from it
-    /// turns this tab into the document tab instead of adding a second one.
+    private var activeTabIndex: Int? {
+        activeTabID.flatMap { id in tabs.firstIndex { $0.id == id } }
+    }
+
+    /// Update the one home tab to a section, creating it at the head of the strip
+    /// if the previous tab was folded away. The section is remembered even when
+    /// the tab is not currently in the strip.
+    private func showHomeTab(selection: LibrarySelection, title: String) {
+        if let index = tabs.firstIndex(where: \.isHome) {
+            tabs[index].path = nil
+            tabs[index].title = title
+            tabs[index].isSettings = false
+            tabs[index].isLibrary = true
+            tabs[index].selection = selection
+            tabs[index].isTemplate = false
+            activateTab(tabs[index])
+            return
+        }
+        let tab = WorkspaceTab(path: nil, title: title, isLibrary: true,
+                               selection: selection, isHome: true)
+        tabs.insert(tab, at: 0)
+        activateTab(tab)
+    }
+
+    /// Open the New Tab page as a tab. Opening a document from it turns that tab
+    /// into the document tab instead of adding a second one.
     func showNewTabPage() {
-        discardHomeTab()
-        if let existing = tabs.first(where: { $0.path == nil && !$0.isSettings && !$0.isLibrary }) {
+        if let existing = tabs.first(where: \.isNewTabPage) {
             fadingTabIDs.remove(existing.id)
             activateTab(existing)
         } else {
@@ -826,7 +1024,7 @@ final class ProjectStore: ObservableObject {
     private func discardUnusedNewTab() {
         guard let id = activeTabID,
               let tab = tabs.first(where: { $0.id == id }),
-              tab.path == nil, !tab.isSettings, !tab.isLibrary else { return }
+              tab.isNewTabPage else { return }
         fadingTabIDs.insert(tab.id)
     }
 
@@ -838,11 +1036,11 @@ final class ProjectStore: ObservableObject {
         if activeTabID == id { activeTabID = tabs.last?.id }
     }
 
-    /// Only All Documents is the ephemeral "home" tab. Starred, Templates and folder
-    /// tabs are ordinary tabs and stay open when another tab is opened.
+    /// The home tab folds back into the home icon whenever another tab becomes
+    /// active. Its last section stays in `homeSelection` for the next visit.
     private func discardHomeTab() {
-        guard tabs.contains(where: { $0.isLibrary && $0.selection == .all }) else { return }
-        tabs.removeAll { $0.isLibrary && $0.selection == .all }
+        guard tabs.contains(where: \.isHome) else { return }
+        tabs.removeAll(where: \.isHome)
         if activeTabID == nil || !tabs.contains(where: { $0.id == activeTabID }) {
             activeTabID = tabs.last?.id
         }
@@ -850,14 +1048,12 @@ final class ProjectStore: ObservableObject {
 
     /// Open Settings as a tab instead of a separate window.
     func openSettingsTab() {
-        discardHomeTab()
         if let existing = tabs.first(where: \.isSettings) {
             activateTab(existing)
             return
         }
         let tab = WorkspaceTab(path: nil, title: "Settings", isSettings: true)
-        if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
-           tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
+        if let index = activeTabIndex, tabs[index].isNewTabPage {
             tabs[index] = tab
         } else {
             tabs.append(tab)
@@ -961,54 +1157,73 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    /// Convert the active New Tab / library tab into a document tab, or add one.
-    private func registerDocumentTab(for main: URL) {
-        let title = projectTitle(for: main)
+    /// Give the document a tab. Without an explicit new tab the active tab is
+    /// converted in place; reopening a document that already has a tab returns to
+    /// that tab. An explicit New Tab always appends, which lets one document or
+    /// folder live in several tabs at once.
+    private func registerDocumentTab(for main: URL, inNewTab: Bool = false, asTemplate: Bool = false) {
+        let title = asTemplate
+            ? main.deletingPathExtension().lastPathComponent
+            : projectTitle(for: main)
         let normalized = main.standardizedFileURL
-        let matches = tabs.indices.filter { index in
-            tabs[index].path?.standardizedFileURL == normalized
-        }
-        if let keepIndex = matches.first {
-            // Reuse the existing tab and collapse duplicate document tabs for the
-            // same file, so opening a document repeatedly never stacks copies.
-            let keepID = tabs[keepIndex].id
-            let duplicateIDs = Set(matches.dropFirst().map { tabs[$0].id })
-            if !duplicateIDs.isEmpty {
-                tabs.removeAll { duplicateIDs.contains($0.id) }
+        let matches = tabs.indices.filter { tabs[$0].path?.standardizedFileURL == normalized }
+
+        if !inNewTab, !matches.isEmpty {
+            let keepID: UUID
+            if let active = activeTabID, let match = matches.first(where: { tabs[$0].id == active }) {
+                keepID = tabs[match].id
+            } else {
+                keepID = tabs[matches[0]].id
             }
+            discardUnusedNewTab()
             discardHomeTab()
-            if let active = activeTabID,
-               let index = tabs.firstIndex(where: { $0.id == active }),
-               tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
-                tabs.remove(at: index)
-            }
             if let index = tabs.firstIndex(where: { $0.id == keepID }) {
                 tabs[index].title = title
+                tabs[index].isTemplate = asTemplate
             }
             activeTabID = keepID
             showingLibrary = false
             showingSettings = false
-            sidebarPage = .structure
+            sidebarPage = asTemplate ? .library : .structure
             return
         }
-        if let index = activeTabID.flatMap({ id in tabs.firstIndex { $0.id == id } }),
-           tabs[index].path == nil, !tabs[index].isSettings, !tabs[index].isLibrary {
-            // A New Tab page turns into the document tab in place (it is the last
-            // tab). Library home/section tabs keep their position and the document
-            // is appended, so the strip reflects the order documents were opened.
-            tabs[index].path = main
-            tabs[index].title = title
-            tabs[index].selection = nil
-            activeTabID = tabs[index].id
-        } else {
+
+        if inNewTab {
+            discardUnusedNewTab()
             discardHomeTab()
-            let tab = WorkspaceTab(path: main, title: title)
+            let tab = WorkspaceTab(path: main, title: title, isTemplate: asTemplate)
             tabs.append(tab)
             activeTabID = tab.id
+            showingLibrary = false
+            showingSettings = false
+            sidebarPage = asTemplate ? .library : .structure
+            return
+        }
+
+        if let index = activeTabIndex, !tabs[index].isSettings {
+            // No explicit new tab: the active page becomes the document tab.
+            tabs[index].path = main
+            tabs[index].title = title
+            tabs[index].isSettings = false
+            tabs[index].isLibrary = false
+            tabs[index].selection = nil
+            tabs[index].isTemplate = asTemplate
+            tabs[index].isHome = false
+            activeTabID = tabs[index].id
+        } else {
+            // Settings is a utility tab: opening a document from it leaves it open.
+            discardUnusedNewTab()
+            let tab = WorkspaceTab(path: main, title: title, isTemplate: asTemplate)
+            tabs.append(tab)
+            activeTabID = tab.id
+            showingLibrary = false
+            showingSettings = false
+            sidebarPage = asTemplate ? .library : .structure
+            return
         }
         showingLibrary = false
         showingSettings = false
-        sidebarPage = .structure
+        sidebarPage = asTemplate ? .library : .structure
     }
 
     /// Persist the current tab's draft before another tab or project takes over.
@@ -1060,9 +1275,10 @@ final class ProjectStore: ObservableObject {
         let wasEditingTemplate = isEditingTemplate
         if tab.id != activeTabID {
             discardUnusedNewTab()
-            // Home is only the All Documents tab itself. Switching to any other tab
-            // (including Templates/Starred/folders) folds it back into the home icon.
-            if !(tab.isLibrary && tab.selection == .all) {
+            // The home tab is the one surface that remembers All Documents,
+            // Starred and Templates. Switching to any other tab folds it back
+            // into the home icon; switching to home keeps it in place.
+            if !tab.isHome {
                 discardHomeTab()
             }
         }
@@ -1141,14 +1357,14 @@ final class ProjectStore: ObservableObject {
         return openProject(path, explicitRoot: true, asTemplate: asTemplate)
     }
 
-    /// Reorder a non-home tab among the scrollable tabs. All Documents is pinned
+    /// Reorder a non-home tab among the scrollable tabs. The home tab is pinned
     /// and cannot be dragged or displaced.
     func moveTab(_ id: UUID, by delta: Int) {
         guard delta != 0,
               let index = tabs.firstIndex(where: { $0.id == id }),
-              !(tabs[index].isLibrary && tabs[index].selection == .all) else { return }
-        let homeTabs = tabs.filter { $0.isLibrary && $0.selection == .all }
-        var others = tabs.filter { !($0.isLibrary && $0.selection == .all) }
+              !tabs[index].isHome else { return }
+        let homeTabs = tabs.filter(\.isHome)
+        var others = tabs.filter { !$0.isHome }
         guard let current = others.firstIndex(where: { $0.id == id }) else { return }
         let target = min(max(0, current + delta), others.count - 1)
         guard target != current else { return }
@@ -1269,14 +1485,14 @@ final class ProjectStore: ObservableObject {
     }
 
     /// Open a template as a direct editor page: no PDF preview, no compile
-    /// controls, and no library/build side effects for the template file.
-    func openTemplate(_ template: DocumentTemplate) {
+    /// controls, and no library/build side effects for the template file. Without
+    /// an explicit new tab the active page becomes the template editor.
+    func openTemplate(_ template: DocumentTemplate, inNewTab: Bool = false) {
         let wasEditingTemplate = isEditingTemplate
         let keepActive = activeTabID
         let previousSidebarPage = sidebarPage
         if !wasEditingTemplate { paneModeBeforeTemplate = paneMode }
-        activeTabID = nil
-        guard openProject(template.url, explicitRoot: true, asTemplate: true),
+        guard openProject(template.url, explicitRoot: true, asTemplate: true, newTab: inNewTab),
               root?.standardizedFileURL == template.url.standardizedFileURL else {
             activeTabID = keepActive
             sidebarPage = previousSidebarPage
@@ -1324,14 +1540,29 @@ final class ProjectStore: ObservableObject {
             showError("Could Not Create Document", error.localizedDescription)
         }
     }
-    func openPanel(folder: Bool = false) {
+    func openPanel(folder: Bool = false, newTab: Bool = false) {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = folder; panel.canChooseFiles = !folder
         panel.allowsMultipleSelection = false
-        panel.message = folder ? "Choose the project folder." : "Choose a LaTeX file."
-        if !folder { panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText] }
+        if folder {
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.message = "Choose the project folder."
+        } else {
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = true
+            panel.message = "Choose a LaTeX file, or a folder of LaTeX documents."
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if folder { openFolder(url) } else { requestOpenProject(url) }
+        if folder {
+            openFolder(url)
+        } else if Self.directoryExists(url) {
+            // A folder imports its main documents; subfiles are not separate entries.
+            importFolder(at: url, into: nil, assignFolder: false, newTab: newTab)
+        } else if url.pathExtension.lowercased() == "tex" {
+            requestOpenProject(url, newTab: newTab)
+        } else {
+            showError("Choose a LaTeX File", "Select a .tex file, or a folder of LaTeX documents.")
+        }
     }
     /// Adopt an existing folder as the project: use its `main.tex`, or ask which file
     /// is the main one. Used by the breadcrumb's parent-folder menu.
@@ -1341,10 +1572,10 @@ final class ProjectStore: ObservableObject {
         else if let selected = chooseRoot(directory: url) { requestOpenProject(selected, explicitRoot: true) }
     }
     /// User-initiated opens name the project. Tab activation and recovery open it directly.
-    func requestOpenProject(_ incoming: URL, explicitRoot: Bool = false) {
+    func requestOpenProject(_ incoming: URL, explicitRoot: Bool = false, newTab: Bool = false) {
         let main = explicitRoot ? incoming : (try? Self.resolveMainFile(incoming).url) ?? incoming
         if catalog?.entry(forMainFile: main) != nil {
-            openProject(incoming, explicitRoot: explicitRoot)
+            openProject(incoming, explicitRoot: explicitRoot, newTab: newTab)
             return
         }
         projectNamePrompt = QuillPromptRequest(
@@ -1355,7 +1586,7 @@ final class ProjectStore: ObservableObject {
             confirmTitle: "Open"
         ) { [weak self] name in
             guard let name else { return }
-            self?.openProject(incoming, explicitRoot: explicitRoot, projectName: name)
+            self?.openProject(incoming, explicitRoot: explicitRoot, projectName: name, newTab: newTab)
         }
     }
 
@@ -1500,7 +1731,8 @@ final class ProjectStore: ObservableObject {
     /// root-directive maintenance, history and catalog links for the template file.
     @discardableResult
     func openProject(_ incoming: URL, explicitRoot: Bool = false, closeIntent: Bool = false,
-                     asTemplate: Bool = false, projectName: String? = nil) -> Bool {
+                     asTemplate: Bool = false, projectName: String? = nil,
+                     newTab: Bool = false) -> Bool {
         guard commitSidebarNameEdit() else { return false }
         let incoming = incoming.standardizedFileURL
         let wasOpeningTemplate = openingTemplate
@@ -1556,7 +1788,7 @@ final class ProjectStore: ObservableObject {
                 }
             }
             window?.title = "QuillTeX — \(projectTitle(for: main))"
-            registerDocumentTab(for: main)
+            registerDocumentTab(for: main, inNewTab: newTab, asTemplate: asTemplate)
             return true
         } catch {
             showError("Could Not Open Project", error.localizedDescription)

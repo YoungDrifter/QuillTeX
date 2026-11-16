@@ -153,6 +153,19 @@ private enum LibraryDateColumn {
     }
 }
 
+/// The menu's order list. A folder view also offers Manual and Kind. The active
+/// sort is always included so the menu can never open with no checked item.
+func librarySortMenuOrders(showsAdded: Bool, folderOrders: Bool,
+                           active: LibrarySortOrder) -> [LibrarySortOrder] {
+    var orders: [LibrarySortOrder] = folderOrders
+        ? [.manual, .name, .kind, .lastViewed]
+        : [.name, .lastViewed]
+    if showsAdded { orders.append(.added) }
+    orders += [.created, .updated]
+    if !orders.contains(active) { orders.append(active) }
+    return orders
+}
+
 /// One shared sort menu for documents and templates.
 private struct LibrarySortMenu: View {
     @Binding var sort: LibrarySortOrder
@@ -200,11 +213,7 @@ private struct LibrarySortMenu: View {
     }
 
     private var orders: [LibrarySortOrder] {
-        if folderOrders {
-            return [.manual, .name, .kind, .lastViewed, .created, .updated]
-        }
-        return showsAdded ? [.name, .lastViewed, .added, .created, .updated]
-                          : [.name, .lastViewed, .created, .updated]
+        librarySortMenuOrders(showsAdded: showsAdded, folderOrders: folderOrders, active: sort)
     }
 }
 
@@ -517,6 +526,7 @@ private enum LibraryDialogs {
 private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatalog,
                                      entry: LibraryEntry, onOpen: @escaping () -> Void) -> some View {
     Button("Open Document", action: onOpen)
+    Button("Open in New Tab") { store.openLibraryEntry(entry, inNewTab: true) }
     Button("Rename Project") { store.requestRenameProject(entry.url) }
     Button("Rename Main File") { store.requestRenameFile(entry.url) }
     Button(entry.starred ? "Remove Star" : "Star Document") { catalog.toggleStar(entry.id) }
@@ -725,6 +735,79 @@ struct NewFolderDialog: View {
     }
 }
 
+/// App-wide expansion state for the library sidebar's folder tree. The sidebar is
+/// rebuilt whenever the home tab is shown or the window reopens, so this state
+/// lives outside the view and is persisted in UserDefaults.
+final class LibrarySidebarExpansion: ObservableObject {
+    struct State: Codable, Equatable {
+        var expandedFolderIDs: Set<UUID> = []
+        var unsortedExpanded = true
+        var foldersExpanded = true
+        var initialized = false
+    }
+
+    static let shared = LibrarySidebarExpansion()
+    static let defaultsKey = "workspace.librarySidebarExpansion"
+
+    @Published private(set) var state: State
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.defaultsKey),
+           let saved = try? JSONDecoder().decode(State.self, from: data) {
+            state = saved
+        } else {
+            state = State()
+        }
+    }
+
+    /// The first launch expands every folder, matching the old behavior. After
+    /// that the persisted state wins, including "everything collapsed".
+    func initializeIfNeeded(folderIDs: [UUID]) {
+        guard !state.initialized else { return }
+        var next = state
+        next.expandedFolderIDs = Set(folderIDs)
+        next.unsortedExpanded = true
+        next.foldersExpanded = true
+        next.initialized = true
+        apply(next)
+    }
+
+    func setFolderExpanded(_ id: UUID, _ expanded: Bool) {
+        var next = state
+        if expanded { next.expandedFolderIDs.insert(id) }
+        else { next.expandedFolderIDs.remove(id) }
+        apply(next)
+    }
+
+    func setUnsortedExpanded(_ expanded: Bool) {
+        var next = state
+        next.unsortedExpanded = expanded
+        apply(next)
+    }
+
+    func setFoldersExpanded(_ expanded: Bool) {
+        var next = state
+        next.foldersExpanded = expanded
+        apply(next)
+    }
+
+    func expandFolders(_ ids: [UUID]) {
+        var next = state
+        next.expandedFolderIDs.formUnion(ids)
+        apply(next)
+    }
+
+    private func apply(_ next: State) {
+        guard next != state else { return }
+        state = next
+        if let data = try? JSONEncoder().encode(next) {
+            defaults.set(data, forKey: Self.defaultsKey)
+        }
+    }
+}
+
 struct LibrarySidebarContent: View {
     @ObservedObject var store: ProjectStore
     @ObservedObject var catalog: DocumentCatalog
@@ -732,9 +815,7 @@ struct LibrarySidebarContent: View {
     var onOpen: () -> Void
     var onOpenEntry: (LibraryEntry) -> Void
 
-    @State private var expandedFolders: Set<LibraryFolderKey> = [.unsorted]
-    @State private var foldersExpanded = true
-    @State private var didInitializeExpansion = false
+    @ObservedObject private var sidebarExpansion = LibrarySidebarExpansion.shared
     @ObservedObject private var dialogs = LibraryDialogCenter.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -757,17 +838,19 @@ struct LibrarySidebarContent: View {
                 .padding(.bottom, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear(perform: expandAllFolders)
+        .onAppear(perform: initializeExpansion)
         .onChange(of: dialogs.createdFolderID) { _, id in
             guard let id else { return }
+            // Reveal the new folder together with every containing folder.
+            var revealIDs: [UUID] = []
+            var reveal: UUID? = id
+            while let folderID = reveal {
+                revealIDs.append(folderID)
+                reveal = catalog.folder(id: folderID)?.parentID
+            }
             withAnimation(reduceMotion ? nil : ChromeMotion.transition) {
-                foldersExpanded = true
-                // Reveal the new folder together with every containing folder.
-                var reveal: UUID? = id
-                while let folderID = reveal {
-                    expandedFolders.insert(.folder(folderID))
-                    reveal = catalog.folder(id: folderID)?.parentID
-                }
+                sidebarExpansion.setFoldersExpanded(true)
+                sidebarExpansion.expandFolders(revealIDs)
             }
             dialogs.createdFolderID = nil
         }
@@ -859,8 +942,22 @@ struct LibrarySidebarContent: View {
         }
         .buttonStyle(QuillRowButtonStyle(selected: selected, cornerRadius: LibraryLook.sidebarCorner))
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .contextMenu {
+            // A section can also live in its own tab, independent of the home tab.
+            Button("Open in New Tab") {
+                store.showLibrary(selection: selection, title: title, inNewTab: true)
+            }
+        }
         .help(title)
     }
+
+    private var expandedFolders: Set<LibraryFolderKey> {
+        var keys = Set(sidebarExpansion.state.expandedFolderIDs.map { LibraryFolderKey.folder($0) })
+        if sidebarExpansion.state.unsortedExpanded { keys.insert(.unsorted) }
+        return keys
+    }
+
+    private var foldersExpanded: Bool { sidebarExpansion.state.foldersExpanded }
 
     private var foldersHeader: some View {
         HStack(spacing: 4) {
@@ -874,7 +971,7 @@ struct LibrarySidebarContent: View {
             LibraryIconButton(symbol: "chevron.down", label: foldersExpanded ? "Hide Folders" : "Show Folders",
                               rotation: .degrees(foldersExpanded ? 0 : -90)) {
                 withAnimation(reduceMotion ? nil : ChromeMotion.transition) {
-                    foldersExpanded.toggle()
+                    sidebarExpansion.setFoldersExpanded(!foldersExpanded)
                 }
             }
         }
@@ -926,22 +1023,26 @@ struct LibrarySidebarContent: View {
         .accessibilityLabel("Settings")
     }
 
-    private func expandAllFolders() {
-        // Only the first appearance expands everything; revisiting the page keeps
-        // whatever the user collapsed.
-        guard !didInitializeExpansion else { return }
-        didInitializeExpansion = true
-        var keys: Set<LibraryFolderKey> = [.unsorted]
-        for folder in catalog.folders { keys.insert(.folder(folder.id)) }
-        expandedFolders.formUnion(keys)
+    private func initializeExpansion() {
+        sidebarExpansion.initializeIfNeeded(folderIDs: catalog.folders.map(\.id))
+    }
+
+    private func setFolderExpanded(_ key: LibraryFolderKey, _ expanded: Bool) {
+        switch key {
+        case .unsorted:
+            sidebarExpansion.setUnsortedExpanded(expanded)
+        case .folder(let id):
+            sidebarExpansion.setFolderExpanded(id, expanded)
+        }
     }
 
     private func toggleFolder(_ key: LibraryFolderKey) {
+        let expanded = !expandedFolders.contains(key)
         if reduceMotion {
-            expandedFolders.formSymmetricDifference([key])
+            setFolderExpanded(key, expanded)
         } else {
             withAnimation(ChromeMotion.transition) {
-                expandedFolders.formSymmetricDifference([key])
+                setFolderExpanded(key, expanded)
             }
         }
     }
@@ -1077,15 +1178,14 @@ private struct LibraryFolderRow: View {
             dropTargeted = targeted
         }
         .contextMenu {
-            // Unsorted has no folder page worth opening when it is empty: its
-            // "Open Documents" is the local file chooser, so documents picked
-            // here are opened from disk and land back in Unsorted.
-            if folderID == nil {
-                Button("Open Documents…") { store.openPanel() }
-            } else {
-                Button("Open Documents", action: onSelect)
+            // The folder row opens its page. These two actions are the folder's
+            // create and import entry points, matching New Document / Open
+            // Document for the library. Opening a local .tex files it here.
+            Button("Open in New Tab") {
+                store.showLibrary(selection: .folder(folderID), title: name, inNewTab: true)
             }
             Button("New Document in This Folder") { store.openNewDocumentSheet(folderID: folderID) }
+            Button("Open Documents to This Folder…") { store.chooseDocumentForFolder(folderID) }
             if let folderID {
                 Button("New Folder in This Folder") {
                     dialogs.presentNewFolder(
@@ -1727,7 +1827,7 @@ struct LibraryBrowser: View {
     private var sortMenu: some View {
         // Same quiet gray wash as the other capsules and the search pill.
         LibrarySortMenu(sort: sortBinding, ascending: $sortAscending,
-                        showsAdded: false, folderOrders: true)
+                        showsAdded: true, folderOrders: true)
             // Same hover treatment as the neighbouring capsules.
             .modifier(CapsuleHoverWash())
     }
@@ -2594,6 +2694,7 @@ private struct TemplatesBrowser: View {
         .onHover { hovered = $0 ? template.id : (hovered == template.id ? nil : hovered) }
         .animation(.easeOut(duration: 0.16), value: isHovered)
         .contextMenu {
+            Button("Open in New Tab") { store.openTemplate(template, inNewTab: true) }
             Button("Rename") { rename(template) }
             Button("Delete", role: .destructive) { delete(template) }
         }
@@ -2634,6 +2735,7 @@ private struct TemplatesBrowser: View {
         .buttonStyle(.plain)
         .onHover { hovered = $0 ? template.id : (hovered == template.id ? nil : hovered) }
         .contextMenu {
+            Button("Open in New Tab") { store.openTemplate(template, inNewTab: true) }
             Button("Rename") { rename(template) }
             Button("Delete", role: .destructive) { delete(template) }
         }
@@ -2727,7 +2829,7 @@ private struct NewTabPage: View {
 
                 HStack(spacing: 16) {
                     createCard("New Document", detail: "Start from a template", symbol: "doc.badge.plus", shortcut: "⌘N", action: onNew)
-                    createCard("Open Document", detail: "Link a local .tex file", symbol: "folder", shortcut: "⌘O", action: onOpen)
+                    createCard("Open Document", detail: "Add a local file or folder", symbol: "folder", shortcut: "⌘O", action: onOpen)
                     createCard("Templates", detail: "Edit your starting points", symbol: "square.on.square", shortcut: nil) {
                         select(.templates, "Templates")
                     }
@@ -2769,6 +2871,11 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
+                                .contextMenu {
+                                    Button("Open in New Tab") {
+                                        store.openLibraryEntry(entry, inNewTab: true)
+                                    }
+                                }
 
                             }
                         }
@@ -2809,6 +2916,11 @@ private struct NewTabPage: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
+                                .contextMenu {
+                                    Button("Open in New Tab") {
+                                        store.openLibraryEntry(entry, inNewTab: true)
+                                    }
+                                }
 
                             }
                         }

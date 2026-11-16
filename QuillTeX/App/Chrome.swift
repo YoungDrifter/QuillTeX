@@ -215,10 +215,11 @@ struct TopBar: View {
     @State private var tabDragStartIndex = 0
     @State private var tabDragTargetIndex: Int?
 
-    /// All Documents is the home tab: it stays pinned before the scrolling strip
-    /// and never scrolls out of view, no matter how many tabs are open.
+    /// The home tab hosts All Documents, Starred and Templates. It stays pinned
+    /// before the scrolling strip and never scrolls out of view, no matter how
+    /// many tabs are open or which home section it currently shows.
     private var pinnedHomeTab: WorkspaceTab? {
-        store.tabs.first { $0.isLibrary && $0.selection == .all }
+        store.tabs.first(where: \.isHome)
     }
 
     private enum TabStripItem: Identifiable {
@@ -264,13 +265,13 @@ struct TopBar: View {
                             store.sidebarVisible = true
                         }
                     }
-                    // The pinned All Documents tab replaces the home icon.
+                    // The pinned home tab replaces the home icon.
                     if let pinnedHomeTab {
                         tabPill(pinnedHomeTab)
                             .fixedSize(horizontal: true, vertical: false)
                             .layoutPriority(1)
                     } else {
-                        ChromeButton(icon: "house", label: "All Documents") { store.showLibraryPage() }
+                        ChromeButton(icon: "house", label: "Library Home") { store.showLibraryPage() }
                     }
                     // Library-only tabs may use the full bar; once a document adds
                     // the compile/pane controls the strip shrinks towards the left.
@@ -457,9 +458,9 @@ struct TopBar: View {
     /// the New Tab tab is open it is that tab (no second add control).
     @ViewBuilder
     private var newTabControl: some View {
-        // The library page and Settings are tabs too, but they must not hide the
-        // add control; only an open New Tab page does.
-        if store.tabs.contains(where: { $0.path == nil && !$0.isSettings && !$0.isLibrary }) {
+        // Only an active New Tab page hides the add control; background library
+        // and document tabs never make the plus disappear.
+        if store.tabs.first(where: { $0.id == store.activeTabID })?.isNewTabPage == true {
             EmptyView()
         } else {
             // One quiet plus for both states: it is the same reliable ChromeButton
@@ -483,8 +484,8 @@ struct TopBar: View {
                                        : !store.showingLibrary && !store.showingSettings)))
         let hovered = hoveredTab == tab.id
         let hoveringClose = hoveringCloseTab == tab.id
-        let isNewTabPage = tab.path == nil && !tab.isSettings && !tab.isLibrary
-        let closable = !(tab.isLibrary && tab.selection == .all) && !isNewTabPage
+        let isNewTabPage = tab.isNewTabPage
+        let closable = !tab.isHome && !isNewTabPage
         let showsClose = closable && (active || hovered)
         let leadingSlot = ChromeMetrics.documentPageIconSize.width
         return ZStack(alignment: .leading) {
@@ -509,7 +510,15 @@ struct TopBar: View {
             .help(tab.isSettings ? "Settings" : (tab.path?.path ?? tab.title))
             .accessibilityAddTraits(active ? .isSelected : [])
             .contextMenu {
+                if tab.isLibrary, let selection = tab.selection {
+                    Button("Open in New Tab") {
+                        store.showLibrary(selection: selection, title: tab.title, inNewTab: true)
+                    }
+                }
                 if let path = tab.path, !tab.isTemplate {
+                    Button("Open in New Tab") {
+                        store.openProject(path, explicitRoot: true, newTab: true)
+                    }
                     Button("Rename Project") { store.requestRenameProject(path) }
                     Button("Rename Main File") { store.requestRenameFile(path) }
                     Button("Export PDF…") {
@@ -689,7 +698,7 @@ struct TopBar: View {
     private func tabDragGesture(_ tab: WorkspaceTab) -> some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
-                guard !(tab.isLibrary && tab.selection == .all) else { return }
+                guard !tab.isHome else { return }
                 if tabDragSource != tab.id {
                     tabDragSource = tab.id
                     tabDragStartIndex = scrollableTabs.firstIndex(where: { $0.id == tab.id }) ?? 0
@@ -704,7 +713,7 @@ struct TopBar: View {
                     tabDragSource = nil
                     tabDragTargetIndex = nil
                 }
-                guard !(tab.isLibrary && tab.selection == .all) else { return }
+                guard !tab.isHome else { return }
                 let steps = Int((value.translation.width / 120).rounded())
                 store.moveTab(tab.id, by: steps)
             }
