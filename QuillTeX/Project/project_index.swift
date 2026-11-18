@@ -16,7 +16,7 @@ final class ProjectIndexCache: @unchecked Sendable {
             let declarations = ProjectDeclarationScanner.declarations(in: clean)
             commands = declarations.commands
             environments = declarations.environments
-            tokens = ProjectIndexer.matches(#"\\(part|chapter|section|subsection|subsubsection|label|input|include|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)|\\addcontentsline\s*\{toc\}\s*\{(part|chapter|section|subsection|subsubsection)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}"#, in: clean)
+            tokens = ProjectIndexer.matches(#"\\(part|chapter|section|subsection|subsubsection|label|input|include|subfile|includegraphics|pgfplotstableread|csvreader|begin|end)\*?\s*(?:\[[^\]]*\]\s*)?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|\\addplot\+?\s*(?:\[[^\]]*\]\s*)?table\s*(?:\[[^\]]*\]\s*)?\{([^}]*)\}|\\input\s+([^\s{}%]+)|\\addcontentsline\s*\{toc\}\s*\{(part|chapter|section|subsection|subsubsection)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}"#, in: clean)
         }
     }
     struct Inventory {
@@ -508,7 +508,7 @@ struct ProjectIndexer {
                 } else if command == "begin" || command == "end" {
                     if value == "document" { outline.append((-1, NavigationNode(id: id, title: command == "begin" ? "Begin Document" : "End Document", kind: .boundary, url: file, offset: match.range.location))) }
                 } else {
-                    let isSource = command == "input" || command == "include"
+                    let isSource = command == "input" || command == "include" || command == "subfile"
                     let extensions = isSource ? ["tex"] : (command == "includegraphics" ? ["pdf", "png", "jpg", "jpeg", "eps"] : ["csv", "tsv", "dat", "txt"])
                     if let url = resolve(value, from: file, extensions: extensions, graphics: command == "includegraphics") {
                         if isSource {

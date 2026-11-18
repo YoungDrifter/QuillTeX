@@ -191,6 +191,20 @@ struct ProjectIndexTests {
         check(extraEntry?.offset == flat(tocIndex.structure).first { $0.title == "收尾" }?.offset,
               "a toc-only heading anchors to the next known source heading")
 
+        // The subfiles package command is a source include too; its headings and
+        // source files join the project like \input and \include.
+        let subfileRoot = try write("subfiles/main.tex", #"""
+        \documentclass{article}
+        \begin{document}
+        \subfile{sections/part}
+        \end{document}
+        """#)
+        let subfileChild = try write("subfiles/sections/part.tex", "\\section{Subfile section}\n")
+        let subfileIndex = ProjectIndexer(root: subfileRoot, overrides: [:]).build()
+        check(flat(subfileIndex.structure).contains {
+            $0.kind == .section && $0.title == "Subfile section" && $0.url == subfileChild
+        }, "subfile includes contribute headings and source nodes")
+
         print("PASS: \(assertions) project-index assertions")
     }
 }

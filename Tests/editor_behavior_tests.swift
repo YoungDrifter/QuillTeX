@@ -1216,8 +1216,8 @@ struct EditorBehaviorTests {
         check(inPlaceCatalog.entry(forMainFile: importedDocument)?.folderID == importFolder.id,
               "folder import moves an existing document into the target folder")
 
-        // Choosing a folder imports its main documents, while subfiles and build
-        // output stay with their main document instead of becoming extra entries.
+        // Choosing a folder imports the main documents its TeX root comments
+        // declare; comment-less files (even with a document class) are skipped.
         let folderImportBase = inPlaceBase.appendingPathComponent("Folder Import", isDirectory: true)
         let folderChaptersDirectory = folderImportBase.appendingPathComponent("chapters", isDirectory: true)
         let folderNestedDirectory = folderImportBase.appendingPathComponent("nested", isDirectory: true)
@@ -1231,6 +1231,8 @@ struct EditorBehaviorTests {
         let folderBuild = folderBuildDirectory.appendingPathComponent("generated.tex")
         let folderHidden = folderImportBase.appendingPathComponent(".hidden.tex")
         let folderSubfile = folderImportBase.appendingPathComponent("subfile.tex")
+        let folderSecondChild = folderNestedDirectory.appendingPathComponent("second-child.tex")
+        let folderOrphan = folderImportBase.appendingPathComponent("orphan.tex")
         try "\\documentclass{article}\n\\begin{document}\n\\input{chapters/chapter}\n\\end{document}\n"
             .write(to: folderMain, atomically: true, encoding: .utf8)
         try "\\documentclass{article}\n\\begin{document}\nSecond\n\\end{document}\n"
@@ -1243,16 +1245,23 @@ struct EditorBehaviorTests {
             .write(to: folderHidden, atomically: true, encoding: .utf8)
         try "% !TeX root = main.tex\n\\documentclass{subfiles}\n\\begin{document}\nSub\n\\end{document}\n"
             .write(to: folderSubfile, atomically: true, encoding: .utf8)
+        try "% !TeX root = second.tex\n\\section{Second}\n"
+            .write(to: folderSecondChild, atomically: true, encoding: .utf8)
+        try "\\documentclass{article}\n\\begin{document}\nUnreferenced\n\\end{document}\n"
+            .write(to: folderOrphan, atomically: true, encoding: .utf8)
         let rootBeforeFolderImport = inPlaceStore.root
         let folderImported = inPlaceStore.importFolder(at: folderImportBase, into: importFolder.id)
         check(folderImported.map { $0.url.lastPathComponent } == ["main.tex", "second.tex"],
-              "folder import keeps one entry per main document and groups subfiles and build output")
+              "folder import keeps one entry per main document declared by a root comment")
         let folderCatalogNames = inPlaceCatalog.entries
             .filter { $0.path.hasPrefix(folderImportBase.path + "/") }
             .map { URL(fileURLWithPath: $0.path).lastPathComponent }
             .sorted()
         check(folderCatalogNames == ["main.tex", "second.tex"],
-              "folder import skips subfiles, fragments, hidden files and build folders")
+              "folder import skips subfiles, comment-less files, hidden files and build folders")
+        let folderMainOnDisk = try String(contentsOf: folderMain, encoding: .utf8)
+        check(folderMainOnDisk.hasPrefix("\\documentclass{article}"),
+              "importing a folder does not write root comments before the main file is opened")
         check(folderImported.allSatisfy { $0.folderID == importFolder.id },
               "folder import files every imported document into the target folder")
         check(inPlaceStore.root == rootBeforeFolderImport && inPlaceStore.projectNamePrompt == nil,
@@ -1266,13 +1275,24 @@ struct EditorBehaviorTests {
         let singleFolderBase = inPlaceBase.appendingPathComponent("Single Folder", isDirectory: true)
         try FileManager.default.createDirectory(at: singleFolderBase, withIntermediateDirectories: true)
         let singleMain = singleFolderBase.appendingPathComponent("single.tex")
-        try "\\documentclass{article}\n\\begin{document}\nSingle\n\\end{document}\n"
+        try "% !TeX root = single.tex\n\\documentclass{article}\n\\begin{document}\nSingle\n\\end{document}\n"
             .write(to: singleMain, atomically: true, encoding: .utf8)
         let singleImported = inPlaceStore.importFolder(at: singleFolderBase, into: importFolder.id)
         check(singleImported.count == 1 && singleImported[0].folderID == importFolder.id,
-              "a folder with one main document imports it into the target folder")
+              "a folder with one declared main document imports it into the target folder")
         check(inPlaceStore.root == singleMain.standardizedFileURL && inPlaceStore.projectNamePrompt == nil,
               "a single main document is opened without a naming prompt")
+
+        let unmarkedFolderBase = inPlaceBase.appendingPathComponent("Unmarked Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: unmarkedFolderBase, withIntermediateDirectories: true)
+        try "\\documentclass{article}\n\\begin{document}\nUnmarked\n\\end{document}\n"
+            .write(to: unmarkedFolderBase.appendingPathComponent("unmarked.tex"), atomically: true, encoding: .utf8)
+        var unmarkedErrors: [String] = []
+        inPlaceStore.errorAlertHandler = { title, _ in unmarkedErrors.append(title) }
+        let unmarkedImported = inPlaceStore.importFolder(at: unmarkedFolderBase, into: importFolder.id)
+        check(unmarkedImported.isEmpty && unmarkedErrors == ["No Main File Found"],
+              "a folder without any root comment reports that no main file was found")
+        inPlaceStore.errorAlertHandler = nil
         inPlaceStore.finishClosing()
 
         // MARK: Library sidebar expansion persistence

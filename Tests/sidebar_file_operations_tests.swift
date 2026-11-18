@@ -16,10 +16,16 @@ struct SidebarFileOperationsTests {
         defer { try? fm.removeItem(at: base) }
         let root = directory.appendingPathComponent("main.tex")
         let child = chapters.appendingPathComponent("child.tex")
+        let included = chapters.appendingPathComponent("included.tex")
+        let deeper = chapters.appendingPathComponent("deeper.tex")
+        let linked = chapters.appendingPathComponent("linked.tex")
         let stale = directory.appendingPathComponent("stale.tex")
-        let original = "% !TeX program = xelatex\n\\documentclass{article}\n\\begin{document}\nBody\n\\end{document}\n"
+        let original = "% !TeX program = xelatex\n\\documentclass{article}\n\\begin{document}\n\\input{chapters/included}\n\\input{chapters/linked}\nBody\n\\end{document}\n"
         try original.write(to: root, atomically: true, encoding: .utf8)
         try "Chinese child\r\n".write(to: child, atomically: true, encoding: .utf8)
+        try "\\input{deeper}\nIncluded body\n".write(to: included, atomically: true, encoding: .utf8)
+        try "Deeper body\n".write(to: deeper, atomically: true, encoding: .utf8)
+        try "% !TeX root = other.tex\nLinked body\n".write(to: linked, atomically: true, encoding: .utf8)
         try "% !TeX root = other.tex\nStale".write(to: stale, atomically: true, encoding: .utf8)
         let ignored = [directory.appendingPathComponent("build/generated.tex"), directory.appendingPathComponent(".git/hidden.tex"), outside.appendingPathComponent("external.tex")]
         for file in ignored { try "Unchanged".write(to: file, atomically: true, encoding: .utf8) }
@@ -35,14 +41,44 @@ struct SidebarFileOperationsTests {
             guard condition() else { fatalError("FAILED: \(message)") }; checks += 1
         }
         func disk(_ url: URL) -> String { try! String(contentsOf: url, encoding: .utf8) }
-        check(disk(root) == "% !TeX root = main.tex\n" + original, "opening adds a first-line root directive and preserves the compiler directive")
-        check(disk(child) == "% !TeX root = ../main.tex\r\nChinese child\r\n", "unopened nested TeX files receive relative comments with their original line endings")
-        check(disk(stale).hasPrefix("% !TeX root = other.tex"), "opening only fills missing comments")
+        check(disk(root) == "% !TeX root = main.tex\n" + original, "opening adds a first-line root directive to the main file")
+        check(disk(child) == "Chinese child\r\n", "opening leaves other TeX files without a root comment")
+        check(disk(included) == "% !TeX root = ../main.tex\n\\input{deeper}\nIncluded body\n",
+              "a file the main file inputs becomes a subfile with a root comment")
+        check(disk(deeper) == "% !TeX root = ../main.tex\nDeeper body\n",
+              "transitive includes also become subfiles")
+        check(disk(linked) == "% !TeX root = ../main.tex\nLinked body\n",
+              "an included file's outdated root comment is corrected to the main file")
+        check(disk(stale) == "% !TeX root = other.tex\nStale", "opening does not rewrite or duplicate unrelated comments")
         check(ignored.allSatisfy { disk($0) == "Unchanged" } && disk(libraryFile) == "Library data", "hidden, build, app-data and external symlink files stay untouched")
-        check(!store.activeDocument!.isDirty, "adding comments does not leave a clean document falsely dirty")
+        check(!store.activeDocument!.isDirty, "adding a comment to the main file does not leave it falsely dirty")
         let once = disk(root)
         store.openProject(root)
-        check(disk(root) == once, "reopening does not duplicate comments")
+        check(disk(root) == once, "reopening does not duplicate the main-file comment")
+        try store.setTeXFile(child, role: .sub)
+        let childBuffer = store.documents.first { $0.url == child.standardizedFileURL }?.text
+        check(childBuffer == "% !TeX root = ../main.tex\r\nChinese child\r\n", "moving a file to Sub in the sidebar adds a relative comment with its original line endings")
+        check(disk(child) == "Chinese child\r\n", "the sidebar comment stays in the unsaved buffer until the file is saved")
+        check(store.save(store.documents.first { $0.url == child.standardizedFileURL }!),
+              "the sidebar comment can be saved")
+        check(disk(child) == "% !TeX root = ../main.tex\r\nChinese child\r\n",
+              "saving persists the sidebar comment")
+        store.index = ProjectIndexer(root: root,
+            overrides: Dictionary(uniqueKeysWithValues: store.documents.map { ($0.url, $0.text) })).build()
+        check(store.otherTeXFiles.contains(stale), "files that do not point at the main file stay in Others")
+
+        let later = chapters.appendingPathComponent("later.tex")
+        try "Later body\n".write(to: later, atomically: true, encoding: .utf8)
+        let mainDocument = store.documents.first { $0.url == root.standardizedFileURL }!
+        mainDocument.text += "\\input{chapters/later}\n"
+        store.edited(mainDocument)
+        let deadline = Date().addingTimeInterval(3)
+        while ProjectIndexer.rootDirective(in: (try? String(contentsOf: later, encoding: .utf8)) ?? "") == nil,
+              Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        check(disk(later).hasPrefix("% !TeX root = ../main.tex\n"),
+              "typing an input in the editor promotes the referenced file to a subfile")
         let literal = "\\begin{verbatim}\n% !TeX root = example.tex\n\\end{verbatim}\n"
         check(ProjectStore.updatingRootDirective(in: literal, to: "main.tex", replacingExisting: true) == "% !TeX root = main.tex\n" + literal,
               "example comments inside literal environments are not rewritten")
@@ -116,7 +152,11 @@ struct SidebarFileOperationsTests {
         check(oldMain.text.contains("\\input{chapters/renamed.tex}") && !oldMain.text.contains("\\input{chapters/fresh.tex}"), "literal input references follow a renamed file in unsaved buffers")
         let renamedMain = try store.renameProjectFile(root, to: "renamed-main")
         check(store.root == renamedMain && currentMain.url == renamedMain, "renaming the same main file preserves its document identity")
-        check(disk(renamedMain).hasPrefix("% !TeX root = renamed-main.tex") && disk(child).hasPrefix("% !TeX root = ../renamed-main.tex"), "main-file rename updates relative root comments throughout the project")
+        check(disk(renamedMain).hasPrefix("% !TeX root = renamed-main.tex") && disk(child).hasPrefix("% !TeX root = ../renamed-main.tex"),
+              "main-file rename updates relative root comments throughout the project")
+        check(disk(included).hasPrefix("% !TeX root = ../renamed-main.tex") && disk(deeper).hasPrefix("% !TeX root = ../renamed-main.tex"),
+              "renaming the main file updates its included subfiles too")
+        check(disk(stale) == "% !TeX root = other.tex\nStale", "renaming the main file leaves unrelated root comments alone")
         let renamedChild = try store.renameProjectFile(child, to: "child renamed.tex")
         check(fm.fileExists(atPath: renamedChild.path) && !fm.fileExists(atPath: child.path), "inactive files can be renamed without opening them")
         do { try store.renameProjectFile(renamedChild, to: "renamed.tex"); fatalError("rename overwrote target") }

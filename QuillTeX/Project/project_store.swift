@@ -249,6 +249,8 @@ final class ProjectStore: ObservableObject {
     private var accessPromptedFor: URL?
     private var autoCompileTask: Task<Void, Never>?
     private var indexTask: Task<Void, Never>?
+    private var includePromotionTask: Task<Void, Never>?
+    private var includeSignatures: [URL: Set<String>] = [:]
     private var generation = 0
     private var checkingExternal = false
     private var externalCheckPending = false
@@ -334,6 +336,7 @@ final class ProjectStore: ObservableObject {
         sessionTask?.cancel()
         sessionStore.flush()
         indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
+        includePromotionTask?.cancel()
         build.cancel()
         fileMonitor.stop()
     }
@@ -658,12 +661,44 @@ final class ProjectStore: ObservableObject {
         return directive + newline + text
     }
 
-    func maintainProjectRootDirectives(replacingExisting: Bool, additionalFiles: [URL] = []) {
+    /// The main file owns the project's root comment; files it actually includes
+    /// become subfiles and are annotated too. Other files receive a comment only
+    /// when the user moves them into Sub in the sidebar, or when their existing
+    /// comment points at a main file that was renamed.
+    func maintainProjectRootDirectives(replacingExisting: Bool, additionalFiles: [URL] = [],
+                                       previousRoot: URL? = nil, pendingOnly: Bool = false) {
         guard maintainsRootDirectives, texProjectEnabled, !maintainingRootDirectives, let root else { return }
         maintainingRootDirectives = true
         defer { maintainingRootDirectives = false }
+        let rootURL = root.standardizedFileURL
+        var targets: Set<URL>
+        var includedTargets: Set<URL> = []
+        if pendingOnly {
+            // An input-method composition deferred only the files that were
+            // already targets; do not widen the maintenance pass afterwards.
+            targets = pendingRootDirectives
+            guard !targets.isEmpty else { return }
+        } else {
+            targets = [rootURL]
+            // The main file's include graph defines its subfiles: files it
+            // actually inputs become subfiles and receive their comment.
+            let included = includedTeXFiles(from: rootURL, within: sourceDirectory ?? rootURL.deletingLastPathComponent())
+            targets.formUnion(included)
+            includedTargets = Set(included)
+            if replacingExisting {
+                for url in projectTeXFiles + additionalFiles {
+                    let standardized = url.standardizedFileURL
+                    guard standardized != rootURL, hasRootDirective(at: standardized) else { continue }
+                    // A renamed main only follows comments that actually pointed at
+                    // its previous path; unrelated projects sharing the folder keep
+                    // their own root comments.
+                    if let previousRoot, !declaresRoot(previousRoot, at: standardized) { continue }
+                    targets.insert(standardized)
+                }
+            }
+        }
         var failed: [String] = []
-        for url in Set(projectTeXFiles + additionalFiles).sorted(by: { $0.path < $1.path }) {
+        for url in targets.sorted(by: { $0.path < $1.path }) {
             let document = documents.first { $0.url == url }
             if document?.hasMarkedText == true { pendingRootDirectives.insert(url); continue }
             pendingRootDirectives.remove(url)
@@ -674,7 +709,11 @@ final class ProjectStore: ObservableObject {
                     disk = try String(contentsOf: url, encoding: .utf8)
                 }
                 let path = Self.relativeFilePath(to: root, from: url.deletingLastPathComponent())
-                let updated = Self.updatingRootDirective(in: disk, to: path, replacingExisting: replacingExisting)
+                // The main file always names itself, even after an explicit open
+                // that bypassed a stale directive. Files in the include graph are
+                // made subfiles deliberately, so an outdated comment is corrected.
+                let replace = replacingExisting || url == rootURL || includedTargets.contains(url)
+                let updated = Self.updatingRootDirective(in: disk, to: path, replacingExisting: replace)
                 if updated != disk {
                     guard try String(contentsOf: url, encoding: .utf8) == disk else {
                         failed.append(url.lastPathComponent); continue
@@ -682,16 +721,119 @@ final class ProjectStore: ObservableObject {
                     try updated.write(to: url, atomically: true, encoding: .utf8)
                 }
                 if let document {
-                    let buffer = Self.updatingRootDirective(in: document.text, to: path, replacingExisting: replacingExisting)
+                    let buffer = Self.updatingRootDirective(in: document.text, to: path, replacingExisting: replace)
                     document.savedText = updated; document.diskText = updated
                     applyMetadataText(buffer, to: document)
                 }
             } catch { failed.append(url.lastPathComponent) }
         }
         if !failed.isEmpty { recoveryMessage = "Could not update main-file comments: " + failed.joined(separator: ", ") }
+        if let text = maintenanceText(at: rootURL) {
+            includeSignatures[rootURL] = Self.includeSignature(in: text)
+        }
         indexCache.invalidateInventory()
         refreshIndex(immediate: true); scheduleSessionSave()
         objectWillChange.send(); window?.isDocumentEdited = documents.contains { $0.isDirty }
+    }
+
+    /// Check both the live buffer and the file on disk so an unsaved comment is
+    /// not silently dropped when the main file moves.
+    private func hasRootDirective(at url: URL) -> Bool {
+        if let document = documents.first(where: { $0.url == url }),
+           ProjectIndexer.rootDirective(in: document.text) != nil { return true }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return ProjectIndexer.rootDirective(in: text) != nil
+    }
+
+    private func declaresRoot(_ target: URL, at url: URL) -> Bool {
+        let text: String
+        if let document = documents.first(where: { $0.url == url }) { text = document.text }
+        else {
+            guard let disk = try? String(contentsOf: url, encoding: .utf8) else { return false }
+            text = disk
+        }
+        guard let directive = ProjectIndexer.rootDirective(in: text) else { return false }
+        let path = (directive as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: path, relativeTo: url.deletingLastPathComponent())
+            .standardizedFileURL == target.standardizedFileURL
+    }
+
+    /// Follow `\input`, `\include`, `\subfile` and the import package's commands
+    /// from the main document. Comments and verbatim blocks are masked out before
+    /// scanning, and every discovered file is followed in turn so transitive
+    /// includes also become subfiles.
+    private func includedTeXFiles(from main: URL, within directory: URL) -> [URL] {
+        var included: [URL] = []
+        var seen = Set([main.standardizedFileURL])
+        var pending = [main.standardizedFileURL]
+        while let file = pending.popLast() {
+            guard let text = maintenanceText(at: file) else { continue }
+            let clean = ProjectIndexer.masked(text)
+            for reference in Self.includeReferences(in: clean) {
+                guard let url = resolveIncluded(reference.value, prefix: reference.prefix,
+                                                from: file, within: directory),
+                      seen.insert(url).inserted else { continue }
+                included.append(url)
+                pending.append(url)
+            }
+        }
+        return included
+    }
+
+    /// The include commands that can bring another TeX file into the document.
+    /// Values stay raw here; callers resolve them against the including file.
+    private static func includeReferences(in clean: String) -> [(prefix: String, value: String)] {
+        let ns = clean as NSString
+        var references: [(prefix: String, value: String)] = []
+        for match in ProjectIndexer.matches(#"\\(?:input|include|subfile)\*?\s*(?:\{([^{}]*)\}|([^\s{}%]+))"#, in: clean) {
+            let range = match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range(at: 2)
+            references.append(("", ns.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        for match in ProjectIndexer.matches(#"\\(?:import|subimport|inputfrom|subinputfrom)\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}"#, in: clean) {
+            references.append((ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines),
+                               ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        return references
+    }
+
+    /// Cheap enough to run after a typing pause: only files that mention an
+    /// include command are masked and parsed, so prose edits do not rescan the
+    /// whole include graph.
+    private static func includeSignature(in text: String) -> Set<String> {
+        guard text.contains("\\input") || text.contains("\\include") || text.contains("\\subfile")
+                || text.contains("\\import") || text.contains("\\subimport")
+                || text.contains("\\subinputfrom") else { return [] }
+        return Set(includeReferences(in: ProjectIndexer.masked(text)).map { $0.prefix + "\u{1F}" + $0.value })
+    }
+
+    private func maintenanceText(at url: URL) -> String? {
+        if let document = documents.first(where: { $0.url == url }) { return document.text }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func resolveIncluded(_ value: String, prefix: String, from file: URL,
+                                 within directory: URL) -> URL? {
+        guard !value.isEmpty, !value.contains("\\"), !value.contains("#") else { return nil }
+        let bases: [URL]
+        if prefix.isEmpty {
+            // LaTeX also finds inputs from the project root when the file lives
+            // in a subfolder.
+            bases = [file.deletingLastPathComponent(), directory]
+        } else {
+            guard !prefix.contains("\\"), !prefix.contains("#") else { return nil }
+            bases = [file.deletingLastPathComponent().appendingPathComponent(prefix)]
+        }
+        for base in bases {
+            let candidate = (value.hasPrefix("/") ? URL(fileURLWithPath: value) : base.appendingPathComponent(value)).standardizedFileURL
+            let variants = candidate.pathExtension.isEmpty ? [candidate.appendingPathExtension("tex")] : [candidate]
+            if let found = variants.first(where: {
+                $0.pathExtension.lowercased() == "tex"
+                    && ProjectIndexer.isWithin($0, directory: directory)
+                    && !$0.pathComponents.contains("build")
+                    && FileManager.default.fileExists(atPath: $0.path)
+            }) { return found.standardizedFileURL }
+        }
+        return nil
     }
 
     /// Register one minimal native edit, preserving existing undo and unsaved body
@@ -782,11 +924,13 @@ final class ProjectStore: ObservableObject {
             && isDirectory.boolValue
     }
 
-    /// Recursively find the main LaTeX documents in a folder. A main document
-    /// declares `\documentclass` and does not point at another root; subfiles and
-    /// source fragments are excluded so each project contributes one library
-    /// entry instead of one entry per chapter. Build folders and hidden files are
-    /// not part of the document set.
+    /// Find the main documents a folder declares through TeX root comments.
+    ///
+    /// A `% !TeX root = …` comment names its project's main file, so a subfile
+    /// identifies its main even when that main has no comment of its own. Files
+    /// without a root comment are not imported on their own: an unrelated folder
+    /// of TeX fragments has no discoverable main document. Build folders, hidden
+    /// files and symlinks leaving the folder are not part of the document set.
     static func mainDocuments(in folder: URL) -> [URL] {
         guard let walker = FileManager.default.enumerator(
             at: folder,
@@ -811,9 +955,17 @@ final class ProjectStore: ObservableObject {
             }
             guard item.pathExtension.lowercased() == "tex",
                   let text = try? String(contentsOf: item, encoding: .utf8),
-                  ProjectIndexer.isMainDocument(text, at: item) else { continue }
-            let standardized = item.standardizedFileURL
-            if seen.insert(standardized).inserted { documents.append(standardized) }
+                  let directive = ProjectIndexer.rootDirective(in: text) else { continue }
+            let path = (directive as NSString).expandingTildeInPath
+            let declared = URL(fileURLWithPath: path, relativeTo: item.deletingLastPathComponent()).standardizedFileURL
+            guard ProjectIndexer.isWithin(declared, directory: folder),
+                  declared.pathExtension.lowercased() == "tex",
+                  FileManager.default.fileExists(atPath: declared.path),
+                  let resolved = try? resolveMainFile(declared).url,
+                  ProjectIndexer.isWithin(resolved, directory: folder),
+                  resolved.pathExtension.lowercased() == "tex",
+                  FileManager.default.fileExists(atPath: resolved.path) else { continue }
+            if seen.insert(resolved).inserted { documents.append(resolved) }
         }
         return documents.sorted { lhs, rhs in
             let lhsMain = lhs.lastPathComponent.lowercased() == "main.tex"
@@ -837,8 +989,8 @@ final class ProjectStore: ObservableObject {
         }
         let roots = Self.mainDocuments(in: folder)
         guard !roots.isEmpty else {
-            showError("No LaTeX Documents Found",
-                      "The selected folder does not contain a .tex file with \\documentclass. Subfiles are imported with their main document.")
+            showError("No Main File Found",
+                      "“\(folder.lastPathComponent)” does not contain a TeX root comment pointing to an existing main file. Open a file directly, or add % !TeX root = main.tex to the file that includes it.")
             return []
         }
         var imported: [LibraryEntry] = []
@@ -1777,7 +1929,7 @@ final class ProjectStore: ObservableObject {
                 restoreSession(savedSession)
                 if incoming != main { openSource(incoming) }
             }
-            if !openingTemplate { maintainProjectRootDirectives(replacingExisting: explicitRoot) }
+            if !openingTemplate { maintainProjectRootDirectives(replacingExisting: false) }
             if let warning = resolution.warning { showError("Main File Directive", warning) }
             if !openingTemplate, let catalog {
                 do {
@@ -1986,10 +2138,45 @@ final class ProjectStore: ObservableObject {
         rememberCurrentLocation(); historyPosition = target
         let location = history[target]; openSource(location.url, offset: location.offset, recordHistory: false)
     }
+    /// A newly typed include must become a subfile without waiting for a reopen.
+    /// Wait for a short pause so a half-typed path is not treated as a reference,
+    /// then follow the main file's include graph and annotate the new file.
+    private func scheduleIncludePromotion(for url: URL) {
+        guard !openingTemplate, !isEditingTemplate, let root else { return }
+        let standardized = url.standardizedFileURL
+        guard standardized == root.standardizedFileURL || indexedSourceURLs.contains(standardized) else { return }
+        includePromotionTask?.cancel()
+        includePromotionTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self, !self.maintainingRootDirectives,
+                  self.root != nil, !self.openingTemplate, !self.isEditingTemplate else { return }
+            let signature = Self.includeSignature(in: self.maintenanceText(at: standardized) ?? "")
+            // Ordinary prose edits leave the include list alone; skip the graph
+            // walk unless the file's include commands actually changed.
+            guard self.includeSignatures[standardized] != signature else { return }
+            self.includeSignatures[standardized] = signature
+            self.maintainProjectRootDirectives(replacingExisting: false)
+        }
+    }
+
+    /// Source files in the last indexed include graph. Editing one of them can add
+    /// another include even though it is not the main file.
+    private var indexedSourceURLs: Set<URL> {
+        func collect(_ nodes: [NavigationNode], into urls: inout Set<URL>) {
+            for node in nodes {
+                if node.kind == .source, let url = node.url { urls.insert(url.standardizedFileURL) }
+                collect(node.children, into: &urls)
+            }
+        }
+        var urls: Set<URL> = []
+        collect(index.subfiles, into: &urls)
+        return urls
+    }
+
     func edited(_ doc: SourceDocument) {
         guard !maintainingRootDirectives else { return }
         if pendingRootDirectives.contains(doc.url), !doc.hasMarkedText {
-            maintainProjectRootDirectives(replacingExisting: true)
+            maintainProjectRootDirectives(replacingExisting: true, pendingOnly: true)
         }
         editRevision += 1; previewIsOutdated = true
         scheduleSessionSave()
@@ -1997,6 +2184,7 @@ final class ProjectStore: ObservableObject {
         let dirty = documents.contains { $0.isDirty }
         if window?.isDocumentEdited != dirty { window?.isDocumentEdited = dirty }
         refreshIndex()
+        scheduleIncludePromotion(for: doc.url)
         scheduleAutoCompile()
     }
     @discardableResult func save(_ doc: SourceDocument, allowDetached: Bool = false) -> Bool {
@@ -2043,7 +2231,11 @@ final class ProjectStore: ObservableObject {
         objectWillChange.send()
         refreshIndex(immediate: true)
         updateProjectReferences(from: oldURL, to: destination, files: previousProjectFiles.filter { $0 != oldURL } + [destination])
-        if root == destination { maintainProjectRootDirectives(replacingExisting: true, additionalFiles: previousProjectFiles.filter { $0 != oldURL } + [destination]) }
+        if root == destination {
+            maintainProjectRootDirectives(replacingExisting: true,
+                additionalFiles: previousProjectFiles.filter { $0 != oldURL } + [destination],
+                previousRoot: oldURL)
+        }
         persistSession(force: true); sessionStore.flush()
     }
 
@@ -2147,7 +2339,8 @@ final class ProjectStore: ObservableObject {
         updateProjectReferences(from: url, to: destination, files: previousProjectFiles.filter { $0 != url } + [destination])
         if root == destination {
             maintainProjectRootDirectives(replacingExisting: true,
-                additionalFiles: previousProjectFiles.filter { $0 != url } + [destination])
+                additionalFiles: previousProjectFiles.filter { $0 != url } + [destination],
+                previousRoot: url)
         }
         refreshIndex(immediate: true); persistSession(force: true); sessionStore.flush()
         return destination
