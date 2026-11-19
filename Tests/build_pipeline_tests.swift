@@ -188,6 +188,23 @@ struct BuildPipelineTests {
         }
         check(streaming.status.isRunning && streaming.log.contains("first output"), "compile output is available before the step finishes (\(streaming.status), \(streaming.log))")
         check(streaming.currentStep == "XeLaTeX", "current step names the selected engine")
+        check(BuildController.passLabel(step: .engine, index: 0, steps: [.engine, .bibtex, .engine, .engine], engine: .xelatex) == "xelatex 1/3",
+              "the first engine pass is numbered among engine passes")
+        check(BuildController.passLabel(step: .bibtex, index: 1, steps: [.engine, .bibtex, .engine, .engine], engine: .xelatex) == "bibtex 1/1",
+              "a bibliography pass is numbered among its own kind")
+        check(BuildController.passLabel(step: .engine, index: 3, steps: [.engine, .bibtex, .engine, .engine], engine: .xelatex) == "xelatex 3/3",
+              "later engine passes keep incrementing")
+        let progressEngine = try fixture("progress-engine", body: "sleep 0.45")
+        let progressBuild = BuildController()
+        progressBuild.compile(request(["xelatex": progressEngine], steps: [.engine, .engine]))
+        check(progressBuild.stepProgress == "xelatex 1/2", "the live capsule starts at the first pass")
+        let secondPassDeadline = Date().addingTimeInterval(3)
+        while progressBuild.stepProgress != "xelatex 2/2", Date() < secondPassDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        }
+        check(progressBuild.stepProgress == "xelatex 2/2", "the capsule advances to the second pass")
+        progressBuild.cancel()
+        check(progressBuild.stepProgress == nil, "cancelling clears the live pass label")
         streaming.cancel()
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         check(!streaming.status.isRunning && streaming.lastSummary == "Build cancelled", "cancelled process callbacks cannot publish a later success")

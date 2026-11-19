@@ -261,17 +261,19 @@ enum BuildLogParser {
         }
     }
 
-    /// A one-line verdict for the status area.
+    /// A one-line verdict for the status area. Keep it to the outcome and the
+    /// counts: the preview capsule shows this for every finished build.
     static func summary(for diagnostics: [BuildDiagnostic], succeeded: Bool) -> String {
         let errors = diagnostics.filter { $0.severity == .error }.count
         let warnings = diagnostics.filter { $0.severity == .warning && !$0.category.isProofreading }.count
         let proofreading = diagnostics.filter { $0.category.isProofreading }.count
         let proofSummary = proofreading > 0 ? " · \(proofreading) proofreading issue\(proofreading == 1 ? "" : "s")" : ""
+        let warningSummary = warnings > 0 ? " · \(warnings) warning\(warnings == 1 ? "" : "s")" : ""
         if succeeded && errors == 0 {
-            return (warnings == 0 ? "Build succeeded" : "Build succeeded · \(warnings) warning\(warnings == 1 ? "" : "s")") + proofSummary
+            return (warnings == 0 ? "Build succeeded" : "Build succeeded" + warningSummary) + proofSummary
         }
         if errors == 0 { return "Build failed" }
-        return "\(errors) error\(errors == 1 ? "" : "s")" + (warnings > 0 ? " · \(warnings) warning\(warnings == 1 ? "" : "s")" : "") + proofSummary
+        return "Build failed · \(errors) error\(errors == 1 ? "" : "s")" + warningSummary + proofSummary
     }
 
     /// A bibliography step with no citations is harmless. Every other non-zero

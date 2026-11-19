@@ -6,13 +6,13 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 2.1.2** · macOS 14+ · Apple Silicon
+**Version 2.1.3** · macOS 14+ · Apple Silicon
 
-[下载 2.1.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.2)
+[下载 2.1.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.3)
 
-![QuillTeX 2.1.2 · 文档库](docs/demo/document-library.png)
+![QuillTeX 2.1.3 · 文档库](docs/demo/document-library.png)
 
-![QuillTeX 2.1.2 · 写作工作区](docs/demo/writing-workspace.png)
+![QuillTeX 2.1.3 · 写作工作区](docs/demo/writing-workspace.png)
 
 ## 功能
 
@@ -27,6 +27,8 @@
 - 新建文档可分别填写文件名与项目名，并选择位置和模板，默认保存到 `~/Documents/QuillTeX`，并记住上次使用的文件夹；默认新建位置可在设置 → Library 中修改；模板选择 None 时创建空白文稿。
 - 在展开的文件夹中直接新建 TeX 或文件夹，名称在文件行内编辑，回车或点击侧栏空白处保存，留空使用默认名，右键可重命名或移到废纸篓。
 - 使用 XeLaTeX、pdfLaTeX 或 LuaLaTeX 本地编译，点击诊断跳转到对应源码。
+- Folder 侧栏、文件与文件夹右键、文档标签和文档库文稿均可一键清理 `.aux`、`.log`、`.toc`、`.bbl`、`.synctex.gz` 等中间文件，保留 PDF 与源码。
+- PDF 顶部胶囊始终显示，并实时显示 `xelatex 1/2`、`bibtex 1/1` 等编译遍数；结束后简化为成功或 warning / error 数量。切换标签不会中断原工程的编译。
 - 可折叠的警告／错误列表与排版校对，帮助检查错误、溢出行和未解析引用。
 - 源码与 PDF 并排显示，支持手势缩放、Actual Size、适应宽度和实时缩放比例，以及 ⌘-点击双向定位。
 - TeX Project 是内置功能：按 Main、Sub、Others 管理工程关系；主文件与实际 `\input` 的 TeX 文件会自动获得 `% !TeX root = …` 注释，其他文件可拖动增删注释，已有主文件注释仍会被识别。
@@ -37,7 +39,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.2) 下载 `QuillTeX-2.1.2.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.3) 下载 `QuillTeX-2.1.3.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -140,6 +142,12 @@ TeX Project 按 Main、Sub、Others 管理文件关系并支持拖动增删主�
 打开文稿只给主文件补 root 注释，不再写入目录下的所有 TeX；主文件通过 `\input`、`\include`、`\subfile` 实际引入的文件会自动成为子文件并补注释，编辑时新敲入的引入命令也会在停顿后自动提升目标文件。导入文件夹只按 root 注释识别主文件，没有注释指向的文件不导入，找不到主文件时提示 No Main File Found；子文件指向但自身缺少注释的主文件仍会打开并补上。
 
 [更新说明](docs/versions/2.1.2.md) · [下载 2.1.2](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.2)
+
+### 2.1.3 · 中间文件清理与后台编译
+
+Folder 侧栏、文件与文件夹右键、文档标签和文档库文稿均可一键清理 `.aux`、`.log`、`.toc`、`.bbl`、`.synctex.gz` 等中间文件，保留 PDF 与源码。PDF 顶部胶囊始终显示，并用 `xelatex 1/2`、`bibtex 1/1` 等简短文字实时显示编译遍数，结束后只保留成功或 warning / error 数量。切换标签不再取消原标签的编译：每个工程保留独立的编译状态，切回时继续显示进度、诊断和 PDF。
+
+[更新说明](docs/versions/2.1.3.md) · [下载 2.1.3](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.1.3)
 
 ## 本地构建
 

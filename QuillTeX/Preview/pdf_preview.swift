@@ -526,11 +526,14 @@ final class SyncPDFView: PDFView {
 struct PreviewPane: View {
     @ObservedObject var store: ProjectStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject private var build: BuildController
     @StateObject private var controls = PDFPreviewControls()
     @State private var zoomText = ""
     @State private var zoomTextEdited = false
     @FocusState private var zoomFocused: Bool
+
+    /// The active tab's controller, read through the store so a tab switch
+    /// attaches the preview to that project's build without recreating the pane.
+    private var build: BuildController { store.build }
 
     private func commitZoom() {
         guard zoomTextEdited else { return }
@@ -586,35 +589,43 @@ struct PreviewPane: View {
         .help(help).accessibilityLabel(help)
     }
 
-    /// Short build state for the preview capsule. Transient SyncTeX notes and
-    /// "showing the previous PDF" messages take precedence so the capsule always
-    /// explains what the reader is currently looking at.
+    /// Short build state for the preview capsule. Transient SyncTeX notes take
+    /// precedence, then the live compile pass or the short build verdict. The
+    /// capsule is always rendered; detailed messages stay in its tooltip.
     private var paneStatus: String {
         if let message = store.syncStatusMessage, !message.isEmpty { return message }
-        if let message = store.previewStatusText { return message }
+        if case .idle = build.status, store.previewIsOutdated { return "Awaiting compilation" }
+        return build.compactStatus
+    }
+
+    private var paneStatusHelp: String {
+        if let message = store.syncStatusMessage, !message.isEmpty { return message }
         return build.lastSummary
     }
 
-    /// The capsule hugs its message; only a long status is capped and truncated so
-    /// it cannot crowd the zoom controls out of the header.
-    private var paneStatusWidth: CGFloat {
-        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        let textWidth = (paneStatus as NSString).size(withAttributes: [.font: font]).width
-        return min(ceil(textWidth) + 21, 300)
+    private var paneStatusIcon: String {
+        switch build.status {
+        case .running: "gearshape.2"
+        case .succeeded: "checkmark.circle"
+        case .failed: "exclamationmark.triangle"
+        case .unavailable: "exclamationmark.triangle"
+        case .idle: "doc.richtext"
+        }
     }
 
     init(store: ProjectStore) {
         self.store = store
-        self.build = store.build
     }
 
+    /// The capsule keeps its natural width. The status strings are deliberately
+    /// short, and truncating them made a finished build read "Build s…ceeded".
     private var statusCapsule: some View {
-        Label(paneStatus, systemImage: "doc.richtext")
+        Label(paneStatus, systemImage: paneStatusIcon)
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(Palette.primaryInk)
-            .lineLimit(1).truncationMode(.middle)
-            .frame(maxWidth: paneStatusWidth, alignment: .leading)
-            .help(paneStatus)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(paneStatusHelp)
             .padding(.horizontal, 10)
             .frame(height: 30)
             .quillFloatingCapsule()
@@ -639,19 +650,14 @@ struct PreviewPane: View {
         .accessibilityElement(children: .contain).accessibilityLabel("PDF zoom")
     }
 
-    /// Full header with the build status; when the pane is too narrow for both
-    /// capsules, fall back to the zoom capsule alone so it is never clipped.
+    /// Both capsules share one row. The status capsule is never dropped: when the
+    /// pane is narrow it compresses and truncates while the zoom capsule keeps its
+    /// fixed width.
     private var previewHeader: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                statusCapsule
-                Spacer(minLength: 10)
-                zoomCapsule
-            }
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                zoomCapsule
-            }
+        HStack(spacing: 10) {
+            statusCapsule
+            Spacer(minLength: 0)
+            zoomCapsule
         }
     }
 

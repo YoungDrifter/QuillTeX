@@ -88,7 +88,7 @@ struct ProjectSidebar: View {
                 Text("QuillTeX")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Palette.primaryInk)
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.1.1") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "161"))")
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.1.3") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "163"))")
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondaryInk)
             }
@@ -148,6 +148,10 @@ struct ProjectSidebar: View {
                         SidebarActionButton(icon: "folder.badge.plus", title: "New Folder",
                                             help: store.creationDirectory.map { "Create a folder in " + $0.path } ?? "Open a project first") {
                             store.beginSidebarCreation(folder: true)
+                        }.disabled(store.root == nil)
+                        SidebarActionButton(icon: "eraser", title: "Clear Intermediate Files",
+                                            help: "Remove auxiliary LaTeX files (.aux, .log, .toc, .bbl and similar). The PDF and sources stay.") {
+                            store.clearIntermediateFilesForProject()
                         }.disabled(store.root == nil)
                     }
                 }.padding(.horizontal, 17).padding(.bottom, 8)
@@ -470,6 +474,10 @@ private struct OutlineRow: View {
                         Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                         if node.kind == .resource { Button("Open with Default App") { NSWorkspace.shared.open(url) } }
                     }
+                    if node.kind == .folder || url.pathExtension.lowercased() == "tex" {
+                        Divider()
+                        Button("Clear Intermediate Files") { store.clearIntermediateFiles(at: url) }
+                    }
                 }
             }
             if expanded && !children.isEmpty {
@@ -559,6 +567,12 @@ private struct FolderRowActions: ViewModifier {
                                         DispatchQueue.main.async { store.requestRenameFile(url) }
                                     }
                                     action("Move to Trash", icon: "trash") { deleting = true }
+                                }
+                                if node.kind == .folder || url.pathExtension.lowercased() == "tex" {
+                                    action("Clear Intermediate Files", icon: "eraser") {
+                                        showing = false
+                                        store.clearIntermediateFiles(at: url)
+                                    }
                                 }
                                 action("Reveal in Finder", icon: "folder") {
                                     showing = false; NSWorkspace.shared.activateFileViewerSelecting([url])

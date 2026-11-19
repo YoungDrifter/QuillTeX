@@ -521,6 +521,7 @@ struct TopBar: View {
                     }
                     Button("Rename Project") { store.requestRenameProject(path) }
                     Button("Rename Main File") { store.requestRenameFile(path) }
+                    Button("Clear Intermediate Files") { store.clearIntermediateFiles(forTabMain: path) }
                     Button("Export PDF…") {
                         let entry = store.catalog?.entry(forMainFile: path)
                             ?? LibraryEntry(path: path.path, displayName: tab.title)

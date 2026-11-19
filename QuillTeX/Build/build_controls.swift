@@ -5,7 +5,6 @@ import AppKit
 /// MANUAL/AUTO switch, the engine, quick settings and the result state.
 struct BuildControls: View {
     @ObservedObject var store: ProjectStore
-    @ObservedObject private var build: BuildController
     @ObservedObject private var settings = BuildSettings.shared
     @State private var spinning = false
     @State private var showingEnginePicker = false
@@ -13,10 +12,9 @@ struct BuildControls: View {
     @Namespace private var modeSelection
     @Namespace private var engineSelection
 
-    init(store: ProjectStore) {
-        self.store = store
-        self.build = store.build
-    }
+    /// Read the active tab's controller through the store: switching tabs swaps
+    /// the controller without rebuilding the top bar.
+    private var build: BuildController { store.build }
 
     private var running: Bool { build.status.isRunning }
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }

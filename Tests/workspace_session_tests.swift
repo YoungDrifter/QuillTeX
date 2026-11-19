@@ -223,6 +223,39 @@ struct WorkspaceSessionTests {
         check(FileManager.default.fileExists(atPath: directory.appendingPathComponent("renamed-main.synctex.gz").path), "main rename carries the SyncTeX file")
         check(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("rename-main.pdf").path), "the old PDF name is gone after rename")
         check(renameStore.build.pdfURL?.standardizedFileURL == renamedPDF.standardizedFileURL, "the preview follows the renamed PDF")
+
+        // Switching to another project tab must not cancel the compile that is
+        // already running in the first tab.
+        let tabRoot = directory.appendingPathComponent("tab-a.tex")
+        let otherRoot = directory.appendingPathComponent("tab-b.tex")
+        try "\\documentclass{article}".write(to: tabRoot, atomically: true, encoding: .utf8)
+        try "\\documentclass{article}".write(to: otherRoot, atomically: true, encoding: .utf8)
+        let slowEngine = directory.appendingPathComponent("tab-slow-engine")
+        try "#!/bin/sh\nsleep 1.2\necho done\n".write(to: slowEngine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slowEngine.path)
+        let tabOutput = directory.appendingPathComponent("tab-output")
+        try FileManager.default.createDirectory(at: tabOutput, withIntermediateDirectories: true)
+        let tabStore = ProjectStore(library: library, maintainsRootDirectives: false, defaults: defaults)
+        tabStore.openProject(tabRoot, explicitRoot: true)
+        guard let firstTab = tabStore.tabs.first(where: { $0.path?.standardizedFileURL == tabRoot.standardizedFileURL }) else {
+            fatalError("missing first project tab")
+        }
+        tabStore.build.compile(BuildController.Request(mainFile: tabRoot, outputDirectory: tabOutput,
+            engine: .xelatex, steps: [.engine], toolPaths: ["xelatex": slowEngine.path],
+            environment: ProcessInfo.processInfo.environment, sourceRevision: 0))
+        check(tabStore.build.status.isRunning, "the first tab starts compiling")
+        tabStore.openProject(otherRoot, explicitRoot: true, newTab: true)
+        check(tabStore.root == otherRoot, "the second project tab becomes active")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        tabStore.activateTab(firstTab)
+        check(tabStore.root == tabRoot, "switching back to the first tab restores its workspace")
+        check(tabStore.build.status.isRunning, "switching tabs does not cancel the original compile")
+        let tabDeadline = Date().addingTimeInterval(4)
+        while tabStore.build.status.isRunning, Date() < tabDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        }
+        check(!tabStore.build.status.isRunning, "the background compile can finish after the tab returns")
+        tabStore.finishClosing()
         print("WorkspaceSessionTests: \(checks) assertions passed")
     }
 }

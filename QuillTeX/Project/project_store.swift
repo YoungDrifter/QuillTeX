@@ -85,14 +85,35 @@ struct WorkspaceTab: Identifiable, Equatable {
     var isNewTabPage: Bool { path == nil && !isSettings && !isLibrary }
 }
 
+/// A project's build outlives the tab that started it. Each workspace root keeps
+/// one controller, its edit/build revisions and its stale-PDF flag while another
+/// tab is in front, so switching tabs never cancels a running compile.
+@MainActor
+private final class ProjectBuildSlot {
+    let root: URL
+    let controller = BuildController()
+    var editRevision = 0
+    var buildRevision = 0
+    var previewIsOutdated = false
+    /// True once this controller has run in this window, so a restored session's
+    /// old "outdated" flag does not overwrite a fresher background result.
+    var didBuild = false
+    var subscribers: [AnyCancellable] = []
+    init(root: URL) { self.root = root }
+}
+
 @MainActor
 final class ProjectStore: ObservableObject {
     let library: DocumentLibrary
     /// The user's document library. The app injects the shared catalog; tests leave it
     /// nil so opening a project never writes to the user's library.
     var catalog: DocumentCatalog?
-    /// Typesetting for this project. One controller per store, so one compiler per window.
-    let build = BuildController()
+    /// Typesetting is per project. The active tab's controller is exposed as
+    /// `build`; controllers for background tabs keep running in `buildSlots`.
+    private let idleBuild = BuildController()
+    private var buildSlots: [URL: ProjectBuildSlot] = [:]
+    private var activeBuildSlot: ProjectBuildSlot?
+    var build: BuildController { activeBuildSlot?.controller ?? idleBuild }
     let sessionStore: WorkspaceSessionStore
     private var sessionTask: Task<Void, Never>?
     private var restoringSession = false
@@ -102,9 +123,22 @@ final class ProjectStore: ObservableObject {
     private let indexCache = ProjectIndexCache()
     private var indexWorker: Task<ProjectIndex, Never>?
     private var syncTask: Task<Void, Never>?
-    private var editRevision = 0
-    private var buildRevision = 0
-    private(set) var previewIsOutdated = false
+    private var editRevision: Int {
+        get { activeBuildSlot?.editRevision ?? 0 }
+        set { activeBuildSlot?.editRevision = newValue }
+    }
+    private var buildRevision: Int {
+        get { activeBuildSlot?.buildRevision ?? 0 }
+        set { activeBuildSlot?.buildRevision = newValue }
+    }
+    private(set) var previewIsOutdated: Bool {
+        get { activeBuildSlot?.previewIsOutdated ?? false }
+        set {
+            guard activeBuildSlot?.previewIsOutdated != newValue else { return }
+            activeBuildSlot?.previewIsOutdated = newValue
+            objectWillChange.send()
+        }
+    }
     private let maintainsRootDirectives: Bool
     private var maintainingRootDirectives = false
     private var pendingRootDirectives: Set<URL> = []
@@ -133,27 +167,6 @@ final class ProjectStore: ObservableObject {
         let savedWidth = defaults.object(forKey: Self.sidebarWidthDefaultsKey) as? Double
         sidebarWidth = Self.clampedSidebarWidth(savedWidth ?? Self.defaultSidebarWidth)
         sessionStore = WorkspaceSessionStore(directory: library.directory.appendingPathComponent("WorkspaceSessions"))
-        build.$status.dropFirst().sink { [weak self] status in
-            guard let self else { return }
-            if status.isRunning { self.buildRevision = self.build.activeSourceRevision ?? self.editRevision }
-            if case .succeeded = status {
-                self.previewIsOutdated = self.buildRevision != self.editRevision
-                // A build refreshes the .toc, which now feeds the outline for
-                // custom environments that write their own TOC entries.
-                self.refreshIndex(immediate: true)
-            }
-            self.objectWillChange.send()
-        }.store(in: &buildObservers)
-        build.$diagnostics.sink { [weak self] diagnostics in
-            guard let self else { return }
-            for document in self.documents { document.editorSurface?.updateDiagnostics(diagnostics) }
-        }.store(in: &buildObservers)
-        build.$pdfVersion.dropFirst().sink { [weak self] _ in
-            self?.syncTask?.cancel()
-            self?.syncStatusMessage = nil
-            self?.observedPDFData = self?.build.pdfURL.flatMap { try? Data(contentsOf: $0) }
-            self?.updateFileMonitoring()
-        }.store(in: &buildObservers)
         catalog?.$entries.dropFirst().sink { [weak self] entries in
             self?.updateProjectTitles(from: entries)
         }.store(in: &buildObservers)
@@ -266,6 +279,115 @@ final class ProjectStore: ObservableObject {
     /// Tests capture modal errors instead of blocking the run with an alert.
     var errorAlertHandler: ((String, String) -> Void)?
 
+    // MARK: - Per-project builds
+
+    /// Return the slot for a workspace root, creating and observing it on first
+    /// use. The controller runs independently of whichever tab is visible.
+    private func buildSlot(for root: URL) -> ProjectBuildSlot {
+        let key = root.standardizedFileURL
+        if let existing = buildSlots[key] { return existing }
+        let slot = ProjectBuildSlot(root: key)
+        buildSlots[key] = slot
+        observe(slot)
+        return slot
+    }
+
+    /// Make a project's build controller the one shown by the preview, Result
+    /// pane and compile controls. The previous controller is deliberately left
+    /// alone so its compile keeps running.
+    private func activateBuild(for root: URL) {
+        let slot = buildSlot(for: root)
+        guard activeBuildSlot !== slot else { return }
+        activeBuildSlot = slot
+        if !slot.controller.status.isRunning, let pdf = slot.controller.pdfURL {
+            observedPDFData = try? Data(contentsOf: pdf)
+        }
+        objectWillChange.send()
+    }
+
+    private func observe(_ slot: ProjectBuildSlot) {
+        let controller = slot.controller
+        // Mirror only the controller state the UI reads. Forwarding every
+        // objectWillChange would redraw the whole workspace for each log poll.
+        controller.$status.dropFirst().sink { [weak self, weak slot] status in
+            guard let self, let slot else { return }
+            if case .idle = status {} else { slot.didBuild = true }
+            if status.isRunning {
+                slot.buildRevision = controller.activeSourceRevision ?? slot.editRevision
+            }
+            if case .succeeded = status {
+                slot.previewIsOutdated = slot.buildRevision != slot.editRevision
+                // A build refreshes the .toc, which now feeds the outline for
+                // custom environments that write their own TOC entries.
+                if self.activeBuildSlot === slot { self.refreshIndex(immediate: true) }
+            }
+            self.forwardBuildChange(from: slot)
+        }.store(in: &slot.subscribers)
+        controller.$diagnostics.sink { [weak self, weak slot] diagnostics in
+            guard let self, let slot else { return }
+            guard self.activeBuildSlot === slot else { return }
+            for document in self.documents { document.editorSurface?.updateDiagnostics(diagnostics) }
+            self.objectWillChange.send()
+        }.store(in: &slot.subscribers)
+        controller.$pdfVersion.dropFirst().sink { [weak self, weak slot] _ in
+            guard let self, let slot, self.activeBuildSlot === slot else { return }
+            self.syncTask?.cancel()
+            self.syncStatusMessage = nil
+            self.observedPDFData = controller.pdfURL.flatMap { try? Data(contentsOf: $0) }
+            self.updateFileMonitoring()
+            self.objectWillChange.send()
+        }.store(in: &slot.subscribers)
+        controller.$stepProgress.dropFirst().sink { [weak self, weak slot] _ in
+            guard let self, let slot else { return }
+            self.forwardBuildChange(from: slot)
+        }.store(in: &slot.subscribers)
+        controller.$selectedDiagnosticID.dropFirst().sink { [weak self, weak slot] _ in
+            guard let self, let slot else { return }
+            self.forwardBuildChange(from: slot)
+        }.store(in: &slot.subscribers)
+        controller.$highlight.dropFirst().sink { [weak self, weak slot] _ in
+            guard let self, let slot else { return }
+            self.forwardBuildChange(from: slot)
+        }.store(in: &slot.subscribers)
+    }
+
+    private func forwardBuildChange(from slot: ProjectBuildSlot) {
+        guard activeBuildSlot === slot else { return }
+        objectWillChange.send()
+    }
+
+    /// Forget a project's controller after its last tab closes, cancelling any
+    /// run it still owns. Its output files stay on disk.
+    private func discardBuild(for root: URL) {
+        guard let slot = buildSlots.removeValue(forKey: root.standardizedFileURL) else { return }
+        slot.subscribers.forEach { $0.cancel() }
+        slot.subscribers = []
+        slot.controller.cancel()
+        if activeBuildSlot === slot {
+            activeBuildSlot = nil
+            objectWillChange.send()
+        }
+    }
+
+    private func discardAllBuilds() {
+        let slots = Array(buildSlots.values)
+        buildSlots.removeAll()
+        activeBuildSlot = nil
+        for slot in slots {
+            slot.subscribers.forEach { $0.cancel() }
+            slot.subscribers = []
+            slot.controller.cancel()
+        }
+        idleBuild.cancel()
+    }
+
+    /// Keep a project's running build attached after its main file is renamed.
+    private func migrateBuildSlot(from old: URL, to new: URL) {
+        let old = old.standardizedFileURL, new = new.standardizedFileURL
+        guard old != new, let slot = buildSlots.removeValue(forKey: old) else { return }
+        buildSlots[new] = slot
+    }
+
     private func updateFileMonitoring() {
         guard window != nil, root != nil, !sessionClosed else { fileMonitor.stop(); return }
         var urls = Set(documents.map(\.url))
@@ -337,7 +459,7 @@ final class ProjectStore: ObservableObject {
         sessionStore.flush()
         indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
         includePromotionTask?.cancel()
-        build.cancel()
+        discardAllBuilds()
         fileMonitor.stop()
     }
     private func restoreSession(_ state: WorkspaceSession?) {
@@ -380,8 +502,16 @@ final class ProjectStore: ObservableObject {
         // Every project opens with the editor and preview equal.
         editorFraction = 0.5
         pdfReadingState = state.pdf
-        previewIsOutdated = state.pdfIsOutdated == true || restored.contains { $0.isDirty } || sourcesAreNewerThanPDF(restored.map(\.url))
-        if restored.contains(where: { $0.isDirty }) { recoveryMessage = "Recovered unsaved edits. Save when you are ready." }
+        let restoredDirty = restored.contains { $0.isDirty }
+        let sourcesChanged = sourcesAreNewerThanPDF(restored.map(\.url))
+        if activeBuildSlot?.didBuild == true {
+            // A background build may have finished after this session snapshot was
+            // written; its controller is the fresher source of truth.
+            previewIsOutdated = previewIsOutdated || restoredDirty || sourcesChanged
+        } else {
+            previewIsOutdated = state.pdfIsOutdated == true || restoredDirty || sourcesChanged
+        }
+        if restoredDirty { recoveryMessage = "Recovered unsaved edits. Save when you are ready." }
         window?.isDocumentEdited = restored.contains { $0.isDirty }
         refreshIndex(immediate: true)
     }
@@ -1588,7 +1718,6 @@ final class ProjectStore: ObservableObject {
                 sessionTask?.cancel()
                 indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
                 generation += 1; isIndexing = false
-                build.resetProject()
                 root = nil; sourceDirectory = nil; documents = []; activeID = nil
                 index = ProjectIndex(); history = []; historyPosition = -1
                 pdfReadingState = nil; syncStatusMessage = nil; recoveryMessage = nil
@@ -1608,6 +1737,12 @@ final class ProjectStore: ObservableObject {
         }
         tabs.remove(at: removedIndex)
         fadingTabIDs.remove(tab.id)
+        if let closedPath = tab.path?.standardizedFileURL,
+           !tabs.contains(where: { $0.path?.standardizedFileURL == closedPath }) {
+            // No tab can return to this workspace, so stop its compiler and
+            // release its state. A project still open in another tab keeps its run.
+            discardBuild(for: closedPath)
+        }
         guard wasActive else { return }
         // The removed tab must not remain the activation fallback if the next
         // project fails to open.
@@ -1849,12 +1984,12 @@ final class ProjectStore: ObservableObject {
         rememberCurrentLocation()
         indexTask?.cancel(); indexWorker?.cancel(); generation += 1; isIndexing = false
         syncTask?.cancel(); syncStatusMessage = nil; pdfReadingState = nil
-        previewIsOutdated = false; editRevision = 0; buildRevision = 0
         autoCompileTask?.cancel()
-        build.resetProject()
+        // The outgoing project keeps its own controller and any running compile.
+        activateBuild(for: main)
         root = main
         documents = [document] + documents.filter { $0.id != document.id }
-        previewIsOutdated = documents.contains { $0.isDirty }
+        previewIsOutdated = previewIsOutdated || documents.contains { $0.isDirty }
         activeID = document.id
         index = ProjectIndex(); expandedNodes = []; selectedNodes = [:]; selectedFolder = nil; folderExpansionOrder = []
         window?.title = "QuillTeX — \(projectTitle(for: main))"
@@ -1862,7 +1997,7 @@ final class ProjectStore: ObservableObject {
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         verifyFolderAccess()
         refreshIndex(immediate: true)
-        adoptExistingPDF()
+        if build.pdfURL == nil, !build.status.isRunning { adoptExistingPDF() }
         if !restoringSession, !openingTemplate { maintainProjectRootDirectives(replacingExisting: false) }
         if !openingTemplate {
             do { try library.record(main) } catch { showError("History Not Saved", error.localizedDescription) }
@@ -1887,6 +2022,7 @@ final class ProjectStore: ObservableObject {
                      newTab: Bool = false) -> Bool {
         guard commitSidebarNameEdit() else { return false }
         let incoming = incoming.standardizedFileURL
+        let outgoingRoot = root?.standardizedFileURL
         let wasOpeningTemplate = openingTemplate
         openingTemplate = openingTemplate || asTemplate
         defer { openingTemplate = wasOpeningTemplate }
@@ -1941,6 +2077,12 @@ final class ProjectStore: ObservableObject {
             }
             window?.title = "QuillTeX — \(projectTitle(for: main))"
             registerDocumentTab(for: main, inNewTab: newTab, asTemplate: asTemplate)
+            if let outgoingRoot, outgoingRoot != main.standardizedFileURL,
+               !tabs.contains(where: { $0.path?.standardizedFileURL == outgoingRoot }) {
+                // The outgoing project was replaced in this tab rather than kept
+                // in a background tab, so nothing can show its compile anymore.
+                discardBuild(for: outgoingRoot)
+            }
             return true
         } catch {
             showError("Could Not Open Project", error.localizedDescription)
@@ -2221,6 +2363,7 @@ final class ProjectStore: ObservableObject {
         doc.url = destination
         if root == oldURL {
             root = destination
+            migrateBuildSlot(from: oldURL, to: destination)
             try? library.record(destination)
             renameBuildArtifacts(from: oldURL, to: destination)
         }
@@ -2329,6 +2472,7 @@ final class ProjectStore: ObservableObject {
         doc?.url = destination
         if root == url {
             root = destination
+            migrateBuildSlot(from: url, to: destination)
             try? library.record(destination)
             window?.representedURL = destination
             renameBuildArtifacts(from: url, to: destination)
@@ -2358,7 +2502,7 @@ final class ProjectStore: ObservableObject {
         try moveFileToTrash(url)
         if deletingMain {
             persistSession(includeDrafts: false); sessionStore.flush()
-            build.resetProject()
+            discardBuild(for: url)
             indexTask?.cancel(); indexWorker?.cancel(); syncTask?.cancel(); autoCompileTask?.cancel()
             generation += 1; isIndexing = false
             root = nil; sourceDirectory = nil; documents = []; activeID = nil
@@ -2486,6 +2630,140 @@ final class ProjectStore: ObservableObject {
         window?.isDocumentEdited = documents.contains { $0.isDirty }
         refreshIndex(immediate: true)
     }
+    // MARK: - Intermediate files
+
+    /// Auxiliary files LaTeX, BibTeX and Biber regenerate on every build. The PDF
+    /// and the sources are deliberately absent: clearing intermediates must never
+    /// remove the document the reader is looking at.
+    static let intermediateBuildSuffixes: [String] = [
+        ".aux", ".log", ".toc", ".lof", ".lot", ".out", ".bbl", ".blg", ".bcf",
+        ".run.xml", ".fls", ".fdb_latexmk", ".synctex", ".synctex.gz", ".synctex(busy)",
+        ".xdv", ".dvi", ".ps", ".nav", ".snm", ".vrb", ".idx", ".ind", ".ilg", ".glo",
+        ".gls", ".glg", ".acn", ".acr", ".alg", ".loa", ".thm", ".spl", ".brf",
+        ".blx.bib", ".auxlock", ".dpth", ".md5", ".abspath", ".xmpi", ".xmpdata",
+        ".upa", ".upb", ".pyg", ".pygtex"
+    ]
+
+    private static let sortedIntermediateBuildSuffixes =
+        intermediateBuildSuffixes.sorted { $0.count > $1.count }
+
+    /// The base name of an intermediate file (`main.run.xml` → `main`), or nil if
+    /// the file is not one of the regenerable build artifacts.
+    static func intermediateStem(of fileName: String) -> String? {
+        let lower = fileName.lowercased()
+        for suffix in sortedIntermediateBuildSuffixes where lower.hasSuffix(suffix) {
+            let stem = String(fileName.dropLast(suffix.count))
+            return stem.isEmpty ? nil : stem
+        }
+        return nil
+    }
+
+    static func isIntermediateBuildFile(_ url: URL) -> Bool {
+        intermediateStem(of: url.lastPathComponent) != nil
+    }
+
+    /// Output folder for any main file, even a background tab's project.
+    static func outputDirectory(forMain main: URL, configured: String) -> URL {
+        let expanded = (configured as NSString).expandingTildeInPath
+        if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded) }
+        let base = main.deletingLastPathComponent()
+        if expanded.isEmpty || expanded == "." { return base }
+        return base.appendingPathComponent(expanded)
+    }
+
+    /// Remove the auxiliary files that belong to one main document, looking in
+    /// both the output folder and the source folder. Returns how many existed.
+    @discardableResult
+    static func removeIntermediateFiles(main: URL, outputDirectory: URL) -> Int {
+        let fileManager = FileManager.default
+        let stem = main.deletingPathExtension().lastPathComponent
+        guard !stem.isEmpty else { return 0 }
+        var removed = 0
+        var folders = Set<URL>()
+        folders.insert(outputDirectory.standardizedFileURL)
+        folders.insert(main.deletingLastPathComponent().standardizedFileURL)
+        for folder in folders {
+            guard let items = try? fileManager.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { continue }
+            for item in items {
+                guard intermediateStem(of: item.lastPathComponent) == stem,
+                      (try? item.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                do {
+                    try fileManager.removeItem(at: item)
+                    removed += 1
+                } catch {}
+            }
+        }
+        return removed
+    }
+
+    /// Remove auxiliary files under a folder, but only for the TeX bases that
+    /// exist there. A `.log` unrelated to any document in the folder is left alone.
+    @discardableResult
+    static func removeIntermediateFiles(in folder: URL) -> Int {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return 0 }
+        var texStems = Set<String>()
+        var intermediateFiles: [URL] = []
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            if url.pathExtension.lowercased() == "tex" {
+                texStems.insert(url.deletingPathExtension().lastPathComponent)
+            } else if intermediateStem(of: url.lastPathComponent) != nil {
+                intermediateFiles.append(url)
+            }
+        }
+        var removed = 0
+        for url in intermediateFiles {
+            guard let stem = intermediateStem(of: url.lastPathComponent),
+                  texStems.isEmpty || texStems.contains(stem) else { continue }
+            do {
+                try fileManager.removeItem(at: url)
+                removed += 1
+            } catch {}
+        }
+        return removed
+    }
+
+    /// Clear the intermediates for a sidebar/tab target. A folder is scanned
+    /// recursively; a `.tex` file clears its own base name in the configured output
+    /// directory and beside the source.
+    @discardableResult
+    func clearIntermediateFiles(at url: URL) -> Int {
+        let standard = url.standardizedFileURL
+        let isDirectory = (try? standard.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let removed: Int
+        if isDirectory {
+            removed = Self.removeIntermediateFiles(in: standard)
+        } else if standard.pathExtension.lowercased() == "tex" {
+            let output = Self.outputDirectory(forMain: standard, configured: BuildSettings.shared.outputDirectory)
+            removed = Self.removeIntermediateFiles(main: standard, outputDirectory: output)
+        } else {
+            return 0
+        }
+        if removed == 0 {
+            QuillToast.shared.show("No intermediate files to clear")
+        } else {
+            QuillToast.shared.show("Cleared \(removed) intermediate file\(removed == 1 ? "" : "s")")
+        }
+        objectWillChange.send()
+        return removed
+    }
+
+    @discardableResult
+    func clearIntermediateFilesForProject() -> Int {
+        guard let root else { return 0 }
+        return clearIntermediateFiles(at: root)
+    }
+
+    @discardableResult
+    func clearIntermediateFiles(forTabMain path: URL) -> Int {
+        clearIntermediateFiles(at: path)
+    }
+
     // MARK: - Building
 
     /// Where the compiler writes: "." is the folder the main file lives in (the

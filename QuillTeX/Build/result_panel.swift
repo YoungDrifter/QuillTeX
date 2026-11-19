@@ -3,17 +3,12 @@ import SwiftUI
 /// Warnings and errors from the last run, with direct links into the source.
 struct ResultPanel: View {
     @ObservedObject var store: ProjectStore
-    @ObservedObject private var build: BuildController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var warningsExpanded = true
     @State private var errorsExpanded = true
 
+    private var build: BuildController { store.build }
     private var problems: [BuildDiagnostic] { build.diagnostics.filter { $0.severity != .info } }
-
-    init(store: ProjectStore) {
-        self.store = store
-        self.build = store.build
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

@@ -25,6 +25,21 @@ final class BuildController: ObservableObject {
         }
     }
 
+    /// Wording for the compact preview capsule. Detailed preflight messages stay
+    /// in `lastSummary` and in the tooltip/Result pane.
+    var compactStatus: String {
+        switch status {
+        case .idle:
+            return lastSummary
+        case .running:
+            return stepProgress ?? "Compiling…"
+        case .succeeded, .failed:
+            return lastSummary
+        case .unavailable:
+            return "Compile tools missing"
+        }
+    }
+
     /// Everything a run needs, resolved up front on the main actor.
     struct Request {
         var mainFile: URL
@@ -44,6 +59,9 @@ final class BuildController: ObservableObject {
     @Published private(set) var pdfVersion = 0
     @Published private(set) var lastSummary = "Not built yet"
     @Published private(set) var currentStep: String?
+    /// Concise live step label such as `xelatex 2/3` or `bibtex 1/1`. The preview
+    /// capsule shows this while a build runs so the reader can see the pass.
+    @Published private(set) var stepProgress: String?
     @Published private(set) var selectedDiagnosticID: UUID?
     private(set) var activeSourceRevision: Int?
     /// Set by a source → PDF sync; the preview scrolls to it.
@@ -111,6 +129,7 @@ final class BuildController: ObservableObject {
         activeSourceRevision = request.sourceRevision
         status = .running(Date())
         lastSummary = "Compiling…"
+        stepProgress = nil
         diagnostics = []
         selectedDiagnosticID = nil
         log = ""
@@ -129,6 +148,7 @@ final class BuildController: ObservableObject {
         closeStepCapture()
         process = nil
         currentStep = nil
+        stepProgress = nil
         if status.isRunning {
             status = .idle; lastSummary = "Build cancelled"
             log = bounded(log + "\n[QuillTeX] Build cancelled.\n")
@@ -147,6 +167,7 @@ final class BuildController: ObservableObject {
         cancel()
         status = .idle; diagnostics = []; log = ""; highlight = nil; selectedDiagnosticID = nil
         pdfURL = nil; pdfVersion += 1; lastSummary = "Not built yet"
+        stepProgress = nil; currentStep = nil
     }
 
     func highlight(page: Int, point: CGPoint, width: CGFloat = 0, height: CGFloat = 0) {
@@ -216,7 +237,9 @@ final class BuildController: ObservableObject {
         process.standardOutput = handle
         process.standardError = handle
         currentStep = step == .engine ? active.request.engine.title : step.title
-        lastSummary = "Compiling… \(currentStep ?? step.title) \(active.index + 1)/\(active.steps.count)"
+        let progress = Self.passLabel(step: step, index: active.index, steps: active.steps, engine: active.request.engine)
+        stepProgress = progress
+        lastSummary = "Compiling… \(progress)"
 
         var updated = active
         updated.index += 1
@@ -270,6 +293,7 @@ final class BuildController: ObservableObject {
         diagnostics = [BuildDiagnostic(severity: .error, message: message, file: active.request.mainFile, line: nil)]
         selectedDiagnosticID = nil
         currentStep = nil
+        stepProgress = nil
         log = bounded(log + "\n[QuillTeX] \(message)\n")
     }
 
@@ -335,6 +359,22 @@ final class BuildController: ObservableObject {
         var arguments: [String]
         var directory: URL
         var environment: [String: String]
+    }
+
+    /// A pass label counts repeats of the same tool, not the overall step index:
+    /// XeLaTeX → BibTeX → XeLaTeX → XeLaTeX reads `xelatex 1/3`, `bibtex 1/1`,
+    /// `xelatex 2/3`, `xelatex 3/3`.
+    static func passLabel(step: BuildStep, index: Int, steps: [BuildStep], engine: BuildEngine) -> String {
+        let name: String
+        switch step {
+        case .latexmk: name = "latexmk"
+        case .engine: name = engine.executableName
+        case .bibtex: name = "bibtex"
+        case .biber: name = "biber"
+        }
+        let total = max(1, steps.filter { $0 == step }.count)
+        let occurrence = max(1, steps.prefix(index + 1).filter { $0 == step }.count)
+        return "\(name) \(occurrence)/\(total)"
     }
 
     private func launchDescription(step: BuildStep, request: Request) -> Launch? {
@@ -443,6 +483,7 @@ final class BuildController: ObservableObject {
             }
         }
         currentStep = nil
+        stepProgress = nil
         self.active = nil
 
         if let pendingRequest {

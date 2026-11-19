@@ -555,6 +555,7 @@ private func libraryEntryMenuContent(store: ProjectStore, catalog: DocumentCatal
     }
     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
     Button("Export PDF to Folder") { LibraryPDFExporter.export([entry]) }
+    Button("Clear Intermediate Files") { store.clearIntermediateFiles(forTabMain: entry.url) }
     Divider()
     Button("Remove from Library", role: .destructive) {
         catalog.removeEntry(entry.id)

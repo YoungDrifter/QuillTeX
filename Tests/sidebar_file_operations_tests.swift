@@ -166,6 +166,32 @@ struct SidebarFileOperationsTests {
         check(updatedReferences.hasPrefix("\\input{chapters/child renamed} % \\input{chapters/child}"), "reference updates preserve omitted extensions and ignore comments")
         check(updatedReferences.hasSuffix("\\begin{verbatim}\\input{chapters/child}\\end{verbatim}"), "literal source examples are not renamed")
 
+        // Intermediate cleanup removes aux/log/toc/bbl style outputs but keeps the
+        // PDF, sources and unrelated logs.
+        let renamedStem = renamedMain.deletingPathExtension().lastPathComponent
+        let auxFiles = ["aux", "log", "toc", "bbl", "synctex.gz", "run.xml"].map {
+            directory.appendingPathComponent(renamedStem + "." + $0)
+        }
+        for file in auxFiles { try "aux".write(to: file, atomically: true, encoding: .utf8) }
+        let keptPDF = directory.appendingPathComponent(renamedStem + ".pdf")
+        try "pdf".write(to: keptPDF, atomically: true, encoding: .utf8)
+        let unrelatedLog = directory.appendingPathComponent("notes.log")
+        try "unrelated".write(to: unrelatedLog, atomically: true, encoding: .utf8)
+        let removed = store.clearIntermediateFiles(at: renamedMain)
+        check(removed == auxFiles.count && auxFiles.allSatisfy { !fm.fileExists(atPath: $0.path) },
+              "clearing a file removes its auxiliary outputs")
+        check(fm.fileExists(atPath: renamedMain.path) && fm.fileExists(atPath: keptPDF.path),
+              "clearing intermediates keeps the source and PDF")
+        check(fm.fileExists(atPath: unrelatedLog.path), "a log without a matching TeX base is left alone")
+        let childAux = chapters.appendingPathComponent("included.aux")
+        let chapterLog = chapters.appendingPathComponent("chapter.log")
+        try "aux".write(to: childAux, atomically: true, encoding: .utf8)
+        try "log".write(to: chapterLog, atomically: true, encoding: .utf8)
+        let folderRemoved = store.clearIntermediateFiles(at: chapters)
+        check(folderRemoved == 1 && !fm.fileExists(atPath: childAux.path),
+              "clearing a folder removes auxiliaries for its TeX files")
+        check(fm.fileExists(atPath: chapterLog.path), "folder cleanup leaves logs with no matching TeX base")
+
         let trash = base.appendingPathComponent("TestTrash", isDirectory: true)
         try fm.createDirectory(at: trash, withIntermediateDirectories: true)
         store.openSource(renamedChild)
