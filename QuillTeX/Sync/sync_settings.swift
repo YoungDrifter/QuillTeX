@@ -135,8 +135,8 @@ final class SyncSettings: ObservableObject {
         let parts = remoteFolder.split(separator: "/", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !parts.isEmpty, parts.allSatisfy({ $0 != "." && $0 != ".." }) else { return nil }
-        return parts
+        guard parts.allSatisfy({ $0 != "." && $0 != ".." }) else { return nil }
+        return parts.isEmpty ? [Self.defaultRemoteFolder] : parts
     }
 
     var isConfigured: Bool {

@@ -19,17 +19,12 @@ struct SyncSettingsView: View {
                         SecureField("Nutstore app password", text: $settings.password)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { settings.flushPassword() }
-                        Text("Use a Nutstore app password, not your account password.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                    field("Remote folder", text: $settings.remoteFolder, prompt: "QuillTeX")
                     if let error = settings.credentialError {
                         Text(error).font(.system(size: 11)).foregroundStyle(.red)
                     }
                 }
                 .padding(.vertical, 8)
-
-                Divider()
 
                 HStack(spacing: 10) {
                     Button(testing ? "Testing…" : "Test Connection") { testConnection() }
@@ -41,10 +36,7 @@ struct SyncSettingsView: View {
                             .foregroundStyle(testIsError ? .red : .secondary)
                             .lineLimit(2)
                     }
-                    Spacer(minLength: 8)
-                    Link("Create an app password",
-                         destination: URL(string: "https://help.jianguoyun.com/?p=2064")!)
-                        .font(.system(size: 11))
+                    Spacer(minLength: 0)
                 }
                 .padding(.vertical, 10)
             }

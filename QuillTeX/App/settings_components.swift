@@ -7,6 +7,7 @@ enum SettingsStyle {
     static let minimumSize = CGSize(width: 720, height: 560)
     static let sidebarWidth: CGFloat = 184
     static let padding: CGFloat = 24
+    static let horizontalPadding: CGFloat = 40
     static let rowHeight: CGFloat = 40
     static let surface = Color.white
     static let secondarySurface = Palette.subtleSurface
@@ -133,8 +134,9 @@ struct SettingsPage<Content: View>: View {
                 }
                 content()
             }
-            .frame(maxWidth: 720, alignment: .leading)
-            .padding(SettingsStyle.padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, SettingsStyle.horizontalPadding)
+            .padding(.vertical, SettingsStyle.padding)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }

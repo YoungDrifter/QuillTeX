@@ -304,37 +304,24 @@ final class HoverTipPresenter {
     static let shared = HoverTipPresenter()
 
     private var panel: NSPanel?
-    private var titleLabel: NSTextField?
-    private var detailLabel: NSTextField?
+    private var label: NSTextField?
 
     func show(_ text: String, anchor: NSView) {
         guard let window = anchor.window else { return }
         let panel = existingPanel()
-        guard let titleLabel, let detailLabel else { return }
+        guard let label else { return }
 
-        let parts = text.components(separatedBy: "\n")
-        let title = parts.first ?? ""
-        let detail = parts.dropFirst().joined(separator: " ")
-        titleLabel.stringValue = title
-        detailLabel.stringValue = detail
-        detailLabel.isHidden = detail.isEmpty
-
-        let titleFont = titleLabel.font ?? NSFont.systemFont(ofSize: 11, weight: .medium)
-        let detailFont = detailLabel.font ?? NSFont.systemFont(ofSize: 10.5)
-        let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
-        let detailWidth = detail.isEmpty ? 0 : (detail as NSString).size(withAttributes: [.font: detailFont]).width
-        let textWidth = min(260, max(80, ceil(max(titleWidth, detailWidth))))
-        let titleHeight = ceil(titleFont.ascender - titleFont.descender + titleFont.leading)
-        let detailHeight = ceil(detailFont.ascender - detailFont.descender + detailFont.leading)
-        let padding: CGFloat = 9
-        let spacing: CGFloat = 2
-        let height = padding * 2 + titleHeight + (detail.isEmpty ? 0 : spacing + detailHeight)
-        let width = textWidth + padding * 2
-
+        label.stringValue = text
+        let font = label.font ?? NSFont.systemFont(ofSize: 11)
+        // NSString measurement excludes NSTextField's cell padding; keep a
+        // little slack so the last characters are never replaced by an ellipsis.
+        let measuredWidth = (text as NSString).size(withAttributes: [.font: font]).width
+        let textWidth = min(420, max(80, ceil(measuredWidth) + 14))
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let width = textWidth + 18
+        let height = lineHeight + 12
         panel.setContentSize(NSSize(width: width, height: height))
-        titleLabel.frame = NSRect(x: padding, y: height - padding - titleHeight,
-                                  width: textWidth, height: titleHeight)
-        detailLabel.frame = NSRect(x: padding, y: padding, width: textWidth, height: detailHeight)
+        label.frame = NSRect(x: 9, y: 6, width: textWidth, height: lineHeight)
 
         let anchorInWindow = anchor.convert(anchor.bounds, to: nil)
         let anchorOnScreen = window.convertToScreen(anchorInWindow)
@@ -379,26 +366,15 @@ final class HoverTipPresenter {
         container.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
         panel.contentView = container
 
-        let title = NSTextField(labelWithString: "")
-        title.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        title.textColor = .labelColor
-        title.lineBreakMode = .byTruncatingTail
-        title.maximumNumberOfLines = 1
-        title.cell?.usesSingleLineMode = true
-        title.translatesAutoresizingMaskIntoConstraints = true
-        container.addSubview(title)
-
-        let detail = NSTextField(labelWithString: "")
-        detail.font = NSFont.systemFont(ofSize: 10.5)
-        detail.textColor = .secondaryLabelColor
-        detail.lineBreakMode = .byTruncatingTail
-        detail.maximumNumberOfLines = 1
-        detail.cell?.usesSingleLineMode = true
-        detail.translatesAutoresizingMaskIntoConstraints = true
-        container.addSubview(detail)
-
-        titleLabel = title
-        detailLabel = detail
+        let label = NSTextField(labelWithString: "")
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = .labelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.cell?.usesSingleLineMode = true
+        label.translatesAutoresizingMaskIntoConstraints = true
+        container.addSubview(label)
+        self.label = label
         self.panel = panel
         return panel
     }

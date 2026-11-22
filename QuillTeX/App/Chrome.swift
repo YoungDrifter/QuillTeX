@@ -782,9 +782,7 @@ private struct SyncChromeButton: View {
 
     private var helpText: String {
         if sync.isSyncing { return "Syncing…" }
-        let action = "Sync PDFs and library details"
-        guard let date = sync.lastSyncAt else { return action + "\nNot synced yet" }
-        let time = date.formatted(date: .abbreviated, time: .shortened)
-        return action + "\nLast sync: \(time)"
+        guard let date = sync.lastSyncAt else { return "Not synced yet" }
+        return "Last sync: \(date.formatted(date: .abbreviated, time: .shortened))"
     }
 }
