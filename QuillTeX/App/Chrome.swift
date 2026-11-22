@@ -316,6 +316,8 @@ struct TopBar: View {
                         .accessibilityHidden(!showsDocumentControls)
                         .layoutPriority(2)
                     }
+                    SyncChromeButton { syncNow() }
+                        .padding(.leading, 2)
                 }
                 .onAppear {
                     documentControlsRendered = showsDocumentControls
@@ -363,6 +365,16 @@ struct TopBar: View {
             }
             .frame(height: ChromeMetrics.topBarHeight)
         ).frame(height: ChromeMetrics.topBarHeight)
+    }
+
+    private func syncNow() {
+        SyncSettings.shared.loadPasswordIfNeeded()
+        guard SyncSettings.shared.isConfigured else {
+            SettingsNavigation.shared.section = .sync
+            store.openSettingsTab()
+            return
+        }
+        SyncController.shared.syncNow()
     }
 
     // MARK: - Tabs
@@ -734,4 +746,45 @@ private struct TabStripWidthKey: PreferenceKey {
 private struct TabStripViewportWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Compact Sync control at the far right of the tab bar. It stays available on
+/// library and settings tabs; the Settings entry remains in the library sidebar.
+private struct SyncChromeButton: View {
+    @ObservedObject private var sync = SyncController.shared
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            HoverTipPresenter.shared.hide()
+            action()
+        } label: {
+            ZStack {
+                if sync.isSyncing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Palette.primaryInk)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: ChromeMetrics.chromeIconSize, weight: .regular))
+                }
+            }
+            .frame(width: ChromeMetrics.chromeControlHeight, height: ChromeMetrics.chromeControlHeight)
+            .contentShape(Circle())
+        }
+        .buttonStyle(ChromeButtonStyle())
+        .modifier(ChromeHoverFeedback(tooltip: helpText))
+        .chromeControlBoundary()
+        .disabled(sync.isSyncing)
+        .accessibilityLabel("Sync")
+        .accessibilityHint(helpText)
+    }
+
+    private var helpText: String {
+        if sync.isSyncing { return "Syncing…" }
+        let action = "Sync PDFs and library details"
+        guard let date = sync.lastSyncAt else { return action + "\nNot synced yet" }
+        let time = date.formatted(date: .abbreviated, time: .shortened)
+        return action + "\nLast sync: \(time)"
+    }
 }

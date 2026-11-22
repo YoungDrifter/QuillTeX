@@ -88,7 +88,7 @@ struct ProjectSidebar: View {
                 Text("QuillTeX")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Palette.primaryInk)
-                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.1.3") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "163"))")
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "2.2.0") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "170"))")
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondaryInk)
             }

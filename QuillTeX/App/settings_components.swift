@@ -22,12 +22,14 @@ struct SettingsCategory<ID: Hashable>: Identifiable {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case compilation = "Compilation"
+    case sync = "Sync"
     case about = "About"
     var id: String { rawValue }
     var title: String { rawValue }
     var symbol: String {
         switch self {
         case .compilation: "hammer"
+        case .sync: "arrow.triangle.2.circlepath"
         case .about: "info.circle"
         }
     }

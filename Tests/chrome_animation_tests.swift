@@ -43,9 +43,9 @@ private struct ObservedTitlebar: View {
             // Scan the pill's lower edge, below the glyphs, in the pane controls.
             let y = Int((ChromeMetrics.topBarHeight / 2 + 9) * scale)
             var best = (start: 0, length: 0), start = 0
-            // The pane switch now sits at the trailing edge, next to the compile controls;
-            // scan only its own slots so no compile glyph is mistaken for the pill.
-            for x in Int((root.bounds.width - 175) * scale)..<Int((root.bounds.width - 6) * scale) {
+            // The pane switch now sits just before the sync control at the
+            // trailing edge; scan a wider band but still ignore the tab strip.
+            for x in Int((root.bounds.width - 300) * scale)..<Int((root.bounds.width - 6) * scale) {
                 guard let raw = bitmap.colorAt(x: x, y: y), raw.alphaComponent > 0.5 else {
                     start = 0
                     continue

@@ -29,6 +29,7 @@ struct SettingsView: View {
                        showsSidebar: !embedded) {
             switch navigation.section {
             case .compilation: compilation
+            case .sync: SyncSettingsView()
             case .about: about
             }
         }

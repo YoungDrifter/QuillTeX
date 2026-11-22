@@ -152,9 +152,14 @@ struct ChromeSegmentedGroup<Selection: Equatable, Content: View>: View {
 /// hover moves the glyph and reveals a short rule, without drawing a surface.
 struct ChromeHoverFeedback: ViewModifier {
     var selected = false
+    /// When present, the same AppKit hover event that reveals the underline
+    /// shows this custom tooltip immediately. The system `.help` delay is not
+    /// involved.
+    var tooltip: String? = nil
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
+    @State private var hoverAnchor: NSView?
     func body(content: Content) -> some View {
         content
             .overlay(alignment: .bottom) {
@@ -164,7 +169,26 @@ struct ChromeHoverFeedback: ViewModifier {
             }
             .scaleEffect(hovered && !reduceMotion ? 1.055 : 1)
             .offset(y: hovered && !reduceMotion ? -0.75 : 0)
-            .background(ChromeHoverTracker(isEnabled: isEnabled && !selected, onChange: { hovered = $0 }).allowsHitTesting(false))
+            .background(ChromeHoverTracker(
+                isEnabled: isEnabled && !selected,
+                onChange: { hovered = $0 },
+                onHoverView: { isHovering, anchor in
+                    hoverAnchor = isHovering ? anchor : nil
+                    guard let tooltip else { return }
+                    if isHovering {
+                        HoverTipPresenter.shared.show(tooltip, anchor: anchor)
+                    } else {
+                        HoverTipPresenter.shared.hide()
+                    }
+                }
+            ).allowsHitTesting(false))
+            .onChange(of: tooltip) { _, next in
+                guard hovered, let anchor = hoverAnchor, let next else { return }
+                HoverTipPresenter.shared.show(next, anchor: anchor)
+            }
+            .onDisappear {
+                HoverTipPresenter.shared.hide()
+            }
             .animation(reduceMotion ? nil : ChromeMotion.press, value: hovered)
     }
 }
@@ -189,14 +213,17 @@ struct ChromeHoverState: NSViewRepresentable {
 private struct ChromeHoverTracker: NSViewRepresentable {
     let isEnabled: Bool
     let onChange: (Bool) -> Void
+    var onHoverView: ((Bool, NSView) -> Void)? = nil
     func makeNSView(context: Context) -> ChromeHoverView { ChromeHoverView() }
     func updateNSView(_ view: ChromeHoverView, context: Context) {
         view.onChange = onChange
+        view.onHoverView = onHoverView
         view.isControlEnabled = isEnabled
         view.refreshHover()
     }
     static func dismantleNSView(_ view: ChromeHoverView, coordinator: ()) {
         view.isControlEnabled = false
+        view.onHoverView = nil
         view.refreshHover()
     }
 }
@@ -204,6 +231,7 @@ private struct ChromeHoverTracker: NSViewRepresentable {
 final class ChromeHoverView: NSView {
     var isControlEnabled = true
     var onChange: ((Bool) -> Void)?
+    var onHoverView: ((Bool, NSView) -> Void)?
     private var area: NSTrackingArea?
     private var mouseMonitor: Any?
     private var windowObservers: [NSObjectProtocol] = []
@@ -260,7 +288,119 @@ final class ChromeHoverView: NSView {
         hovered = value
         // Pointer validation also runs during SwiftUI layout updates.
         let callback = onChange
-        DispatchQueue.main.async { callback?(value) }
+        let anchorCallback = onHoverView
+        DispatchQueue.main.async { [weak self] in
+            callback?(value)
+            if let self { anchorCallback?(value, self) }
+        }
+    }
+}
+
+/// A small, non-activating tooltip panel driven by `ChromeHoverFeedback`.
+/// It is deliberately separate from AppKit's `.help` mechanism so the tooltip
+/// appears on the same hover event as the underline, not after a system delay.
+@MainActor
+final class HoverTipPresenter {
+    static let shared = HoverTipPresenter()
+
+    private var panel: NSPanel?
+    private var titleLabel: NSTextField?
+    private var detailLabel: NSTextField?
+
+    func show(_ text: String, anchor: NSView) {
+        guard let window = anchor.window else { return }
+        let panel = existingPanel()
+        guard let titleLabel, let detailLabel else { return }
+
+        let parts = text.components(separatedBy: "\n")
+        let title = parts.first ?? ""
+        let detail = parts.dropFirst().joined(separator: " ")
+        titleLabel.stringValue = title
+        detailLabel.stringValue = detail
+        detailLabel.isHidden = detail.isEmpty
+
+        let titleFont = titleLabel.font ?? NSFont.systemFont(ofSize: 11, weight: .medium)
+        let detailFont = detailLabel.font ?? NSFont.systemFont(ofSize: 10.5)
+        let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
+        let detailWidth = detail.isEmpty ? 0 : (detail as NSString).size(withAttributes: [.font: detailFont]).width
+        let textWidth = min(260, max(80, ceil(max(titleWidth, detailWidth))))
+        let titleHeight = ceil(titleFont.ascender - titleFont.descender + titleFont.leading)
+        let detailHeight = ceil(detailFont.ascender - detailFont.descender + detailFont.leading)
+        let padding: CGFloat = 9
+        let spacing: CGFloat = 2
+        let height = padding * 2 + titleHeight + (detail.isEmpty ? 0 : spacing + detailHeight)
+        let width = textWidth + padding * 2
+
+        panel.setContentSize(NSSize(width: width, height: height))
+        titleLabel.frame = NSRect(x: padding, y: height - padding - titleHeight,
+                                  width: textWidth, height: titleHeight)
+        detailLabel.frame = NSRect(x: padding, y: padding, width: textWidth, height: detailHeight)
+
+        let anchorInWindow = anchor.convert(anchor.bounds, to: nil)
+        let anchorOnScreen = window.convertToScreen(anchorInWindow)
+        let screen = window.screen ?? NSScreen.main
+        var origin = NSPoint(x: anchorOnScreen.maxX - width,
+                             y: anchorOnScreen.minY - height - 5)
+        if let screen {
+            let visible = screen.visibleFrame
+            if origin.y < visible.minY {
+                origin.y = anchorOnScreen.maxY + 5
+            }
+            origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - width - 4)
+            origin.y = min(max(origin.y, visible.minY + 4), visible.maxY - height - 4)
+        }
+        panel.setFrameOrigin(origin)
+        panel.orderFront(nil)
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+    }
+
+    private func existingPanel() -> NSPanel {
+        if let panel { return panel }
+        let panel = NSPanel(contentRect: .zero,
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.ignoresMouseEvents = true
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.appearance = NSAppearance(named: .aqua)
+
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 7
+        container.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.98).cgColor
+        container.layer?.borderWidth = 0.7
+        container.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        panel.contentView = container
+
+        let title = NSTextField(labelWithString: "")
+        title.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        title.textColor = .labelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 1
+        title.cell?.usesSingleLineMode = true
+        title.translatesAutoresizingMaskIntoConstraints = true
+        container.addSubview(title)
+
+        let detail = NSTextField(labelWithString: "")
+        detail.font = NSFont.systemFont(ofSize: 10.5)
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
+        detail.maximumNumberOfLines = 1
+        detail.cell?.usesSingleLineMode = true
+        detail.translatesAutoresizingMaskIntoConstraints = true
+        container.addSubview(detail)
+
+        titleLabel = title
+        detailLabel = detail
+        self.panel = panel
+        return panel
     }
 }
 

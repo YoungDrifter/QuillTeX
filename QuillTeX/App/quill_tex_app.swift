@@ -5,6 +5,11 @@ import AppKit
 struct QuillTeXApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     init() {
+        // The hover underline is immediate; the system tooltip delay should not
+        // make the two feel disconnected. Registering the AppKit default keeps
+        // tooltips effectively instant without persisting a preference; an
+        // explicit user value still wins.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0.0])
         // Each window owns one writing workspace, so system window tabbing is not part
         // of the document workflow and its automatic View-menu commands stay hidden.
         NSWindow.allowsAutomaticWindowTabbing = false
