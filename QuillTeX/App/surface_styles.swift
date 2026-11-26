@@ -24,6 +24,7 @@ private struct QuillRowFeedback<Label: View>: View {
             .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Palette.primaryInk.opacity(isEnabled && pressed ? Palette.pressedOpacity :
                     (selected ? Palette.selectedOpacity : (isEnabled && hovered ? Palette.chromeHoverOpacity : 0)))))
+            .background { HoverHighlight(active: hovered && isEnabled && !selected, radius: cornerRadius) }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .scaleEffect(isEnabled && pressed && !reduceMotion ? ChromeMotion.pressedScale : 1)
             .onHover { hovered = $0 }
@@ -153,7 +154,7 @@ struct QuillPopupDeleteButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback())
-        .help("Remove from Recents")
+        .quillHelp("Remove from Recents")
         .accessibilityLabel("Remove \(title) from Recents")
         .opacity(visible ? 1 : 0)
         .allowsHitTesting(visible)
@@ -327,24 +328,56 @@ private struct QuillHelpModifier: ViewModifier {
     let text: String
     @ObservedObject private var gate = QuillModalGate.shared
     func body(content: Content) -> some View {
-        content.help(gate.active ? "" : text)
+        content.background(TipTrackingArea(text: gate.active ? "" : text)).accessibilityHint(Text(text))
     }
 }
 
-/// The one hover treatment for capsule controls: a quiet gray inner wash,
-/// never scale, underline or shadow changes.
+private struct TipTrackingArea: NSViewRepresentable {
+    var text: String
+    func makeNSView(context: Context) -> TipAnchor { TipAnchor() }
+    func updateNSView(_ view: TipAnchor, context: Context) {
+        if view.message != text { HoverTipPresenter.shared.hide(anchor: view); view.message = text }
+    }
+    static func dismantleNSView(_ view: TipAnchor, coordinator: ()) { HoverTipPresenter.shared.hide(anchor: view) }
+}
+
+private final class TipAnchor: NSView {
+    var message = ""
+    private var tracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) {
+        if !message.isEmpty { HoverTipPresenter.shared.show(message, anchor: self, delayed: true) }
+    }
+    override func mouseExited(with event: NSEvent) { HoverTipPresenter.shared.hide(anchor: self) }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+struct HoverHighlight: View {
+    let active: Bool
+    var radius: CGFloat = 8
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(Color(white: 0.96).opacity(0.94))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 0.6))
+            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+            .opacity(active ? 1 : 0)
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
 struct CapsuleHoverWash: ViewModifier {
     @State private var hovered = false
+    @Environment(\.isEnabled) private var enabled
     func body(content: Content) -> some View {
-        content
-            .overlay {
-                Capsule()
-                    .fill(Color.black.opacity(hovered ? 0.05 : 0))
-                    .padding(3)
-                    .allowsHitTesting(false)
-            }
+        content.background { HoverHighlight(active: enabled && hovered, radius: 16).padding(2) }
             .onHover { hovered = $0 }
-            .animation(.easeOut(duration: 0.15), value: hovered)
+            .animation(.easeOut(duration: 0.12), value: hovered)
     }
 }
 
@@ -459,7 +492,7 @@ struct QuillDialogCard<Content: View>: View {
             .buttonStyle(.plain)
             .onHover { closeHovered = $0 }
             .keyboardShortcut(.cancelAction)
-            .help("Close")
+            .quillHelp("Close")
             .accessibilityLabel("Close")
         }
         .padding(.horizontal, 20)
@@ -1017,4 +1050,94 @@ final class QuillToast {
         dismissWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.7, execute: work)
     }
+}
+
+// A material mask softens underlying content without filtering foreground controls.
+private struct LibraryScrollBounds: PreferenceKey {
+    static let defaultValue = CGRect.zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
+struct LibraryEdgeScroll<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    @Namespace private var space
+    @State private var contentFrame = CGRect.zero
+
+    var body: some View {
+        GeometryReader { viewport in
+            ScrollView {
+                content().background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: LibraryScrollBounds.self,
+                                               value: geometry.frame(in: .named(space)))
+                    }
+                }
+            }
+            .coordinateSpace(name: space)
+            .onPreferenceChange(LibraryScrollBounds.self) { contentFrame = $0 }
+            .overlay(alignment: .top) { frost(height: 20, distance: -contentFrame.minY, top: true) }
+            .overlay(alignment: .bottom) { frost(height: 16, distance: contentFrame.maxY - viewport.size.height, top: false) }
+        }
+    }
+
+    private func frost(height: CGFloat, distance: CGFloat, top: Bool) -> some View {
+        Rectangle().fill(.regularMaterial)
+            .frame(height: height)
+            .mask(LinearGradient(colors: [.black, .clear], startPoint: top ? .top : .bottom,
+                                 endPoint: top ? .bottom : .top))
+            .padding(.trailing, 8)
+            .opacity(min(1, max(0, distance / height)))
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+final class PaneEdgeFrost: NSVisualEffectView {
+    private let fade = CAGradientLayer()
+    private weak var scroll: NSScrollView?
+
+    static func install(in scroll: NSScrollView) {
+        guard !scroll.subviews.contains(where: { $0 is PaneEdgeFrost }) else { return }
+        let frost = PaneEdgeFrost(frame: .zero)
+        frost.scroll = scroll
+        frost.material = .headerView
+        frost.blendingMode = .withinWindow
+        frost.wantsLayer = true
+        frost.fade.colors = [NSColor.black.withAlphaComponent(0.85).cgColor, NSColor.black.withAlphaComponent(0.62).cgColor, NSColor.clear.cgColor]
+        frost.fade.locations = [0, 0.62, 1]
+        frost.fade.startPoint = CGPoint(x: 0.5, y: frost.isFlipped ? 0 : 1)
+        frost.fade.endPoint = CGPoint(x: 0.5, y: frost.isFlipped ? 1 : 0)
+        frost.layer?.mask = frost.fade
+        frost.setAccessibilityElement(false)
+        if let scroller = scroll.verticalScroller, scroller.superview === scroll {
+            scroll.addSubview(frost, positioned: .below, relativeTo: scroller)
+        } else {
+            scroll.addSubview(frost)
+        }
+        let clip = scroll.contentView
+        clip.postsBoundsChangedNotifications = true
+        clip.postsFrameChangedNotifications = true
+        for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+            NotificationCenter.default.addObserver(frost, selector: #selector(refresh), name: name, object: clip)
+        }
+        frost.refresh()
+    }
+
+    @objc private func refresh() {
+        guard let scroll else { return }
+        let clip = scroll.contentView
+        let height = min(ChromeMetrics.paneHeaderHeight, clip.frame.height)
+        let y = scroll.isFlipped ? clip.frame.minY : clip.frame.maxY - height
+        frame = NSRect(x: 0, y: y, width: clip.frame.maxX, height: height)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fade.frame = bounds
+        CATransaction.commit()
+        let visible = clip.documentVisibleRect
+        let document = clip.documentView
+        let extent = document?.bounds ?? .zero
+        let offset = document?.isFlipped == false ? extent.maxY - visible.maxY : visible.minY - extent.minY
+        alphaValue = min(1, max(0, offset / 18))
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

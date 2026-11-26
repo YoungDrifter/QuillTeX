@@ -329,7 +329,7 @@ private struct SidebarPageIndicator: View {
         .background(Capsule().fill(Color.white.opacity(0.92)))
         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.08), radius: 5, y: 1)
-        .help("Switch between the library and the project")
+        .quillHelp("Switch between the library and the project")
     }
     private func dot(_ index: Int) -> some View {
         Button {
@@ -341,7 +341,7 @@ private struct SidebarPageIndicator: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help(index == 0 ? "Library" : "Project")
+        .quillHelp(index == 0 ? "Library" : "Project")
         .accessibilityLabel(index == 0 ? "Library page" : "Project page")
         .accessibilityAddTraits(index == pageIndex ? .isSelected : [])
     }
@@ -455,7 +455,7 @@ private struct OutlineRow: View {
                         Button { toggle() } label: { disclosure }
                             .buttonStyle(.plain)
                             .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(node.title)")
-                            .help("\(expanded ? "Collapse" : "Expand") \(node.title)")
+                            .quillHelp("\(expanded ? "Collapse" : "Expand") \(node.title)")
                     } else { disclosure }
                     Button { store.navigate(node) } label: { rowLabel }
                         .buttonStyle(.plain)
@@ -466,7 +466,7 @@ private struct OutlineRow: View {
                 store.selectedNodes[mode] == node.id ? Palette.primaryInk.opacity(Palette.selectedOpacity) :
                     Palette.primaryInk.opacity(hover ? Palette.chromeHoverOpacity : 0)))
             .onHover { hover = $0 }
-            .help([node.url.map { store.relativePath($0) }, node.detail].compactMap { $0 }.joined(separator: "\n"))
+            .quillHelp([node.url.map { store.relativePath($0) }, node.detail].compactMap { $0 }.joined(separator: "\n"))
             .modifier(FolderRowActions(node: node, mode: mode, store: store))
             .contextMenu {
                 if let url = node.url {
@@ -655,7 +655,7 @@ struct SidebarInlineNameEditor: View {
         HStack(spacing: 4) {
             SidebarNameField(store: store, id: id).frame(height: 23)
             if let error = store.sidebarNameEdit?.error {
-                Image(systemName: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(.secondary).help(error)
+                Image(systemName: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(.secondary).quillHelp(error)
             }
         }.background(GeometryReader { geometry in
             Color.clear.preference(key: SidebarNameBounds.self,
@@ -799,7 +799,7 @@ private struct SidebarModeButton: View {
         }
         .buttonStyle(ChromeButtonStyle(selected: selected, selectionNamespace: selectionNamespace))
         .modifier(ChromeHoverFeedback(selected: selected))
-        .help(mode.rawValue).accessibilityLabel(mode.rawValue)
+        .quillHelp(mode.rawValue).accessibilityLabel(mode.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -819,6 +819,6 @@ private struct SidebarActionButton: View {
         }
         .buttonStyle(ChromeButtonStyle())
         .modifier(ChromeHoverFeedback())
-        .help(title + "\n" + help).accessibilityLabel(title)
+        .quillHelp(title + "\n" + help).accessibilityLabel(title)
     }
 }

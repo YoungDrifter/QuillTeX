@@ -76,7 +76,7 @@ struct ResultPanel: View {
             .buttonStyle(QuillRowButtonStyle())
             .accessibilityLabel(title)
             .accessibilityValue("\(items.count), \(expanded.wrappedValue ? "Expanded" : "Collapsed")")
-            .help("\(expanded.wrappedValue ? "Collapse" : "Expand") \(title.lowercased())")
+            .quillHelp("\(expanded.wrappedValue ? "Collapse" : "Expand") \(title.lowercased())")
 
             if expanded.wrappedValue {
                 VStack(alignment: .leading, spacing: 3) {
@@ -140,6 +140,6 @@ private struct DiagnosticRow: View {
         }
         .buttonStyle(QuillRowButtonStyle(selected: selected))
         .disabled(store.resolvedDiagnostic(diagnostic) == nil)
-        .help(diagnostic.detail.isEmpty ? diagnostic.summary : diagnostic.detail)
+        .quillHelp(diagnostic.detail.isEmpty ? diagnostic.summary : diagnostic.detail)
     }
 }

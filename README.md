@@ -6,13 +6,13 @@
 
 一个克制的原生 macOS LaTeX 编辑器，让源码、工程结构与 PDF 成稿在同一个工作区中保持联系。
 
-**Version 2.2.0** · macOS 14+ · Apple Silicon
+**Version 2.2.1** · macOS 14+ · Apple Silicon
 
-[下载 2.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.0)
+[下载 2.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.1)
 
-![QuillTeX 2.2.0 · 文档库](docs/demo/document-library.png)
+![QuillTeX · 文档库](docs/demo/document-library.png)
 
-![QuillTeX 2.2.0 · 写作工作区](docs/demo/writing-workspace.png)
+![QuillTeX · 写作工作区](docs/demo/writing-workspace.png)
 
 ## 功能
 
@@ -40,7 +40,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.0) 下载 `QuillTeX-2.2.0.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
+从 [Releases](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.1) 下载 `QuillTeX-2.2.1.dmg`，打开后将 **QuillTeX.app** 拖入 **Applications**。`SHA256SUMS.txt` 提供安装包校验值。
 
 当前版本使用 ad-hoc 签名，尚未经过 Apple 公证。
 
@@ -155,6 +155,12 @@ Folder 侧栏、文件与文件夹右键、文档标签和文档库文稿均可�
 顶栏最右侧新增手动同步按钮，可将编译后的 PDF 和文稿库信息（文件夹、标签、星标、项目名等）发布到坚果云 WebDAV，供另一个只读应用接收。同步为单向增量上传，只传输新增或变化的内容；PDF 按内容哈希命名，旧版本会清理，TeX 源码、图片和参考文献仍只保存在本机。Settings 新增 Sync 分类，应用密码保存在系统钥匙串。
 
 [更新说明](docs/versions/2.2.0.md) · [下载 2.2.0](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.0)
+
+### 2.2.1 · 滚动边缘与浮动工具栏
+
+文档库、源码编辑与 PDF 预览新增滚动边缘渐变，工具栏和窗格胶囊统一玻璃材质，按钮、文档行与悬停提示采用圆角高亮和轻阴影。
+
+[更新说明](docs/versions/2.2.1/README.md) · [下载 2.2.1](https://github.com/YoungDrifter/QuillTeX/releases/tag/v2.2.1)
 
 ## 本地构建
 

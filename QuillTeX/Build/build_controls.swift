@@ -41,7 +41,7 @@ struct BuildControls: View {
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
             .disabled(store.root == nil)
-            .help(store.root == nil ? "Open a document to compile" : "Compile the document (⌘T)")
+            .quillHelp(store.root == nil ? "Open a document to compile" : "Compile the document (⌘T)")
             .accessibilityLabel("Compile the document")
 
             Button { toggleMode() } label: {
@@ -56,7 +56,7 @@ struct BuildControls: View {
             .buttonStyle(ChromeButtonStyle())
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
-            .help(settings.mode == .manual ? "Manual: compile when asked. Click for automatic." : "Automatic: compile after typing. Click for manual.")
+            .quillHelp(settings.mode == .manual ? "Manual: compile when asked. Click for automatic." : "Automatic: compile after typing. Click for manual.")
 
             Divider().frame(height: 14)
 
@@ -73,7 +73,7 @@ struct BuildControls: View {
             .modifier(ChromeHoverFeedback())
             .chromeControlBoundary()
             .popover(isPresented: $showingEnginePicker) { enginePicker }
-            .help("Compile engine")
+            .quillHelp("Compile engine")
 
             Divider().frame(height: 14)
 
@@ -110,7 +110,7 @@ struct BuildControls: View {
         .buttonStyle(ChromeButtonStyle())
         .modifier(ChromeHoverFeedback())
         .chromeControlBoundary()
-        .help(build.lastSummary)
+        .quillHelp(build.lastSummary)
         .accessibilityLabel(build.lastSummary)
     }
 
@@ -158,7 +158,7 @@ struct BuildControls: View {
                         .buttonStyle(ChromeButtonStyle(selected: store.engine == engine, selectionNamespace: engineSelection))
                         .modifier(ChromeHoverFeedback(selected: store.engine == engine))
                         .disabled(!settings.toolchain.engines.contains(engine))
-                        .help(settings.toolchain.engines.contains(engine) ? engine.title : "Not installed")
+                        .quillHelp(settings.toolchain.engines.contains(engine) ? engine.title : "Not installed")
                         .accessibilityAddTraits(store.engine == engine ? .isSelected : [])
                     }
                 }

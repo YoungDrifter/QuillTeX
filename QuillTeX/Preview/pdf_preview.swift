@@ -358,6 +358,7 @@ final class SyncPDFView: PDFView {
         scroll.verticalScrollElasticity = .allowed
         scroll.horizontalScrollElasticity = zoomMode == .manual ? .automatic : .none
         scroll.hasHorizontalScroller = zoomMode == .manual
+        PaneEdgeFrost.install(in: scroll)
         let clip = scroll.contentView
         guard observedClip !== clip else { return }
         if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
@@ -570,9 +571,10 @@ struct PreviewPane: View {
         .padding(.horizontal, 10)
         .frame(width: ChromeMetrics.zoomInputWidth, height: ChromeMetrics.previewControlHeight)
         .foregroundStyle(Palette.primaryInk).tint(Palette.primaryInk)
+        .overlay(Capsule().strokeBorder(Palette.primaryInk.opacity(zoomFocused ? 0.45 : 0), lineWidth: 1).allowsHitTesting(false))
         .contentShape(Capsule())
         .onTapGesture { if controls.hasDocument { zoomFocused = true } }
-        .help("Enter a zoom percentage")
+        .quillHelp("Enter a zoom percentage")
     }
 
     private var zoomDivider: some View {
@@ -586,7 +588,7 @@ struct PreviewPane: View {
                 .contentShape(Circle())
         }
         .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback())
-        .help(help).accessibilityLabel(help)
+        .quillHelp(help).accessibilityLabel(help)
     }
 
     /// Short build state for the preview capsule. Transient SyncTeX notes take
@@ -624,8 +626,8 @@ struct PreviewPane: View {
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(Palette.primaryInk)
             .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .help(paneStatusHelp)
+            .truncationMode(.tail)
+            .quillHelp(paneStatusHelp)
             .padding(.horizontal, 10)
             .frame(height: 30)
             .quillFloatingCapsule()
@@ -636,14 +638,12 @@ struct PreviewPane: View {
             zoomInput
             zoomDivider
             zoomButton("1.square", help: "Actual Size (100%)", action: controls.actualSize)
-            zoomDivider
             zoomButton("arrow.left.and.right", help: "Fit Width", action: controls.fitWidth)
-            zoomDivider
             zoomButton("arrow.up.and.down", help: "Fit Height", action: controls.fitHeight)
         }
         .padding(.horizontal, 2)
         .frame(height: ChromeMetrics.previewControlHeight)
-        .modifier(PreviewControlSurface(focused: zoomFocused))
+        .quillFloatingCapsule()
         .fixedSize()
         .layoutPriority(1)
         .disabled(build.pdfURL == nil)
@@ -688,31 +688,5 @@ struct PreviewPane: View {
         .animation(reduceMotion ? nil : ChromeMotion.tab, value: store.activeTabID)
         .background(Palette.previewCanvas)
         .focusedSceneValue(\.pdfPreviewControls, controls)
-    }
-}
-
-/// One capsule contains all PDF zoom controls.
-private struct PreviewControlSurface: ViewModifier {
-    var focused = false
-    @Environment(\.isEnabled) private var isEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hovered = false
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                Capsule().fill(LinearGradient(
-                    colors: [.white, focused ? .white : Palette.subtleSurface],
-                    startPoint: .top, endPoint: .bottom))
-                    .shadow(color: .black.opacity(0.08), radius: 5, x: 0, y: 2)
-            }
-            .overlay {
-                Capsule().strokeBorder(Palette.primaryInk.opacity(focused ? 0.6 : (hovered ? 0.34 : 0.22)),
-                    lineWidth: focused ? 1.2 : 0.8).allowsHitTesting(false)
-            }
-            .opacity(isEnabled ? 1 : 0.4)
-            .onHover { hovered = $0 && isEnabled }
-            .animation(reduceMotion ? nil : ChromeMotion.feedback, value: hovered)
-            .animation(reduceMotion ? nil : ChromeMotion.feedback, value: focused)
     }
 }

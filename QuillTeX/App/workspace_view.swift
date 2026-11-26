@@ -37,7 +37,7 @@ struct WorkspaceView: View {
                     Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
                     Button { store.recoveryMessage = nil } label: { Image(systemName: "xmark").font(.system(size: 10)) }
-                        .buttonStyle(.plain).help("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
+                        .buttonStyle(.plain).quillHelp("Dismiss recovery message").accessibilityLabel("Dismiss recovery message")
                 }
                 .padding(.horizontal, 14).frame(height: 32).background(.thinMaterial, in: Capsule())
                 .padding(.top, ChromeMetrics.topBarHeight + ChromeMetrics.paneHeaderHeight + 4)
@@ -218,8 +218,7 @@ private struct EditorPane: View {
         HStack(spacing: 8) {
             if let document = store.activeDocument, !store.isEditingTemplate {
                 let role = document.url == store.root ? "Main" : "Sub"
-                let title = "\(role): \(document.url.deletingPathExtension().lastPathComponent)"
-                Text(title)
+                (Text(role + ": ").foregroundColor(Palette.secondaryInk) + Text(document.url.deletingPathExtension().lastPathComponent))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Palette.primaryInk)
                     .lineLimit(1)
@@ -227,7 +226,7 @@ private struct EditorPane: View {
                     .padding(.horizontal, 10)
                     .frame(height: 30)
                     .quillFloatingCapsule()
-                    .help(document.url.lastPathComponent)
+                    .quillHelp(document.url.lastPathComponent)
                     .contextMenu {
                         Button("Rename") { store.requestRenameFile(document.url) }
                     }
@@ -261,7 +260,7 @@ private struct EditorStatusCapsule: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Palette.primaryInk)
                 .padding(.horizontal, 10)
-                .help(document.isDirty ? "Unsaved changes" : "All changes saved")
+                .quillHelp(document.isDirty ? "Unsaved changes" : "All changes saved")
             Rectangle().fill(Palette.hairline).frame(width: 1, height: 12).padding(.horizontal, 2)
                 .accessibilityHidden(true)
             historyButton("arrow.uturn.backward", title: "Undo", shortcut: "⌘Z", enabled: document.undoManager.canUndo) {
@@ -290,7 +289,7 @@ private struct EditorStatusCapsule: View {
         }
         .buttonStyle(ChromeButtonStyle())
         .modifier(ChromeHoverFeedback()).disabled(!enabled)
-        .help("\(title) (\(shortcut))").accessibilityLabel(title)
+        .quillHelp("\(title) (\(shortcut))").accessibilityLabel(title)
     }
 }
 private struct WorkspaceSplit: NSViewRepresentable {

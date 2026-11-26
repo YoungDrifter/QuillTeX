@@ -212,7 +212,7 @@ struct SettingsIconButton: View {
             Image(systemName: symbol).font(.system(size: 12))
                 .frame(width: 28, height: 28).contentShape(Circle())
         }
-        .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback()).help(label).accessibilityLabel(label)
+        .buttonStyle(ChromeButtonStyle()).modifier(ChromeHoverFeedback()).quillHelp(label).accessibilityLabel(label)
     }
 }
 

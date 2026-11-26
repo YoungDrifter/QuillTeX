@@ -72,7 +72,7 @@ enum ChromeMetrics {
     /// Both pane headers (breadcrumb and PDF title) share this height so their titles
     /// sit on one line and their bottom rules line up.
     static let paneHeaderHeight: CGFloat = 54
-    static let previewControlHeight: CGFloat = 28
+    static let previewControlHeight: CGFloat = 30
     static let previewActionWidth: CGFloat = 30
     static let zoomInputWidth: CGFloat = 60
     /// The window controls draw their coloured circles about a point above the centre
@@ -118,7 +118,7 @@ extension View {
     /// the full-width header capsule this reads as a control floating over the
     /// pane instead of a rectangular surface covering it.
     func quillFloatingCapsule() -> some View {
-        modifier(QuillFloatingSurface())
+        modifier(QuillCapsuleSurface(emphasized: false, floating: true))
     }
     /// Row layout for the pane headers; each control draws its own floating pill.
     func quillPaneRow() -> some View {
@@ -127,26 +127,16 @@ extension View {
     }
 }
 
-/// White capsule with a soft lift for the pane-header controls.
-private struct QuillFloatingSurface: ViewModifier {
-    func body(content: Content) -> some View {
-        content.background {
-            Capsule()
-                .fill(LinearGradient(colors: [.white, Palette.controlSurface],
-                                     startPoint: .top, endPoint: .bottom))
-                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.7))
-                .shadow(color: .black.opacity(0.10), radius: 6, x: 0, y: 2)
-        }
-    }
-}
-
 private struct QuillCapsuleSurface: ViewModifier {
     var emphasized: Bool
+    var floating = false
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
         content.background {
             if #available(macOS 26.0, *), !reduceTransparency {
                 Capsule().fill(.clear).glassEffect(.regular, in: Capsule())
+            } else if !reduceTransparency {
+                Capsule().fill(.regularMaterial).overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.7))
             } else {
                 Capsule().fill(Palette.controlSurface)
                     .overlay(Capsule().fill(LinearGradient(
@@ -154,6 +144,7 @@ private struct QuillCapsuleSurface: ViewModifier {
                     .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.7))
             }
         }
+        .background { if floating { Capsule().fill(Color.white.opacity(0.12)).shadow(color: .black.opacity(0.12), radius: 3, y: 1) } }
         .overlay(Capsule().strokeBorder(Color.black.opacity(emphasized ? 0.16 : 0), lineWidth: 0.7).allowsHitTesting(false))
     }
 }
@@ -181,7 +172,7 @@ struct ChromeButton: View {
         .buttonStyle(ChromeButtonStyle(selected: selected, selectionNamespace: selectionNamespace))
         .modifier(ChromeHoverFeedback(selected: selected))
         .chromeControlBoundary()
-        .help(label).accessibilityLabel(label)
+        .quillHelp(label).accessibilityLabel(label)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .modifier(OptionalCapsule(enabled: standalone))
     }
@@ -519,7 +510,7 @@ struct TopBar: View {
             }
             .buttonStyle(.plain)
             .chromeControlBoundary()
-            .help(tab.isSettings ? "Settings" : (tab.path?.path ?? tab.title))
+            .quillHelp(tab.isSettings ? "Settings" : (tab.path?.path ?? tab.title))
             .accessibilityAddTraits(active ? .isSelected : [])
             .contextMenu {
                 if tab.isLibrary, let selection = tab.selection {
@@ -557,7 +548,7 @@ struct TopBar: View {
                     setCloseHover(inside, for: tab.id)
                 }.allowsHitTesting(false))
                 .transition(.opacity)
-                .help("Close Tab")
+                .quillHelp("Close Tab")
                 .accessibilityLabel("Close \(tab.title)")
             } else {
                 tabLeadingIcon(tab, active: active)

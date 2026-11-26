@@ -149,12 +149,10 @@ struct ChromeSegmentedGroup<Selection: Equatable, Content: View>: View {
 /// Hover feedback for the controls living in the title row. SwiftUI's `onHover`
 /// does not fire reliably inside that hosting view (the same reason PaperLens
 /// 1.0.3 moved to an AppKit tracker). The tracker only reports pointer changes;
-/// hover moves the glyph and reveals a short rule, without drawing a surface.
+/// the highlight stays inside the original hit area.
 struct ChromeHoverFeedback: ViewModifier {
     var selected = false
-    /// When present, the same AppKit hover event that reveals the underline
-    /// shows this custom tooltip immediately. The system `.help` delay is not
-    /// involved.
+    /// Sync status is shown immediately on pointer entry.
     var tooltip: String? = nil
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -162,13 +160,7 @@ struct ChromeHoverFeedback: ViewModifier {
     @State private var hoverAnchor: NSView?
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.primaryInk.opacity(0.7))
-                    .frame(width: 10, height: 1.5).padding(.bottom, 2)
-                    .opacity(hovered && !selected ? 1 : 0).allowsHitTesting(false)
-            }
-            .scaleEffect(hovered && !reduceMotion ? 1.055 : 1)
-            .offset(y: hovered && !reduceMotion ? -0.75 : 0)
+            .background { HoverHighlight(active: hovered && !selected, radius: 16).padding(2) }
             .background(ChromeHoverTracker(
                 isEnabled: isEnabled && !selected,
                 onChange: { hovered = $0 },
@@ -178,7 +170,7 @@ struct ChromeHoverFeedback: ViewModifier {
                     if isHovering {
                         HoverTipPresenter.shared.show(tooltip, anchor: anchor)
                     } else {
-                        HoverTipPresenter.shared.hide()
+                        HoverTipPresenter.shared.hide(anchor: anchor)
                     }
                 }
             ).allowsHitTesting(false))
@@ -187,7 +179,7 @@ struct ChromeHoverFeedback: ViewModifier {
                 HoverTipPresenter.shared.show(next, anchor: anchor)
             }
             .onDisappear {
-                HoverTipPresenter.shared.hide()
+                if let hoverAnchor { HoverTipPresenter.shared.hide(anchor: hoverAnchor) }
             }
             .animation(reduceMotion ? nil : ChromeMotion.press, value: hovered)
     }
@@ -306,19 +298,68 @@ final class HoverTipPresenter {
     private var panel: NSPanel?
     private var label: NSTextField?
 
-    func show(_ text: String, anchor: NSView) {
+    private weak var owner: NSView?
+    private var pending: DispatchWorkItem?
+    private var monitor: Any?
+    private var lastShown = Date.distantPast
+
+    private init() {
+        NotificationCenter.default.addObserver(self, selector: #selector(windowResigned(_:)),
+            name: NSWindow.didResignKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuOpened),
+            name: NSMenu.didBeginTrackingNotification, object: nil)
+    }
+    @objc private func windowResigned(_ note: Notification) {
+        if let window = note.object as? NSWindow, window === owner?.window { hide() }
+    }
+    @objc private func menuOpened() { hide() }
+
+
+    func show(_ text: String, anchor: NSView, delayed: Bool = false) {
+        if let owner, owner !== anchor,
+           owner.window === anchor.window,
+           owner.convert(owner.bounds, to: nil).width < anchor.convert(anchor.bounds, to: nil).width,
+           owner.visibleRect.contains(owner.convert(owner.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)) { return }
+        hide()
+        owner = anchor
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .scrollWheel, .keyDown, .leftMouseDragged]) { [weak self] event in
+            self?.hide()
+            return event
+        }
+        let work = DispatchWorkItem { [weak self, weak anchor] in
+            guard let self, let anchor, self.owner === anchor, anchor.window?.isKeyWindow == true,
+                  !anchor.isHiddenOrHasHiddenAncestor, !QuillModalGate.shared.active else { return }
+            self.present(text, anchor: anchor)
+            self.lastShown = Date()
+        }
+        pending = work
+        let delay = Date().timeIntervalSince(lastShown) < 0.8 ? 0.12 : (text.contains("\n") ? 0.5 : 0.35)
+        if delayed { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
+        else { work.perform() }
+    }
+
+    private func present(_ text: String, anchor: NSView) {
         guard let window = anchor.window else { return }
         let panel = existingPanel()
         guard let label else { return }
 
-        label.stringValue = text
+        let lines = text.components(separatedBy: .newlines)
+        let attributed = NSMutableAttributedString(string: lines[0], attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.labelColor])
+        for line in lines.dropFirst() {
+            attributed.append(NSAttributedString(string: "\n" + line, attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        label.attributedStringValue = attributed
         let font = label.font ?? NSFont.systemFont(ofSize: 11)
         // NSString measurement excludes NSTextField's cell padding; keep a
         // little slack so the last characters are never replaced by an ellipsis.
-        let measuredWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        let textWidth = min(420, max(80, ceil(measuredWidth) + 14))
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        let width = textWidth + 18
+        let limit = min(420, (window.screen?.visibleFrame.width ?? 500) - 30)
+        let natural = attributed.size().width
+        let textWidth = min(limit, ceil(natural) + 8)
+        let measured = label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: textWidth, height: 2000))
+        let lineHeight = ceil(measured?.height ?? font.pointSize + 4)
+        let width = textWidth + 20
         let height = lineHeight + 12
         panel.setContentSize(NSSize(width: width, height: height))
         label.frame = NSRect(x: 9, y: 6, width: textWidth, height: lineHeight)
@@ -340,7 +381,13 @@ final class HoverTipPresenter {
         panel.orderFront(nil)
     }
 
-    func hide() {
+    func hide(anchor: NSView? = nil) {
+        if let anchor, anchor !== owner { return }
+        pending?.cancel()
+        pending = nil
+        owner = nil
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
         panel?.orderOut(nil)
     }
 
@@ -358,10 +405,14 @@ final class HoverTipPresenter {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.appearance = NSAppearance(named: .aqua)
 
-        let container = NSView()
+        let container = NSVisualEffectView()
+        container.material = .popover
+        container.blendingMode = .behindWindow
+        container.state = .active
         container.wantsLayer = true
-        container.layer?.cornerRadius = 7
-        container.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.98).cgColor
+        container.layer?.cornerRadius = 8
+        container.layer?.masksToBounds = true
+        container.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.32).cgColor
         container.layer?.borderWidth = 0.7
         container.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
         panel.contentView = container
@@ -369,9 +420,10 @@ final class HoverTipPresenter {
         let label = NSTextField(labelWithString: "")
         label.font = NSFont.systemFont(ofSize: 11)
         label.textColor = .labelColor
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        label.cell?.usesSingleLineMode = true
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        label.cell?.usesSingleLineMode = false
+        label.cell?.wraps = true
         label.translatesAutoresizingMaskIntoConstraints = true
         container.addSubview(label)
         self.label = label

@@ -86,7 +86,7 @@ struct TeXProjectList: View {
         }
         .buttonStyle(QuillRowButtonStyle(selected: store.activeDocument?.url == url))
         .opacity(dragged == url ? 0.45 : 1)
-        .help(store.relativePath(url))
+        .quillHelp(store.relativePath(url))
         .contextMenu {
             Button("Rename") { store.requestRenameFile(url) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }

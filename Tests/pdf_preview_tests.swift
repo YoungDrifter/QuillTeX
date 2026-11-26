@@ -180,6 +180,9 @@ struct PDFPreviewTests {
               "PDF header buffer scrolls away with the document")
         check(view.convert(firstPage.bounds(for: .mediaBox), from: firstPage).maxY > view.bounds.maxY,
               "scrolled PDF content reaches the top instead of retaining a blank header band")
+        let edges = scroll.subviews.compactMap { $0 as? PaneEdgeFrost }
+        check(edges.count == 1 && edges[0].alphaValue > 0.9, "scrolling reveals one top frost layer")
+        check(edges.first?.hitTest(.zero) == nil, "frost passes PDF selections and gestures through")
         let scrolledPosition = view.readerPosition()!
         view.replacePreview(with: PDFDocument(data: secondData)!)
         settle()

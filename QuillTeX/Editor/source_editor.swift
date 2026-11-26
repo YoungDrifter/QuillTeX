@@ -138,6 +138,7 @@ final class EditorSurface: NSScrollView, NSTextViewDelegate, @preconcurrency NST
         let ruler = LineNumberRuler(textView: textView)
         ruler.lineNumber = { [weak self] in self?.lineNumber(atCharacter: $0) ?? 1 }
         verticalRulerView = ruler
+        PaneEdgeFrost.install(in: self)
         hasVerticalRuler = true; rulersVisible = true
         contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: contentView)

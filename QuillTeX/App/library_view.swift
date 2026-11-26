@@ -199,8 +199,7 @@ private struct LibrarySortMenu: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Palette.primaryInk)
                 .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Palette.primaryInk.opacity(hovered ? 0.06 : 0)))
+                .background { HoverHighlight(active: hovered) }
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .onHover { hovered = $0 }
@@ -208,7 +207,7 @@ private struct LibrarySortMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .modifier(LibraryControlSurface())
-        .help("Sort")
+        .quillHelp("Sort")
         .accessibilityLabel("Sort, \(sort.title), \(ascending ? "ascending" : "descending")")
     }
 
@@ -276,7 +275,7 @@ private struct LibraryTableHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Sort by \(order.title)")
+        .quillHelp("Sort by \(order.title)")
     }
 }
 
@@ -708,7 +707,7 @@ struct NewFolderDialog: View {
                                 .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        .help(option.title)
+                        .quillHelp(option.title)
                         .accessibilityLabel(option.title)
                         .accessibilityAddTraits(color == option ? .isSelected : [])
                     }
@@ -905,7 +904,7 @@ struct LibrarySidebarContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
-        .help(title)
+        .quillHelp(title)
     }
 
     private var navigation: some View {
@@ -949,7 +948,7 @@ struct LibrarySidebarContent: View {
                 store.showLibrary(selection: selection, title: title, inNewTab: true)
             }
         }
-        .help(title)
+        .quillHelp(title)
     }
 
     private var expandedFolders: Set<LibraryFolderKey> {
@@ -1020,7 +1019,7 @@ struct LibrarySidebarContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(QuillRowButtonStyle(cornerRadius: LibraryLook.sidebarCorner))
-        .help("Settings")
+        .quillHelp("Settings")
         .accessibilityLabel("Settings")
     }
 
@@ -1065,7 +1064,7 @@ private struct LibraryIconButton: View {
                 .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
         .buttonStyle(QuillRowButtonStyle(cornerRadius: 5))
-        .help(label)
+        .quillHelp(label)
         .accessibilityLabel(label)
     }
 }
@@ -1127,7 +1126,7 @@ private struct LibraryFolderRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!hasChildren)
-            .help(hasChildren ? (isExpanded ? "Collapse" : "Expand") : "")
+            .quillHelp(hasChildren ? (isExpanded ? "Collapse" : "Expand") : "")
             .accessibilityLabel(isExpanded ? "Collapse \(name)" : "Expand \(name)")
 
             Button(action: onSelect) {
@@ -1141,7 +1140,8 @@ private struct LibraryFolderRow: View {
             RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous)
                 .fill(Palette.primaryInk.opacity(dropTargeted ? Palette.pressedOpacity
                                                              : (isSelected ? Palette.selectedOpacity
-                                                                           : (hovered ? 0.07 : 0))))
+                                                                           : 0)))
+                .background { HoverHighlight(active: hovered && !isSelected && !dropTargeted, radius: LibraryLook.sidebarCorner) }
         }
         .contentShape(RoundedRectangle(cornerRadius: LibraryLook.sidebarCorner, style: .continuous))
         .overlay {
@@ -1475,7 +1475,7 @@ private struct LibrarySidebarDocumentRow: View {
         .contentShape(Rectangle())
         .background {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Palette.primaryInk.opacity(hovered ? 0.08 : 0))
+                .fill(.clear).background { HoverHighlight(active: hovered, radius: LibraryLook.sidebarCorner) }
                 .padding(.horizontal, 2)
         }
         .overlay(alignment: .top) {
@@ -1689,7 +1689,7 @@ struct LibraryBrowser: View {
                 .buttonStyle(.plain)
                 .onHover { newButtonHovered = $0 }
                 .animation(.easeOut(duration: 0.15), value: newButtonHovered)
-                .help("New Document")
+                .quillHelp("New Document")
                 .accessibilityLabel("New Document")
         }
     }
@@ -1699,6 +1699,7 @@ struct LibraryBrowser: View {
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(Palette.primaryInk)
             .frame(width: 36, height: 36)
+            .background { HoverHighlight(active: newButtonHovered, radius: 18).padding(2) }
             .quillCapsule()
             .contentShape(Circle())
     }
@@ -1775,19 +1776,13 @@ struct LibraryBrowser: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help("Clear Search")
+                .quillHelp("Clear Search")
             }
         }
         .padding(.horizontal, 11)
         .frame(width: searchWidth)
+        .background { HoverHighlight(active: searchHovered, radius: 16) }
         .modifier(LibraryControlSurface())
-        // Fill the whole pill on hover, not just the text area.
-        .overlay {
-            Capsule()
-                .fill(Palette.primaryInk.opacity(searchHovered ? 0.05 : 0))
-                .padding(4)
-                .allowsHitTesting(false)
-        }
         .onHover { searchHovered = $0 }
         .animation(.easeOut(duration: 0.15), value: searchHovered)
         // The window put the first text field into edit mode on open, leaving a
@@ -1844,7 +1839,7 @@ struct LibraryBrowser: View {
     // MARK: Content
 
     private var listContent: some View {
-        ScrollView(.vertical) {
+        LibraryEdgeScroll {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(groups) { group in
                     if !group.title.isEmpty { groupCaption(group.title) }
@@ -1867,7 +1862,7 @@ struct LibraryBrowser: View {
     }
 
     private var gridContent: some View {
-        ScrollView(.vertical) {
+        LibraryEdgeScroll {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(groups) { group in
                     if !group.title.isEmpty { groupCaption(group.title) }
@@ -2000,12 +1995,12 @@ private struct LibraryViewModeControl: View {
                         .foregroundStyle(mode == item || hovered == item ? Palette.primaryInk : Palette.secondaryInk)
                         .frame(width: 30, height: 26)
                         .background {
-                            if mode == item || hovered == item {
+                            if mode == item {
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(Palette.primaryInk.opacity(mode == item ? 0.11 : 0.06))
+                                    .fill(Palette.primaryInk.opacity(0.11))
                                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
                                         .strokeBorder(Palette.primaryInk.opacity(0.05), lineWidth: 0.6))
-                            }
+                            } else { HoverHighlight(active: hovered == item, radius: 9) }
                         }
                         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
@@ -2014,7 +2009,7 @@ private struct LibraryViewModeControl: View {
                     hovered = inside ? item : (hovered == item ? nil : hovered)
                 }
                 .animation(.easeOut(duration: 0.14), value: hovered == item)
-                .help("\(item.title) View")
+                .quillHelp("\(item.title) View")
                 .accessibilityLabel("\(item.title) View")
                 .accessibilityAddTraits(mode == item ? .isSelected : [])
             }
@@ -2074,7 +2069,7 @@ private struct LibraryBrowserRow: View {
         .frame(height: LibraryLook.browserRowHeight)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Palette.primaryInk.opacity(hovered ? LibraryLook.hoverWash : 0))
+                .fill(.clear).background { HoverHighlight(active: hovered) }
                 .padding(.horizontal, 10)
         }
         .overlay(alignment: .bottom) {
@@ -2112,7 +2107,7 @@ private struct LibraryBrowserRow: View {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.system(size: 9))
                                 .foregroundStyle(Color.orange)
-                                .help("The file is no longer at this location")
+                                .quillHelp("The file is no longer at this location")
                         }
                     }
                     Text(libraryEntrySubtitle(entry, catalog: catalog))
@@ -2147,7 +2142,7 @@ private struct LibraryBrowserRow: View {
                     .contentShape(Circle())
             }
             .buttonStyle(ChromeButtonStyle())
-            .help(entry.starred ? "Unstar" : "Star")
+            .quillHelp(entry.starred ? "Unstar" : "Star")
             .accessibilityLabel(entry.starred ? "Unstar" : "Star")
 
             Menu {
@@ -2162,7 +2157,7 @@ private struct LibraryBrowserRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("More Actions")
+            .quillHelp("More Actions")
             .accessibilityLabel("More Actions")
         }
         .frame(width: LibraryLook.rowActionsWidth, alignment: .trailing)
@@ -2230,14 +2225,13 @@ private struct LibraryGridCard: View {
             }
             .shadow(color: .black.opacity(hovered ? 0.10 : 0.055),
                     radius: hovered ? 9 : 4, y: hovered ? 3 : 1.5)
-            .scaleEffect(hovered ? 1.006 : 1)
             .animation(.easeOut(duration: 0.16), value: hovered)
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .modifier(LibraryEntryContextMenu(store: store, catalog: catalog, entry: entry, onOpen: onOpen))
-        .help("\(entry.displayName)\n\(entry.path)\nUpdated \(LibraryDateText.short(entry.updatedAt ?? entry.addedAt))")
+        .quillHelp("\(entry.displayName)\n\(entry.path)\nUpdated \(LibraryDateText.short(entry.updatedAt ?? entry.addedAt))")
     }
 }
 
@@ -2335,7 +2329,7 @@ struct NewDocumentDialog: View {
                         .foregroundStyle(Palette.secondaryInk)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .help(destination.path)
+                        .quillHelp(destination.path)
                     Button("Choose…", action: chooseLocation)
                         .buttonStyle(SettingsActionStyle())
                 }
@@ -2548,7 +2542,7 @@ private struct TemplatesBrowser: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help("New Template")
+                .quillHelp("New Template")
                 .accessibilityLabel("New Template")
 
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
@@ -2585,7 +2579,7 @@ private struct TemplatesBrowser: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewMode == .grid {
-                ScrollView {
+                LibraryEdgeScroll {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(groupedTemplates.enumerated()), id: \.offset) { _, group in
                             if !group.title.isEmpty { groupCaption(group.title) }
@@ -2610,7 +2604,7 @@ private struct TemplatesBrowser: View {
                         .fill(Palette.hairline)
                         .frame(height: 0.7)
                         .padding(.horizontal, LibraryLook.browserInset)
-                    ScrollView {
+                    LibraryEdgeScroll {
                         LazyVStack(spacing: 2) {
                             ForEach(Array(groupedTemplates.enumerated()), id: \.offset) { _, group in
                                 if !group.title.isEmpty { groupCaption(group.title, leading: 12) }
@@ -2647,7 +2641,7 @@ private struct TemplatesBrowser: View {
         .padding(.horizontal, 11)
         .frame(width: 196)
         .modifier(LibraryControlSurface())
-        .help("Filter templates by name or description")
+        .quillHelp("Filter templates by name or description")
     }
 
     private func templateCard(_ template: DocumentTemplate, dateText: String?) -> some View {
@@ -2688,7 +2682,6 @@ private struct TemplatesBrowser: View {
                 .strokeBorder(Palette.hairline.opacity(isHovered ? 0.95 : 0.65), lineWidth: 0.7))
             .shadow(color: .black.opacity(isHovered ? 0.10 : 0.05),
                     radius: isHovered ? 9 : 4, y: isHovered ? 3 : 1.5)
-            .scaleEffect(isHovered ? 1.006 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -2699,7 +2692,7 @@ private struct TemplatesBrowser: View {
             Button("Rename") { rename(template) }
             Button("Delete", role: .destructive) { delete(template) }
         }
-        .help("\(template.displayTitle)\n\(template.url.path)")
+        .quillHelp("\(template.displayTitle)\n\(template.url.path)")
     }
 
     private func templateListRow(_ template: DocumentTemplate) -> some View {
@@ -2730,7 +2723,7 @@ private struct TemplatesBrowser: View {
             .padding(.horizontal, 12)
             .frame(height: 48)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Palette.primaryInk.opacity(isHovered ? LibraryLook.hoverWash : 0)))
+                .fill(.clear).background { HoverHighlight(active: isHovered) })
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2740,7 +2733,7 @@ private struct TemplatesBrowser: View {
             Button("Rename") { rename(template) }
             Button("Delete", role: .destructive) { delete(template) }
         }
-        .help("\(template.displayTitle)\n\(template.url.path)")
+        .quillHelp("\(template.displayTitle)\n\(template.url.path)")
     }
 
     private func createTemplate() {
@@ -2822,7 +2815,7 @@ private struct NewTabPage: View {
     }
 
     var body: some View {
-        ScrollView {
+        LibraryEdgeScroll {
             VStack(alignment: .leading, spacing: 26) {
                 Text("Create")
                     .font(.system(size: 22, weight: .semibold))
@@ -2974,6 +2967,6 @@ private struct NewTabPage: View {
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(QuillRowButtonStyle(cornerRadius: 14))
-        .help(title)
+        .quillHelp(title)
     }
 }
