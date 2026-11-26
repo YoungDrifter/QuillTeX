@@ -221,6 +221,11 @@ private struct LibraryContentWidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+private struct LibraryHeaderHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 /// One shared column header for documents and templates.
 private struct LibraryTableHeader: View {
     @Binding var sort: LibrarySortOrder
@@ -1561,6 +1566,7 @@ struct LibraryBrowser: View {
     @State private var searchFocusMonitor: Any?
     @State private var sortAscending = false
     @State private var contentWidth: CGFloat = 800
+    @State private var browserHeaderHeight: CGFloat = 0
 
     private var totalEntries: [LibraryEntry] { catalog.entries(in: store.librarySelection) }
 
@@ -1634,21 +1640,26 @@ struct LibraryBrowser: View {
     }
 
     private var browser: some View {
-        VStack(spacing: 0) {
-            browserHeader
-            if viewMode == .list {
-                columnHeader
-                Rectangle()
-                    .fill(Palette.hairline)
-                    .frame(height: 0.7)
-            }
-            if let message = catalog.storageError { storageWarning(message) }
+        ZStack(alignment: .top) {
             if visibleEntries.isEmpty {
-                emptyState
-            } else if viewMode == .list {
-                listContent
+                VStack(spacing: 0) {
+                    libraryHeader
+                    tableColumnHeader
+                    emptyState
+                }
             } else {
-                gridContent
+                documentScrollContent
+                libraryHeader
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: LibraryHeaderHeightKey.self,
+                                                   value: proxy.size.height)
+                        }
+                    }
+                    .onPreferenceChange(LibraryHeaderHeightKey.self) { height in
+                        guard height > 0, abs(height - browserHeaderHeight) > 0.5 else { return }
+                        browserHeaderHeight = height
+                    }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1661,6 +1672,29 @@ struct LibraryBrowser: View {
         .onPreferenceChange(LibraryContentWidthKey.self) { width in
             guard width > 0, abs(width - contentWidth) > 0.5 else { return }
             contentWidth = width
+        }
+    }
+
+    @ViewBuilder
+    private var documentScrollContent: some View {
+        if viewMode == .list { listContent }
+        else { gridContent }
+    }
+
+    private var libraryHeader: some View {
+        VStack(spacing: 0) {
+            browserHeader
+            if let message = catalog.storageError { storageWarning(message) }
+        }
+    }
+
+    /// The table's column titles belong to the list, not the fixed browser
+    /// header, so they scroll away with the documents.
+    @ViewBuilder
+    private var tableColumnHeader: some View {
+        if viewMode == .list {
+            columnHeader
+            Rectangle().fill(Palette.hairline).frame(height: 0.7)
         }
     }
 
@@ -1781,8 +1815,7 @@ struct LibraryBrowser: View {
         }
         .padding(.horizontal, 11)
         .frame(width: searchWidth)
-        .background { HoverHighlight(active: searchHovered, radius: 16) }
-        .modifier(LibraryControlSurface())
+        .modifier(LibraryControlSurface(hovered: searchHovered))
         .onHover { searchHovered = $0 }
         .animation(.easeOut(duration: 0.15), value: searchHovered)
         // The window put the first text field into edit mode on open, leaving a
@@ -1839,8 +1872,9 @@ struct LibraryBrowser: View {
     // MARK: Content
 
     private var listContent: some View {
-        LibraryEdgeScroll {
+        LibraryEdgeScroll(topInset: browserHeaderHeight) {
             LazyVStack(alignment: .leading, spacing: 0) {
+                tableColumnHeader
                 ForEach(groups) { group in
                     if !group.title.isEmpty { groupCaption(group.title) }
                     ForEach(group.entries) { entry in
@@ -1862,7 +1896,7 @@ struct LibraryBrowser: View {
     }
 
     private var gridContent: some View {
-        LibraryEdgeScroll {
+        LibraryEdgeScroll(topInset: browserHeaderHeight) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(groups) { group in
                     if !group.title.isEmpty { groupCaption(group.title) }
@@ -2034,10 +2068,22 @@ private struct LibraryViewModeSurface: ViewModifier {
 /// a quiet ambient shadow, so the group floats over the backdrop like the
 /// library reference instead of reading as flat outlined shapes.
 private struct LibraryControlSurface: ViewModifier {
+    var hovered = false
+
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 4)
             .frame(height: 34)
+            // Fill the whole capsule, not just its content frame, so the hover
+            // highlight reads as one solid pill instead of an inset patch.
+            .background {
+                if hovered {
+                    Capsule()
+                        .fill(Color(white: 0.96).opacity(0.94))
+                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 0.6))
+                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                }
+            }
             .quillCapsule()
     }
 }
@@ -2440,6 +2486,7 @@ private struct TemplatesBrowser: View {
     @State private var search = ""
     @State private var sort: LibrarySortOrder = .updated
     @State private var sortAscending = false
+    @State private var searchHovered = false
 
     private var dateColumn: LibraryDateColumn? {
         switch sort {
@@ -2640,7 +2687,9 @@ private struct TemplatesBrowser: View {
         }
         .padding(.horizontal, 11)
         .frame(width: 196)
-        .modifier(LibraryControlSurface())
+        .modifier(LibraryControlSurface(hovered: searchHovered))
+        .onHover { searchHovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: searchHovered)
         .quillHelp("Filter templates by name or description")
     }
 

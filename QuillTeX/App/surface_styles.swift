@@ -1052,42 +1052,71 @@ final class QuillToast {
     }
 }
 
-// A material mask softens underlying content without filtering foreground controls.
-private struct LibraryScrollBounds: PreferenceKey {
-    static let defaultValue = CGRect.zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
-}
-
+/// Scrolls the library content and fades its own top and bottom edges to
+/// transparent as it moves under those edges. The mask is applied to the
+/// scroll view itself (not a material or a coloured strip on top), so the rows
+/// become transparent and reveal the window backdrop instead of being blurred.
 struct LibraryEdgeScroll<Content: View>: View {
+    /// Height of the fixed browser header. The content starts below it and
+    /// scrolls under it once the list moves; the fade covers that header area
+    /// so rows never collect as a visible band beneath the window chrome.
+    var topInset: CGFloat = 0
     @ViewBuilder var content: () -> Content
-    @Namespace private var space
-    @State private var contentFrame = CGRect.zero
+    @Namespace private var scrollSpace
+    @State private var edgeStrengths = CGSize.zero
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         GeometryReader { viewport in
-            ScrollView {
-                content().background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: LibraryScrollBounds.self,
-                                               value: geometry.frame(in: .named(space)))
-                    }
-                }
-            }
-            .coordinateSpace(name: space)
-            .onPreferenceChange(LibraryScrollBounds.self) { contentFrame = $0 }
-            .overlay(alignment: .top) { frost(height: 20, distance: -contentFrame.minY, top: true) }
-            .overlay(alignment: .bottom) { frost(height: 16, distance: contentFrame.maxY - viewport.size.height, top: false) }
+            trackedScroll(height: viewport.size.height)
+                .mask { edgeMask }
         }
     }
 
-    private func frost(height: CGFloat, distance: CGFloat, top: Bool) -> some View {
-        Rectangle().fill(.regularMaterial)
-            .frame(height: height)
-            .mask(LinearGradient(colors: [.black, .clear], startPoint: top ? .top : .bottom,
-                                 endPoint: top ? .bottom : .top))
-            .padding(.trailing, 8)
-            .opacity(min(1, max(0, distance / height)))
-            .allowsHitTesting(false).accessibilityHidden(true)
+    private var edgeMask: some View {
+        GeometryReader { proxy in
+            let height = max(proxy.size.height, 1)
+            let top = reduceTransparency ? 0 : min(1, max(0, edgeStrengths.width))
+            let bottom = reduceTransparency ? 0 : min(1, max(0, edgeStrengths.height))
+            let topDepth = topInset + 44
+            let topStop = min(1, topDepth / height)
+            let bottomStop = max(topStop, 1 - 52 / height)
+            LinearGradient(stops: [
+                .init(color: .black.opacity(1 - top), location: 0),
+                .init(color: .black, location: topStop),
+                .init(color: .black, location: bottomStop),
+                .init(color: .black.opacity(1 - bottom), location: 1)
+            ], startPoint: .top, endPoint: .bottom)
+        }
+    }
+
+    @ViewBuilder
+    private func trackedScroll(height: CGFloat) -> some View {
+        if #available(macOS 15.0, *) {
+            ScrollView { content().padding(.top, topInset) }
+                .defaultScrollAnchor(.top)
+                .onScrollGeometryChange(for: CGSize.self) { geometry in
+                    let offset = geometry.contentOffset.y + geometry.contentInsets.top
+                    let remaining = geometry.contentSize.height + geometry.contentInsets.top
+                        + geometry.contentInsets.bottom - geometry.containerSize.height - offset
+                    return Self.strengths(above: offset, below: remaining)
+                } action: { _, strengths in
+                    edgeStrengths = strengths
+                }
+        } else {
+            ScrollView {
+                content().padding(.top, topInset)
+                    .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(scrollSpace)) }) { frame in
+                        edgeStrengths = Self.strengths(above: -frame.minY, below: frame.maxY - height)
+                    }
+            }
+            .defaultScrollAnchor(.top)
+            .coordinateSpace(name: scrollSpace)
+        }
+    }
+
+    private static func strengths(above: CGFloat, below: CGFloat) -> CGSize {
+        CGSize(width: min(1, max(0, above / 12)), height: min(1, max(0, below / 12)))
     }
 }
 

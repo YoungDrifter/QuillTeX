@@ -568,7 +568,7 @@ struct PreviewPane: View {
             }
             .onAppear { zoomText = controls.percentage }
             .accessibilityLabel("Zoom percentage")
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 6)
         .frame(width: ChromeMetrics.zoomInputWidth, height: ChromeMetrics.previewControlHeight)
         .foregroundStyle(Palette.primaryInk).tint(Palette.primaryInk)
         .overlay(Capsule().strokeBorder(Palette.primaryInk.opacity(zoomFocused ? 0.45 : 0), lineWidth: 1).allowsHitTesting(false))

@@ -74,7 +74,7 @@ enum ChromeMetrics {
     static let paneHeaderHeight: CGFloat = 54
     static let previewControlHeight: CGFloat = 30
     static let previewActionWidth: CGFloat = 30
-    static let zoomInputWidth: CGFloat = 60
+    static let zoomInputWidth: CGFloat = 66
     /// The window controls draw their coloured circles about a point above the centre
     /// of their frames (the frames carry a shadow margin). Measured from screenshots,
     /// so the circles land on the top bar's centre line rather than a hair above it.
